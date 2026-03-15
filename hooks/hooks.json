@@ -1,0 +1,29 @@
+{
+  "description": "cc-tower session monitoring hooks",
+  "hooks": {
+    "SessionStart": [{
+      "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/cc-tower-hook.sh session-start", "timeout": 3 }]
+    }],
+    "UserPromptSubmit": [{
+      "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/cc-tower-hook.sh user-prompt", "timeout": 3 }]
+    }],
+    "PreToolUse": [{
+      "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/cc-tower-hook.sh pre-tool", "timeout": 3 }]
+    }],
+    "PostToolUse": [{
+      "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/cc-tower-hook.sh post-tool", "timeout": 3 }]
+    }],
+    "SubagentStart": [{
+      "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/cc-tower-hook.sh agent-start", "timeout": 3 }]
+    }],
+    "SubagentStop": [{
+      "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/cc-tower-hook.sh agent-stop", "timeout": 3 }]
+    }],
+    "Stop": [{
+      "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/cc-tower-hook.sh stop", "timeout": 3 }]
+    }],
+    "SessionEnd": [{
+      "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/cc-tower-hook.sh session-end", "timeout": 3 }]
+    }]
+  }
+}

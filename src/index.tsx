@@ -1,0 +1,249 @@
+#!/usr/bin/env node
+import { program } from 'commander';
+import React from 'react';
+import { render } from 'ink';
+import { execSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { Tower } from './core/tower.js';
+import { App } from './ui/App.js';
+import { tmux } from './tmux/commands.js';
+
+program
+  .name('cc-tower')
+  .description('Claude Code Session Control Tower')
+  .version('0.1.0');
+
+// Default: TUI dashboard
+program
+  .action(async () => {
+    const tower = new Tower();
+    await tower.start();
+    const { waitUntilExit } = render(React.createElement(App, { tower }));
+    await waitUntilExit();
+  });
+
+// List sessions
+program
+  .command('list')
+  .option('--json', 'Output as JSON')
+  .action(async (opts) => {
+    const tower = new Tower();
+    await tower.start();
+    const sessions = tower.store.getAll();
+    if (opts.json) {
+      console.log(JSON.stringify(sessions, null, 2));
+    } else {
+      if (sessions.length === 0) {
+        console.log('No active sessions');
+      } else {
+        console.log('PANE  LABEL             STATUS    TASK');
+        for (const s of sessions) {
+          const pane = (s.paneId ?? '—').padEnd(6);
+          const label = (s.label ?? s.projectName).slice(0, 16).padEnd(18);
+          const status = s.status.toUpperCase().padEnd(10);
+          const task = s.currentTask ?? '';
+          console.log(`${pane}${label}${status}${task}`);
+        }
+      }
+    }
+    await tower.stop();
+  });
+
+// Status
+program
+  .command('status [session]')
+  .action(async (sessionArg) => {
+    const tower = new Tower();
+    await tower.start();
+    const sessions = tower.store.getAll();
+    if (sessionArg) {
+      const s = sessions.find(s => s.sessionId.startsWith(sessionArg) || s.label === sessionArg || s.paneId === sessionArg);
+      if (s) {
+        console.log(`${s.label ?? s.projectName}: ${s.status} (${s.paneId ?? 'no pane'})`);
+      } else {
+        console.log(`Session not found: ${sessionArg}`);
+      }
+    } else {
+      const active = sessions.filter(s => s.status !== 'dead').length;
+      const idle = sessions.filter(s => s.status === 'idle').length;
+      console.log(`${sessions.length} sessions (${active} active, ${idle} idle)`);
+    }
+    await tower.stop();
+  });
+
+// Send command
+program
+  .command('send <session> <message>')
+  .action(async (sessionArg, message) => {
+    const tower = new Tower();
+    await tower.start();
+    const sessions = tower.store.getAll();
+    const s = sessions.find(s => s.sessionId.startsWith(sessionArg) || s.label === sessionArg || s.paneId === sessionArg);
+    if (!s || !s.paneId) {
+      console.log(s ? 'Session has no tmux pane' : `Session not found: ${sessionArg}`);
+    } else {
+      await tmux.sendKeys(s.paneId, message);
+      console.log(`Sent to ${s.label ?? s.projectName} (${s.paneId})`);
+    }
+    await tower.stop();
+  });
+
+// Peek
+program
+  .command('peek <session>')
+  .action(async (sessionArg: string) => {
+    const tower = new Tower();
+    await tower.start();
+    const sessions = tower.store.getAll();
+    const s = sessions.find(s => s.sessionId.startsWith(sessionArg) || s.label === sessionArg || s.paneId === sessionArg);
+    if (!s || !s.paneId) {
+      console.log(s ? 'Session has no tmux pane' : `Session not found: ${sessionArg}`);
+    } else {
+      const panes = await tmux.listPanes();
+      const targetPane = panes.find(p => p.paneId === s.paneId);
+      if (targetPane) {
+        const sessionName = `_cctower_peek_${process.pid}`;
+        try { await tmux.killSession(sessionName); } catch {}
+        await tmux.newGroupSession(sessionName, targetPane.sessionName);
+        await tmux.displayPopup({
+          width: '80%', height: '80%',
+          title: ` ${s.label ?? s.projectName} (${s.paneId}) `,
+          command: `tmux attach -t ${sessionName} \\; select-window -t :${targetPane.windowIndex}`,
+        });
+        try { await tmux.killSession(sessionName); } catch {}
+      }
+    }
+    await tower.stop();
+  });
+
+// Zoom
+program
+  .command('zoom <session>')
+  .action(async (sessionArg: string) => {
+    const tower = new Tower();
+    await tower.start();
+    const sessions = tower.store.getAll();
+    const s = sessions.find(s => s.sessionId.startsWith(sessionArg) || s.label === sessionArg || s.paneId === sessionArg);
+    if (!s || !s.paneId) {
+      console.log(s ? 'Session has no tmux pane' : `Session not found: ${sessionArg}`);
+    } else {
+      const current = await tmux.getCurrentPane();
+      if (current) {
+        const returnCmd = `resize-pane -Z \\; select-window -t @${current.windowId} \\; select-pane -t ${current.paneId}`;
+        await tmux.bindKey('F12', returnCmd);
+      }
+      const panes = await tmux.listPanes();
+      const targetPane = panes.find(p => p.paneId === s.paneId);
+      if (targetPane && current && targetPane.windowId !== current.windowId) {
+        await tmux.selectWindow(`@${targetPane.windowId}`);
+      }
+      await tmux.selectPane(s.paneId);
+      await tmux.toggleZoom(s.paneId);
+    }
+    await tower.stop();
+  });
+
+// Watch pane manually
+program
+  .command('watch <paneId>')
+  .action(async (paneId: string) => {
+    console.log(`Watching pane ${paneId} (auto-discovery will pick it up)`);
+  });
+
+// Install hooks
+program
+  .command('install-hooks')
+  .action(async () => {
+    const pluginDir = path.join(os.homedir(), '.claude', 'plugins', 'cc-tower');
+    const hooksDir = path.join(pluginDir, 'hooks');
+    fs.mkdirSync(hooksDir, { recursive: true });
+
+    // Copy hooks files from our package
+    const srcHooksDir = path.resolve(import.meta.dirname, '..', 'hooks');
+    for (const file of ['hooks.json', 'plugin.json', 'cc-tower-hook.sh']) {
+      const src = path.join(srcHooksDir, file);
+      const dest = path.join(file === 'plugin.json' ? pluginDir : hooksDir, file);
+      if (fs.existsSync(src)) {
+        fs.copyFileSync(src, dest);
+        if (file.endsWith('.sh')) {
+          fs.chmodSync(dest, 0o755);
+        }
+      }
+    }
+
+    console.log(`✓ Hook plugin installed at ${pluginDir}`);
+    console.log('  New Claude Code sessions will report to cc-tower.');
+    console.log('  Already running sessions use JSONL fallback.');
+  });
+
+// Label
+program
+  .command('label <session> <name>')
+  .action(async (sessionArg, name) => {
+    const tower = new Tower();
+    await tower.start();
+    const sessions = tower.store.getAll();
+    const s = sessions.find(s => s.sessionId.startsWith(sessionArg) || s.paneId === sessionArg);
+    if (s) {
+      tower.store.update(s.sessionId, { label: name });
+      tower.store.persist();
+      console.log(`Labeled ${s.paneId ?? s.sessionId.slice(0, 8)} as "${name}"`);
+    } else {
+      console.log(`Session not found: ${sessionArg}`);
+    }
+    await tower.stop();
+  });
+
+// Tag
+program
+  .command('tag <session> <tags...>')
+  .action(async (sessionArg, tags) => {
+    const tower = new Tower();
+    await tower.start();
+    const sessions = tower.store.getAll();
+    const s = sessions.find(s => s.sessionId.startsWith(sessionArg) || s.label === sessionArg || s.paneId === sessionArg);
+    if (s) {
+      tower.store.update(s.sessionId, { tags });
+      tower.store.persist();
+      console.log(`Tagged ${s.label ?? s.sessionId.slice(0, 8)}: ${tags.join(', ')}`);
+    } else {
+      console.log(`Session not found: ${sessionArg}`);
+    }
+    await tower.stop();
+  });
+
+// Config
+program
+  .command('config')
+  .action(() => {
+    const configPath = path.join(os.homedir(), '.config', 'cc-tower', 'config.yaml');
+    const editor = process.env['EDITOR'] ?? 'vi';
+    if (!fs.existsSync(configPath)) {
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, '# cc-tower configuration\n# See PRD for available options\n');
+    }
+    execSync(`${JSON.stringify(editor)} ${JSON.stringify(configPath)}`, { stdio: 'inherit' });
+  });
+
+// Internal: hook CLI fallback
+program
+  .command('hook <event>')
+  .action(async (event: string) => {
+    const net = await import('node:net');
+    const socketPath = `${process.env['XDG_RUNTIME_DIR'] ?? '/tmp'}/cc-tower.sock`;
+    const payload = JSON.stringify({
+      event,
+      sid: process.env['CLAUDE_SESSION_ID'] ?? 'unknown',
+      cwd: process.cwd(),
+      ts: Date.now(),
+    });
+    const client = net.createConnection(socketPath, () => {
+      client.write(payload + '\n');
+      client.end();
+    });
+    client.on('error', () => {});
+  });
+
+program.parse();

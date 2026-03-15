@@ -1,0 +1,6 @@
+{
+  "pid": 12345,
+  "sessionId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "cwd": "/home/user/workspace/my-project",
+  "startedAt": 1700000000000
+}
