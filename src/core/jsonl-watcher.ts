@@ -32,25 +32,35 @@ export class JsonlWatcher extends EventEmitter {
     if (lines.length === 0) return 'idle';
 
     // Walk backwards to find last state-determining message.
-    // Priority: find the last `assistant` message with a definitive stop_reason.
-    // `user` messages alone are unreliable — internal commands (/cost, /status)
-    // create user entries without triggering a real turn.
+    // Priority order:
+    // 1. system turn_duration/stop_hook_summary → idle (turn definitively ended)
+    // 2. assistant end_turn → idle
+    // 3. assistant tool_use → executing
+    // 4. assistant stop_reason=null → thinking (streaming)
+    // `user` messages alone are unreliable — internal commands create entries without turns.
     let sawUser = false;
+    let sawTurnEnd = false;
     for (let i = lines.length - 1; i >= 0; i--) {
       const parsed = parseJsonlLine(lines[i]);
       if (!parsed) continue;
 
+      // system turn_duration or stop_hook_summary = turn is over
+      if (parsed.type === 'system' && (parsed.systemSubtype === 'turn_duration' || parsed.systemSubtype === 'stop_hook_summary')) {
+        sawTurnEnd = true;
+        continue;
+      }
+
       if (parsed.type === 'assistant') {
         if (parsed.stopReason === 'end_turn') return 'idle';
+        if (sawTurnEnd) return 'idle'; // turn ended even if stop_reason is None/tool_use
         if (parsed.stopReason === 'tool_use') return 'executing';
-        if (parsed.stopReason === null) return 'thinking'; // streaming
-        // stop_reason undefined — keep looking
+        if (parsed.stopReason === null) return 'thinking';
         continue;
       }
 
       if (parsed.type === 'user') {
+        if (sawTurnEnd) return 'idle'; // turn ended after this user message
         sawUser = true;
-        // Don't return thinking yet — keep looking for the preceding assistant
         continue;
       }
     }
