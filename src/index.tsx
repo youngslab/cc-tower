@@ -33,6 +33,9 @@ program
 
     // Leave alternate screen (restore original terminal content)
     process.stdout.write('\x1b[?1049l');
+
+    // Force exit — pending claude --print processes may keep Node alive
+    process.exit(0);
   });
 
 // List sessions

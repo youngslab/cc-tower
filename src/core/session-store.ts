@@ -29,6 +29,7 @@ export interface Session {
   status: 'idle' | 'thinking' | 'executing' | 'agent' | 'dead';
   lastActivity: Date;
   contextSummary?: string;     // LLM-generated: 전체 맥락 한 줄 (Dashboard TASK)
+  summaryLoading?: boolean;    // LLM 요약 대기 중
   currentActivity?: string;    // Tier1+2: 지금 하고 있는 일 (Detail View)
   currentTask?: string;        // 마지막 user 메시지 (raw, fallback용)
   currentSummary?: TurnSummary;
@@ -43,6 +44,7 @@ export interface Session {
 interface PersistedEntry {
   label?: string;
   tags?: string[];
+  contextSummary?: string;
 }
 
 interface PersistFormat {
@@ -122,6 +124,7 @@ export class SessionStore extends EventEmitter {
       const entry: PersistedEntry = {};
       if (session.label !== undefined) entry.label = session.label;
       if (session.tags !== undefined) entry.tags = session.tags;
+      if (session.contextSummary !== undefined) entry.contextSummary = session.contextSummary;
       if (Object.keys(entry).length > 0) {
         data.sessions[id] = entry;
       }
@@ -149,6 +152,7 @@ export class SessionStore extends EventEmitter {
         if (session) {
           if (entry.label !== undefined) session.label = entry.label;
           if (entry.tags !== undefined) session.tags = entry.tags;
+          if (entry.contextSummary !== undefined) session.contextSummary = entry.contextSummary;
         }
       }
       logger.debug('session-store: restored state', { path: this.persistPath });

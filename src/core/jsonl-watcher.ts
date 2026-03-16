@@ -246,10 +246,14 @@ export class JsonlWatcher extends EventEmitter {
    * Read recent user messages from JSONL for LLM context summary.
    * Returns concatenated user messages (last N), cleaned.
    */
-  async readRecentUserMessages(jsonlPath: string, count: number): Promise<string | undefined> {
+  /**
+   * Read recent conversation context (user + assistant messages) for LLM summarization.
+   * Returns a formatted string with role labels for richer context.
+   */
+  async readRecentContext(jsonlPath: string, maxMessages: number = 15): Promise<string | undefined> {
     try {
       const stat = fs.statSync(jsonlPath);
-      const readSize = Math.min(stat.size, 262144); // last 256KB
+      const readSize = Math.min(stat.size, 524288); // last 512KB
       const buf = Buffer.alloc(readSize);
       const fd = fs.openSync(jsonlPath, 'r');
       fs.readSync(fd, buf, 0, readSize, stat.size - readSize);
@@ -258,18 +262,33 @@ export class JsonlWatcher extends EventEmitter {
       const chunk = buf.toString('utf8');
       const lines = chunk.split('\n').filter(l => l.trim());
 
-      const userMessages: string[] = [];
-      for (let i = lines.length - 1; i >= 0 && userMessages.length < count; i--) {
+      const messages: string[] = [];
+      for (let i = lines.length - 1; i >= 0 && messages.length < maxMessages; i--) {
         const parsed = parseJsonlLine(lines[i]!);
         if (!parsed) continue;
+
         if (parsed.type === 'user' && parsed.userContent) {
           const text = parsed.userContent.trim();
           if (isInternalMessage(text)) continue;
-          userMessages.unshift(cleanDisplayText(text));
+          const cleaned = cleanDisplayText(text);
+          if (cleaned.length <= 5) continue;
+          messages.unshift(`USER: ${cleaned.slice(0, 200)}`);
+        } else if (parsed.type === 'assistant') {
+          if (parsed.stopReason === 'tool_use' && parsed.toolName) {
+            const tool = parsed.toolInput
+              ? `${parsed.toolName}: ${parsed.toolInput}`
+              : parsed.toolName;
+            messages.unshift(`TOOL: ${tool}`);
+          } else if (parsed.stopReason === 'end_turn' && parsed.assistantText) {
+            const text = cleanDisplayText(parsed.assistantText);
+            if (text.length > 5) {
+              messages.unshift(`CLAUDE: ${text.slice(0, 200)}`);
+            }
+          }
         }
       }
 
-      return userMessages.length > 0 ? userMessages.join('\n') : undefined;
+      return messages.length > 0 ? messages.join('\n') : undefined;
     } catch {
       return undefined;
     }

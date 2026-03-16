@@ -29,6 +29,7 @@ export class Tower extends EventEmitter {
   private stateMachines: Map<string, SessionStateMachine> = new Map();
   private jsonlPaths: Map<string, string> = new Map(); // sessionId → jsonlPath
   private summaryTimer: ReturnType<typeof setInterval> | null = null;
+  private stopping = false;
 
   constructor(config?: Config) {
     super();
@@ -104,11 +105,8 @@ export class Tower extends EventEmitter {
     // 8. Start periodic discovery
     this.discovery.start();
 
-    // 9. Immediately trigger first summary update, then repeat every 3s
-    void this.updateSummaries();
-    this.summaryTimer = setInterval(() => {
-      void this.updateSummaries();
-    }, 3000);
+    // 9. Immediately trigger first summary update, then schedule next after completion
+    void this.scheduleSummaryUpdate();
 
     // 10. Start hidden LLM session (non-blocking, boots in background)
     void startLlmSession();
@@ -117,6 +115,18 @@ export class Tower extends EventEmitter {
   }
 
   private summaryRunning = false;
+
+  private async scheduleSummaryUpdate(): Promise<void> {
+    if (this.stopping) return;
+    await this.updateSummaries();
+    if (this.stopping) return;
+    // Schedule next update: 5s for activity refresh, longer if all summaries are done
+    const hasMissing = this.store.getAll().some(s => s.status !== 'dead' && !s.contextSummary);
+    const delay = hasMissing ? 5000 : 30000;
+    this.summaryTimer = setTimeout(() => {
+      void this.scheduleSummaryUpdate();
+    }, delay);
+  }
 
   private async updateSummaries(): Promise<void> {
     // Update currentActivity for all sessions (instant, Tier 1+2)
@@ -132,16 +142,19 @@ export class Tower extends EventEmitter {
       } catch {}
     }
 
-    // LLM context summaries: one at a time, sequentially (hidden Claude handles one query at a time)
-    if (this.summaryRunning) return;
+    // LLM context summaries: parallel (tested: 4 parallel calls complete in ~8s)
+    if (this.summaryRunning || this.stopping) return;
     this.summaryRunning = true;
     try {
-      for (const session of this.store.getAll()) {
-        if (session.status === 'dead') continue;
-        if (session.contextSummary) continue; // already has summary
-        const jsonlPath = this.jsonlPaths.get(session.sessionId);
-        if (!jsonlPath) continue;
-        await this.refreshContextSummary(session.sessionId, jsonlPath);
+      const pending = this.store.getAll()
+        .filter(s => s.status !== 'dead' && !s.contextSummary)
+        .map(s => ({ sessionId: s.sessionId, jsonlPath: this.jsonlPaths.get(s.sessionId) }))
+        .filter((s): s is { sessionId: string; jsonlPath: string } => !!s.jsonlPath);
+
+      if (pending.length > 0) {
+        await Promise.all(
+          pending.map(s => this.refreshContextSummary(s.sessionId, s.jsonlPath))
+        );
       }
     } finally {
       this.summaryRunning = false;
@@ -151,18 +164,25 @@ export class Tower extends EventEmitter {
   private async refreshContextSummary(sessionId: string, jsonlPath: string): Promise<void> {
     try {
       logger.debug('tower: refreshing context summary', { sessionId });
-      const recentMessages = await this.jsonlWatcher.readRecentUserMessages(jsonlPath, 5);
+      const recentMessages = await this.jsonlWatcher.readRecentContext(jsonlPath, 15);
       if (!recentMessages) {
         logger.debug('tower: no recent messages found', { sessionId });
         return;
       }
+      // Skip if messages are too short to summarize meaningfully
+      if (recentMessages.length < 20) {
+        logger.debug('tower: messages too short for LLM summary', { sessionId, len: recentMessages.length });
+        return;
+      }
       logger.debug('tower: calling LLM for summary', { sessionId, msgLen: recentMessages.length });
+      this.store.update(sessionId, { summaryLoading: true });
       const summary = await generateContextSummary(sessionId, recentMessages);
       if (summary) {
         logger.debug('tower: context summary received', { sessionId, summary });
-        this.store.update(sessionId, { contextSummary: summary });
+        this.store.update(sessionId, { contextSummary: summary, summaryLoading: false });
       } else {
         logger.debug('tower: LLM returned no summary', { sessionId });
+        this.store.update(sessionId, { summaryLoading: false });
       }
     } catch (err) {
       logger.debug('tower: context summary error', { sessionId, error: String(err) });
@@ -170,18 +190,18 @@ export class Tower extends EventEmitter {
   }
 
   async stop(): Promise<void> {
-    logger.info('tower: stopping');
+    this.stopping = true;
     if (this.summaryTimer) {
-      clearInterval(this.summaryTimer);
+      clearTimeout(this.summaryTimer);
       this.summaryTimer = null;
     }
     this.discovery.stop();
-    await this.hookReceiver.stop();
     this.jsonlWatcher.unwatchAll();
     this.processMonitor.stopAll();
-    await stopLlmSession();
     this.store.persist();
-    logger.info('tower: stopped');
+    // Fire-and-forget: don't await these to avoid slow shutdown
+    this.hookReceiver.stop().catch(() => {});
+    stopLlmSession().catch(() => {});
   }
 
   private async registerSession(info: SessionInfo): Promise<void> {
