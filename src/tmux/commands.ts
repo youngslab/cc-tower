@@ -131,7 +131,7 @@ export const tmux = {
 
   async newGroupSession(name: string, targetSession: string): Promise<void> {
     try {
-      await execa('tmux', ['new-session', '-s', name, '-t', targetSession]);
+      await execa('tmux', ['new-session', '-d', '-s', name, '-t', targetSession]);
     } catch (err) {
       throw new Error(`tmux new-session (group) ${name} failed: ${err instanceof Error ? err.message : String(err)}`);
     }

@@ -6,6 +6,7 @@ import { EmptyState } from './EmptyState.js';
 interface Props {
   sessions: Session[];
   tmuxCount: number;
+  maxTaskWidth: number;
   onSelect: (session: Session) => void;
   onSend: (session: Session) => void;
   onPeek: (session: Session) => void;
@@ -21,7 +22,7 @@ const STATUS_ICONS: Record<string, { icon: string; color: string }> = {
   dead: { icon: '✕', color: 'red' },
 };
 
-export function Dashboard({ sessions, tmuxCount, onSelect, onSend, onPeek, onZoom, onQuit }: Props) {
+export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend, onPeek, onZoom, onQuit }: Props) {
   const [cursor, setCursor] = useState(0);
 
   useInput((input, key) => {
@@ -46,16 +47,16 @@ export function Dashboard({ sessions, tmuxCount, onSelect, onSend, onPeek, onZoo
       {/* Header */}
       <Box>
         <Text bold>  </Text>
-        <Text bold dimColor>{pad('PANE', 6)}</Text>
+        <Text bold dimColor>{pad('PANE', 7)}</Text>
         <Text bold dimColor>{pad('LABEL', 18)}</Text>
-        <Text bold dimColor>{pad('STATUS', 10)}</Text>
+        <Text bold dimColor>{pad('STATUS', 14)}</Text>
         <Text bold dimColor>TASK</Text>
       </Box>
 
       {/* Session rows */}
       {sessions.map((session, i) => {
         const isCursor = i === cursor;
-        const isDim = !session.hasTmux;
+        const isDim = !session.hasTmux || session.status === 'dead';
         const { icon, color } = STATUS_ICONS[session.status] ?? STATUS_ICONS['idle']!;
 
         // Separator before non-tmux sessions
@@ -68,11 +69,10 @@ export function Dashboard({ sessions, tmuxCount, onSelect, onSend, onPeek, onZoo
             )}
             <Box>
               <Text>{isCursor ? '▸ ' : '  '}</Text>
-              <Text dimColor={isDim}>{pad(session.paneId ?? '—', 6)}</Text>
+              <Text dimColor={isDim}>{pad(session.paneId ?? '—', 7)}</Text>
               <Text dimColor={isDim}>{pad(session.label ?? session.projectName, 18)}</Text>
-              <Text color={isDim ? 'gray' : color}>{icon} </Text>
-              <Text dimColor={isDim}>{pad(session.status.toUpperCase(), 8)}</Text>
-              <Text dimColor={isDim}>{session.currentTask ?? session.currentSummary?.summary ?? ''}</Text>
+              <Text color={isDim ? 'gray' : color}>{pad(`${icon} ${session.status.toUpperCase()}`, 14)}</Text>
+              <Text dimColor={isDim}>{truncate(session.contextSummary ?? session.currentTask ?? '', maxTaskWidth)}</Text>
             </Box>
           </React.Fragment>
         );
@@ -92,4 +92,9 @@ export function Dashboard({ sessions, tmuxCount, onSelect, onSend, onPeek, onZoo
 
 function pad(str: string, len: number): string {
   return str.slice(0, len).padEnd(len);
+}
+
+function truncate(str: string, max: number): string {
+  if (str.length <= max) return str;
+  return str.slice(0, max - 1) + '…';
 }

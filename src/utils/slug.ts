@@ -7,3 +7,32 @@
 export function cwdToSlug(cwd: string): string {
   return cwd.replace(/\//g, '-');
 }
+
+/**
+ * Clean raw text from Claude Code JSONL for display.
+ * Strips XML tags, internal markup, control sequences, and normalizes whitespace.
+ */
+export function cleanDisplayText(raw: string): string {
+  let text = raw;
+  // Remove XML tags (task-notification, command-name, system-reminder, etc.)
+  text = text.replace(/<[^>]+>/g, '');
+  // Remove ANSI escape sequences
+  text = text.replace(/\x1b\[[0-9;]*m/g, '');
+  // Collapse whitespace / newlines into single space
+  text = text.replace(/\s+/g, ' ').trim();
+  return text;
+}
+
+/**
+ * Check if text is an internal/system message that shouldn't be shown as a task.
+ */
+export function isInternalMessage(text: string): boolean {
+  if (!text) return true;
+  const t = text.trim();
+  if (t.startsWith('<command-name>')) return true;
+  if (t.startsWith('<local-command')) return true;
+  if (t.startsWith('<task-notification>')) return true;
+  if (t.startsWith('<system-reminder>')) return true;
+  if (t.startsWith('/') && t.length < 20) return true;
+  return false;
+}

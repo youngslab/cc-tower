@@ -25,6 +25,7 @@
   "author": "jaeyoungs",
   "license": "MIT",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
     "commander": "^12.1.0",
     "execa": "^9.5.3",
     "ink": "^5.2.0",

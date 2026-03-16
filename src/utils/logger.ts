@@ -1,7 +1,12 @@
 const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 } as const;
 type Level = keyof typeof LEVELS;
 
+// TUI mode suppresses logs unless LOG_LEVEL is explicitly set
+let tui = false;
+export function setTuiMode(enabled: boolean): void { tui = enabled; }
+
 function getConfiguredLevel(): Level {
+  if (tui && !process.env['LOG_LEVEL']) return 'error';
   const raw = (process.env['LOG_LEVEL'] ?? 'info').toLowerCase();
   if (raw in LEVELS) return raw as Level;
   return 'info';

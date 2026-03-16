@@ -19,14 +19,19 @@ export function useTmux() {
     const panes = await tmux.listPanes();
     const targetPane = panes.find(p => p.paneId === session.paneId);
     if (!targetPane) return false;
-    await tmux.newGroupSession(sessionName, targetPane.sessionName);
-    await tmux.displayPopup({
-      width: '80%',
-      height: '80%',
-      title: ` ${session.label ?? session.projectName} (${session.paneId}) `,
-      command: `tmux attach -t ${sessionName} \\; select-window -t :${targetPane.windowIndex}`,
-    });
-    try { await tmux.killSession(sessionName); } catch {}
+    try {
+      await tmux.newGroupSession(sessionName, targetPane.sessionName);
+      await tmux.displayPopup({
+        width: '80%',
+        height: '80%',
+        title: ` ${session.label ?? session.projectName} (${session.paneId}) `,
+        command: `tmux attach -t ${sessionName} \\; select-window -t :${targetPane.windowIndex}`,
+      });
+    } catch {
+      // Peek may fail in non-standard terminal environments
+    } finally {
+      try { await tmux.killSession(sessionName); } catch {}
+    }
     return true;
   }, []);
 

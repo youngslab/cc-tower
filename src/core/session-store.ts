@@ -28,7 +28,9 @@ export interface Session {
   projectName: string;
   status: 'idle' | 'thinking' | 'executing' | 'agent' | 'dead';
   lastActivity: Date;
-  currentTask?: string;
+  contextSummary?: string;     // LLM-generated: 전체 맥락 한 줄 (Dashboard TASK)
+  currentActivity?: string;    // Tier1+2: 지금 하고 있는 일 (Detail View)
+  currentTask?: string;        // 마지막 user 메시지 (raw, fallback용)
   currentSummary?: TurnSummary;
   startedAt: Date;
   messageCount: number;

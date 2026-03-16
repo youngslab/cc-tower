@@ -9,6 +9,7 @@ import os from 'node:os';
 import { Tower } from './core/tower.js';
 import { App } from './ui/App.js';
 import { tmux } from './tmux/commands.js';
+import { setTuiMode } from './utils/logger.js';
 
 program
   .name('cc-tower')
@@ -18,10 +19,20 @@ program
 // Default: TUI dashboard
 program
   .action(async () => {
+    setTuiMode(true);
     const tower = new Tower();
     await tower.start();
+
+    // Enter alternate screen (like vim/htop)
+    process.stdout.write('\x1b[?1049h'); // enter alt screen
+    process.stdout.write('\x1b[H');      // move cursor to top-left
+
     const { waitUntilExit } = render(React.createElement(App, { tower }));
+
     await waitUntilExit();
+
+    // Leave alternate screen (restore original terminal content)
+    process.stdout.write('\x1b[?1049l');
   });
 
 // List sessions

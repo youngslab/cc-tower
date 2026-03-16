@@ -11,6 +11,10 @@ export interface ParsedMessage {
     cache_creation_input_tokens?: number;
     cache_read_input_tokens?: number;
   };
+  // For assistant messages (tool_use)
+  toolName?: string;
+  toolInput?: string;
+  assistantText?: string;
   // For user messages
   userContent?: string;
   // For progress messages
@@ -75,6 +79,35 @@ export function parseJsonlLine(line: string): ParsedMessage | null {
         result.stopReason = null;
       }
       if (typeof msg['model'] === 'string') result.model = msg['model'];
+      // Extract tool name and assistant text from content blocks
+      const content = msg['content'];
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block && typeof block === 'object') {
+            const b = block as Record<string, unknown>;
+            if (b['type'] === 'tool_use' && typeof b['name'] === 'string') {
+              result.toolName = b['name'];
+              // Extract file path or command from input if available
+              const input = b['input'];
+              if (input && typeof input === 'object') {
+                const inp = input as Record<string, unknown>;
+                if (typeof inp['file_path'] === 'string') {
+                  result.toolInput = (inp['file_path'] as string).split('/').pop();
+                } else if (typeof inp['command'] === 'string') {
+                  result.toolInput = (inp['command'] as string).slice(0, 40);
+                } else if (typeof inp['pattern'] === 'string') {
+                  result.toolInput = (inp['pattern'] as string).slice(0, 40);
+                }
+              }
+            }
+            if (b['type'] === 'text' && typeof b['text'] === 'string') {
+              if (!result.assistantText) {
+                result.assistantText = (b['text'] as string).slice(0, 120);
+              }
+            }
+          }
+        }
+      }
       const usage = msg['usage'];
       if (usage && typeof usage === 'object') {
         const u = usage as Record<string, unknown>;

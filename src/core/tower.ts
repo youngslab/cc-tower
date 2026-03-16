@@ -10,7 +10,8 @@ import { SessionStateMachine, InputEvent } from './state-machine.js';
 import { Summarizer } from './summarizer.js';
 import { Notifier } from './notifier.js';
 import { mapPidToPane } from '../tmux/pane-mapper.js';
-import { cwdToSlug } from '../utils/slug.js';
+import { cwdToSlug, cleanDisplayText, isInternalMessage } from '../utils/slug.js';
+import { generateContextSummary } from './llm-summarizer.js';
 import { logger } from '../utils/logger.js';
 import path from 'node:path';
 import os from 'node:os';
@@ -25,6 +26,8 @@ export class Tower extends EventEmitter {
   summarizer: Summarizer;
   notifier: Notifier;
   private stateMachines: Map<string, SessionStateMachine> = new Map();
+  private jsonlPaths: Map<string, string> = new Map(); // sessionId → jsonlPath
+  private summaryTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config?: Config) {
     super();
@@ -93,11 +96,63 @@ export class Tower extends EventEmitter {
     // 8. Start periodic discovery
     this.discovery.start();
 
+    // 9. Immediately trigger first summary update, then repeat every 3s
+    void this.updateSummaries();
+    this.summaryTimer = setInterval(() => {
+      void this.updateSummaries();
+    }, 3000);
+
     logger.info('tower: started successfully', { sessions: this.store.getAll().length });
+  }
+
+  private async updateSummaries(): Promise<void> {
+    for (const session of this.store.getAll()) {
+      if (session.status === 'dead') continue;
+      const jsonlPath = this.jsonlPaths.get(session.sessionId);
+      if (!jsonlPath) continue;
+      try {
+        // Update currentActivity from latest JSONL (Tier 1+2, instant)
+        const activity = await this.jsonlWatcher.readLatestActivity(jsonlPath);
+        if (activity && activity !== session.currentActivity) {
+          this.store.update(session.sessionId, { currentActivity: activity });
+        }
+        // Refresh context summary if missing (LLM, async)
+        if (!session.contextSummary) {
+          void this.refreshContextSummary(session.sessionId, jsonlPath);
+        }
+      } catch {
+        // Non-critical — skip silently
+      }
+    }
+  }
+
+  private async refreshContextSummary(sessionId: string, jsonlPath: string): Promise<void> {
+    try {
+      logger.debug('tower: refreshing context summary', { sessionId });
+      const recentMessages = await this.jsonlWatcher.readRecentUserMessages(jsonlPath, 5);
+      if (!recentMessages) {
+        logger.debug('tower: no recent messages found', { sessionId });
+        return;
+      }
+      logger.debug('tower: calling LLM for summary', { sessionId, msgLen: recentMessages.length });
+      const summary = await generateContextSummary(sessionId, recentMessages);
+      if (summary) {
+        logger.debug('tower: context summary received', { sessionId, summary });
+        this.store.update(sessionId, { contextSummary: summary });
+      } else {
+        logger.debug('tower: LLM returned no summary', { sessionId });
+      }
+    } catch (err) {
+      logger.debug('tower: context summary error', { sessionId, error: String(err) });
+    }
   }
 
   async stop(): Promise<void> {
     logger.info('tower: stopping');
+    if (this.summaryTimer) {
+      clearInterval(this.summaryTimer);
+      this.summaryTimer = null;
+    }
     this.discovery.stop();
     await this.hookReceiver.stop();
     this.jsonlWatcher.unwatchAll();
@@ -115,12 +170,11 @@ export class Tower extends EventEmitter {
     const slug = cwdToSlug(info.cwd);
     const jsonlPath = path.join(claudeDir, 'projects', slug, `${info.sessionId}.jsonl`);
 
-    // c. Cold start: determine current state from JSONL
+    // c. Cold start: determine current state + last task from JSONL
     const initialState = this.jsonlWatcher.coldStartScan(jsonlPath);
+    const lastTask = this.jsonlWatcher.coldStartLastTask(jsonlPath);
 
     // d. Determine detection mode
-    // For now: assume hook if hook receiver is listening, but will be confirmed
-    // when first hook event arrives. Default to jsonl.
     const detectionMode = 'jsonl' as const;
 
     // e. Register in store
@@ -135,6 +189,7 @@ export class Tower extends EventEmitter {
       projectName,
       status: initialState,
       lastActivity: new Date(),
+      currentTask: lastTask,
       startedAt: new Date(info.startedAt),
       messageCount: 0,
       toolCallCount: 0,
@@ -144,16 +199,29 @@ export class Tower extends EventEmitter {
     // f. Create state machine
     const fsm = new SessionStateMachine(info.sessionId, initialState);
     fsm.on('state-change', (change) => {
+      const currentSession = this.store.get(info.sessionId);
+      const summary = this.summarizer.summarize(
+        change.to,
+        { type: change.to === 'idle' ? 'assistant' : 'user', stopReason: change.to === 'idle' ? 'end_turn' : undefined },
+        [],
+      );
       this.store.update(info.sessionId, {
         status: change.to,
         lastActivity: new Date(),
+        currentSummary: {
+          ...summary,
+          summary: currentSession?.currentTask
+            ? `${change.to === 'idle' ? '✓ ' : ''}${currentSession.currentTask}`
+            : summary.summary,
+        },
       });
       this.emit('state-change', change);
       this.notifier.onStateChange(change);
     });
     this.stateMachines.set(info.sessionId, fsm);
 
-    // g. Start JSONL watcher (for all sessions — hooks supplement, JSONL is baseline)
+    // g. Track JSONL path + start watcher
+    this.jsonlPaths.set(info.sessionId, jsonlPath);
     this.jsonlWatcher.watch(info.sessionId, jsonlPath);
 
     // h. If no tmux, also start process monitor as extra signal
@@ -183,10 +251,14 @@ export class Tower extends EventEmitter {
 
     // Clean up watchers
     this.jsonlWatcher.unwatch(sessionId);
+    this.jsonlPaths.delete(sessionId);
     this.processMonitor.stopPolling(session.pid);
 
-    // Update store
-    this.store.update(sessionId, { status: 'dead' });
+    // Mark as dead, auto-remove after 30 seconds
+    this.store.update(sessionId, { status: 'dead', currentActivity: 'Session ended' });
+    setTimeout(() => {
+      this.store.unregister(sessionId);
+    }, 30000);
   }
 
   private handleHookEvent(event: any): void {
@@ -233,24 +305,46 @@ export class Tower extends EventEmitter {
     const fsm = this.stateMachines.get(sessionId);
     if (!fsm) return;
 
-    // Map JSONL parsed message to FSM input
+    // Map JSONL parsed message to FSM input + update live summary
     if (parsed.type === 'user') {
-      fsm.transition({ type: 'user-prompt' } as InputEvent);
-      this.store.update(sessionId, {
-        messageCount: session.messageCount + 1,
-        currentTask: parsed.userContent?.slice(0, 80),
-      });
-    } else if (parsed.type === 'assistant' && parsed.stopReason !== undefined) {
-      fsm.transition({ type: 'jsonl', stopReason: parsed.stopReason } as InputEvent);
-      if (parsed.stopReason === 'tool_use') {
-        this.store.update(sessionId, { toolCallCount: session.toolCallCount + 1 });
+      const rawText = parsed.userContent?.trim() ?? '';
+      if (!isInternalMessage(rawText)) {
+        fsm.transition({ type: 'user-prompt' } as InputEvent);
+        const cleaned = cleanDisplayText(rawText);
+        this.store.update(sessionId, {
+          messageCount: session.messageCount + 1,
+          currentTask: cleaned.slice(0, 80),
+          currentActivity: cleaned.slice(0, 60),
+        });
+        // Trigger async LLM context summary (non-blocking)
+        const jsonlPath = this.jsonlPaths.get(sessionId);
+        if (jsonlPath) {
+          void this.refreshContextSummary(sessionId, jsonlPath);
+        }
+      }
+    } else if (parsed.type === 'assistant') {
+      if (parsed.stopReason === 'tool_use' && parsed.toolName) {
+        fsm.transition({ type: 'jsonl', stopReason: 'tool_use' } as InputEvent);
+        const toolDesc = parsed.toolInput
+          ? `${parsed.toolName}: ${parsed.toolInput}`
+          : parsed.toolName;
+        this.store.update(sessionId, {
+          toolCallCount: session.toolCallCount + 1,
+          currentActivity: toolDesc,
+        });
+      } else if (parsed.stopReason === 'end_turn') {
+        fsm.transition({ type: 'jsonl', stopReason: 'end_turn' } as InputEvent);
+        const summary = parsed.assistantText
+          ? `✓ ${cleanDisplayText(parsed.assistantText).split('.')[0]?.slice(0, 60) ?? 'Done'}`
+          : '✓ Done';
+        this.store.update(sessionId, { currentActivity: summary });
+      } else if (parsed.stopReason === null) {
+        fsm.transition({ type: 'jsonl', stopReason: null } as InputEvent);
       }
     } else if (parsed.type === 'progress' && parsed.progressType === 'agent_progress') {
       fsm.transition({ type: 'agent-start' } as InputEvent);
+      this.store.update(sessionId, { currentTask: 'Subagent running...' });
     }
-
-    // Generate turn summary on state change
-    // (summarizer integration happens via state-change event)
   }
 
   private mapHookToInput(event: any): InputEvent | null {

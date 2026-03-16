@@ -44,17 +44,24 @@ export function DetailView({ session, onBack, onSend, onPeek, onZoom }: Props) {
         <Text>Messages: {session.messageCount}  │  Tools: {session.toolCallCount}  │  Cost: ~${(session.estimatedCost ?? 0).toFixed(2)}</Text>
       </Box>
 
-      {session.currentTask && (
+      {session.contextSummary && (
         <Box marginTop={1} paddingX={2} flexDirection="column">
-          <Text bold dimColor>── Current Task ──</Text>
-          <Text>{session.currentTask}</Text>
+          <Text bold dimColor>── Context ──</Text>
+          <Text color="cyan">{session.contextSummary}</Text>
         </Box>
       )}
 
-      {session.currentSummary && (
+      {session.currentActivity && (
         <Box marginTop={1} paddingX={2} flexDirection="column">
-          <Text bold dimColor>── Last Summary ──</Text>
-          <Text>{session.currentSummary.summary}</Text>
+          <Text bold dimColor>── Current Activity ──</Text>
+          <Text>{session.currentActivity}</Text>
+        </Box>
+      )}
+
+      {session.currentTask && (
+        <Box marginTop={1} paddingX={2} flexDirection="column">
+          <Text bold dimColor>── Last Request ──</Text>
+          <Text dimColor>{session.currentTask}</Text>
         </Box>
       )}
 

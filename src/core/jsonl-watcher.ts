@@ -1,6 +1,8 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { parseJsonlLine, ParsedMessage } from '../utils/jsonl-parser.js';
+import { cleanDisplayText, isInternalMessage } from '../utils/slug.js';
 
 type SessionState = 'idle' | 'thinking' | 'executing';
 
@@ -29,7 +31,11 @@ export class JsonlWatcher extends EventEmitter {
     const lines = content.split('\n').filter(l => l.trim());
     if (lines.length === 0) return 'idle';
 
-    // Walk backwards to find last state-determining message
+    // Walk backwards to find last state-determining message.
+    // Priority: find the last `assistant` message with a definitive stop_reason.
+    // `user` messages alone are unreliable — internal commands (/cost, /status)
+    // create user entries without triggering a real turn.
+    let sawUser = false;
     for (let i = lines.length - 1; i >= 0; i--) {
       const parsed = parseJsonlLine(lines[i]);
       if (!parsed) continue;
@@ -37,16 +43,46 @@ export class JsonlWatcher extends EventEmitter {
       if (parsed.type === 'assistant') {
         if (parsed.stopReason === 'end_turn') return 'idle';
         if (parsed.stopReason === 'tool_use') return 'executing';
-        // assistant with no stop_reason (streaming) → thinking
-        return 'thinking';
+        if (parsed.stopReason === null) return 'thinking'; // streaming
+        // stop_reason undefined — keep looking
+        continue;
       }
 
       if (parsed.type === 'user') {
-        return 'thinking';
+        sawUser = true;
+        // Don't return thinking yet — keep looking for the preceding assistant
+        continue;
       }
     }
 
-    return 'idle';
+    // If we only found user messages with no assistant, likely thinking
+    // But if no messages at all, idle
+    return sawUser ? 'thinking' : 'idle';
+  }
+
+  /**
+   * Extract the last user message content from a JSONL file (for cold start currentTask).
+   */
+  coldStartLastTask(jsonlPath: string): string | undefined {
+    let content: string;
+    try {
+      content = fs.readFileSync(jsonlPath, 'utf8');
+    } catch {
+      return undefined;
+    }
+
+    const lines = content.split('\n').filter(l => l.trim());
+    // Walk backwards to find last real user message (skip internal commands)
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const parsed = parseJsonlLine(lines[i]!);
+      if (!parsed) continue;
+      if (parsed.type === 'user' && parsed.userContent) {
+        const text = parsed.userContent.trim();
+        if (isInternalMessage(text)) continue;
+        return cleanDisplayText(text).slice(0, 80);
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -57,6 +93,9 @@ export class JsonlWatcher extends EventEmitter {
     if (this.watchers.has(sessionId)) {
       this.unwatch(sessionId);
     }
+
+    // Skip if file doesn't exist
+    if (!fs.existsSync(jsonlPath)) return;
 
     // Start offset at end of current file
     let offset = 0;
@@ -151,6 +190,88 @@ export class JsonlWatcher extends EventEmitter {
       entry.fsWatcher.close();
       clearInterval(entry.reconcileTimer);
       this.watchers.delete(sessionId);
+    }
+  }
+
+  /**
+   * Async background summary: read last N bytes of JSONL and extract latest activity.
+   * Non-blocking — designed to be called on an interval without blocking UI.
+   */
+  async readLatestActivity(jsonlPath: string): Promise<string | undefined> {
+    try {
+      const stat = fs.statSync(jsonlPath);
+      const readSize = Math.min(stat.size, 16384); // last 16KB
+      const buf = Buffer.alloc(readSize);
+      const fd = fs.openSync(jsonlPath, 'r');
+      fs.readSync(fd, buf, 0, readSize, stat.size - readSize);
+      fs.closeSync(fd);
+
+      const chunk = buf.toString('utf8');
+      const lines = chunk.split('\n').filter(l => l.trim());
+
+      // Walk backwards for latest meaningful message
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const parsed = parseJsonlLine(lines[i]!);
+        if (!parsed) continue;
+
+        if (parsed.type === 'assistant') {
+          if (parsed.stopReason === 'tool_use' && parsed.toolName) {
+            const desc = parsed.toolInput
+              ? `${parsed.toolName}: ${parsed.toolInput}`
+              : parsed.toolName;
+            return desc;
+          }
+          if (parsed.stopReason === 'end_turn' && parsed.assistantText) {
+            const text = cleanDisplayText(parsed.assistantText);
+            return `✓ ${text.split('.')[0]?.slice(0, 60) ?? 'Done'}`;
+          }
+          if (parsed.stopReason === null && parsed.assistantText) {
+            return cleanDisplayText(parsed.assistantText).slice(0, 60);
+          }
+        }
+
+        if (parsed.type === 'user' && parsed.userContent) {
+          const raw = parsed.userContent.trim();
+          if (isInternalMessage(raw)) continue;
+          return cleanDisplayText(raw).slice(0, 60);
+        }
+      }
+    } catch {
+      // File missing or unreadable — skip silently
+    }
+    return undefined;
+  }
+
+  /**
+   * Read recent user messages from JSONL for LLM context summary.
+   * Returns concatenated user messages (last N), cleaned.
+   */
+  async readRecentUserMessages(jsonlPath: string, count: number): Promise<string | undefined> {
+    try {
+      const stat = fs.statSync(jsonlPath);
+      const readSize = Math.min(stat.size, 65536); // last 64KB
+      const buf = Buffer.alloc(readSize);
+      const fd = fs.openSync(jsonlPath, 'r');
+      fs.readSync(fd, buf, 0, readSize, stat.size - readSize);
+      fs.closeSync(fd);
+
+      const chunk = buf.toString('utf8');
+      const lines = chunk.split('\n').filter(l => l.trim());
+
+      const userMessages: string[] = [];
+      for (let i = lines.length - 1; i >= 0 && userMessages.length < count; i--) {
+        const parsed = parseJsonlLine(lines[i]!);
+        if (!parsed) continue;
+        if (parsed.type === 'user' && parsed.userContent) {
+          const text = parsed.userContent.trim();
+          if (isInternalMessage(text)) continue;
+          userMessages.unshift(cleanDisplayText(text));
+        }
+      }
+
+      return userMessages.length > 0 ? userMessages.join('\n') : undefined;
+    } catch {
+      return undefined;
     }
   }
 
