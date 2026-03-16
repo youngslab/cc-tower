@@ -84,6 +84,14 @@ export class DiscoveryEngine extends EventEmitter {
         this.known.set(info.pid, info);
         this.emit('session-found', info);
         logger.debug('discovery: session-found', { pid: info.pid, sessionId: info.sessionId });
+      } else {
+        // Detect sessionId change (e.g., /resume, /clear)
+        const prev = this.known.get(info.pid)!;
+        if (prev.sessionId !== info.sessionId) {
+          logger.debug('discovery: session-changed', { pid: info.pid, old: prev.sessionId, new: info.sessionId });
+          this.known.set(info.pid, info);
+          this.emit('session-changed', { prev, next: info });
+        }
       }
 
       active.push(info);

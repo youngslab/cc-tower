@@ -11,8 +11,9 @@ import { Summarizer } from './summarizer.js';
 import { Notifier } from './notifier.js';
 import { mapPidToPane } from '../tmux/pane-mapper.js';
 import { cwdToSlug, cleanDisplayText, isInternalMessage } from '../utils/slug.js';
-import { generateContextSummary } from './llm-summarizer.js';
+import { generateContextSummary, startLlmSession, stopLlmSession, getLlmSessionName } from './llm-summarizer.js';
 import { logger } from '../utils/logger.js';
+import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -93,6 +94,13 @@ export class Tower extends EventEmitter {
       this.deregisterSession(info.sessionId);
     });
 
+    this.discovery.on('session-changed', async ({ prev, next }: { prev: SessionInfo; next: SessionInfo }) => {
+      logger.info('tower: session changed (resume/clear)', { pid: next.pid, old: prev.sessionId, new: next.sessionId });
+      // Deregister old session, re-register with new sessionId/JSONL
+      this.deregisterSession(prev.sessionId);
+      await this.registerSession(next);
+    });
+
     // 8. Start periodic discovery
     this.discovery.start();
 
@@ -102,27 +110,41 @@ export class Tower extends EventEmitter {
       void this.updateSummaries();
     }, 3000);
 
+    // 10. Start hidden LLM session (non-blocking, boots in background)
+    void startLlmSession();
+
     logger.info('tower: started successfully', { sessions: this.store.getAll().length });
   }
 
+  private summaryRunning = false;
+
   private async updateSummaries(): Promise<void> {
+    // Update currentActivity for all sessions (instant, Tier 1+2)
     for (const session of this.store.getAll()) {
       if (session.status === 'dead') continue;
       const jsonlPath = this.jsonlPaths.get(session.sessionId);
       if (!jsonlPath) continue;
       try {
-        // Update currentActivity from latest JSONL (Tier 1+2, instant)
         const activity = await this.jsonlWatcher.readLatestActivity(jsonlPath);
         if (activity && activity !== session.currentActivity) {
           this.store.update(session.sessionId, { currentActivity: activity });
         }
-        // Refresh context summary if missing (LLM, async)
-        if (!session.contextSummary) {
-          void this.refreshContextSummary(session.sessionId, jsonlPath);
-        }
-      } catch {
-        // Non-critical — skip silently
+      } catch {}
+    }
+
+    // LLM context summaries: one at a time, sequentially (hidden Claude handles one query at a time)
+    if (this.summaryRunning) return;
+    this.summaryRunning = true;
+    try {
+      for (const session of this.store.getAll()) {
+        if (session.status === 'dead') continue;
+        if (session.contextSummary) continue; // already has summary
+        const jsonlPath = this.jsonlPaths.get(session.sessionId);
+        if (!jsonlPath) continue;
+        await this.refreshContextSummary(session.sessionId, jsonlPath);
       }
+    } finally {
+      this.summaryRunning = false;
     }
   }
 
@@ -157,18 +179,38 @@ export class Tower extends EventEmitter {
     await this.hookReceiver.stop();
     this.jsonlWatcher.unwatchAll();
     this.processMonitor.stopAll();
+    await stopLlmSession();
     this.store.persist();
     logger.info('tower: stopped');
   }
 
   private async registerSession(info: SessionInfo): Promise<void> {
+    // Skip the hidden LLM session
+    if (info.cwd === '/tmp/cc-tower-llm') return;
+
     // a. Resolve tmux pane
     const mapping = await mapPidToPane(info.pid);
 
-    // b. Compute JSONL path
+    // b. Compute JSONL path (with fallback to latest file if sessionId doesn't match)
     const claudeDir = this.config.discovery.claude_dir.replace('~', os.homedir());
     const slug = cwdToSlug(info.cwd);
-    const jsonlPath = path.join(claudeDir, 'projects', slug, `${info.sessionId}.jsonl`);
+    const projectDir = path.join(claudeDir, 'projects', slug);
+    let jsonlPath = path.join(projectDir, `${info.sessionId}.jsonl`);
+
+    // Fallback: if exact JSONL doesn't exist, use most recently modified one
+    // (handles --continue/--resume where sessionId differs from JSONL filename)
+    if (!fs.existsSync(jsonlPath)) {
+      try {
+        const files = fs.readdirSync(projectDir)
+          .filter(f => f.endsWith('.jsonl'))
+          .map(f => ({ name: f, mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
+          .sort((a, b) => b.mtime - a.mtime);
+        if (files.length > 0) {
+          jsonlPath = path.join(projectDir, files[0]!.name);
+          logger.debug('tower: using fallback JSONL', { sessionId: info.sessionId, fallback: files[0]!.name });
+        }
+      } catch {}
+    }
 
     // c. Cold start: determine current state + last task from JSONL
     const initialState = this.jsonlWatcher.coldStartScan(jsonlPath);

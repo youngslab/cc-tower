@@ -72,7 +72,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
               <Text dimColor={isDim}>{pad(session.paneId ?? '—', 7)}</Text>
               <Text dimColor={isDim}>{pad(session.label ?? session.projectName, 18)}</Text>
               <Text color={isDim ? 'gray' : color}>{pad(`${icon} ${session.status.toUpperCase()}`, 14)}</Text>
-              <Text dimColor={isDim}>{truncate(session.contextSummary ?? session.currentTask ?? '', maxTaskWidth)}</Text>
+              <Text dimColor={isDim}>{truncate(session.contextSummary ?? session.currentActivity ?? session.currentTask ?? '(no data)', maxTaskWidth)}</Text>
             </Box>
           </React.Fragment>
         );

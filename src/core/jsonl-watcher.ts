@@ -200,7 +200,7 @@ export class JsonlWatcher extends EventEmitter {
   async readLatestActivity(jsonlPath: string): Promise<string | undefined> {
     try {
       const stat = fs.statSync(jsonlPath);
-      const readSize = Math.min(stat.size, 16384); // last 16KB
+      const readSize = Math.min(stat.size, 262144); // last 256KB
       const buf = Buffer.alloc(readSize);
       const fd = fs.openSync(jsonlPath, 'r');
       fs.readSync(fd, buf, 0, readSize, stat.size - readSize);
@@ -249,7 +249,7 @@ export class JsonlWatcher extends EventEmitter {
   async readRecentUserMessages(jsonlPath: string, count: number): Promise<string | undefined> {
     try {
       const stat = fs.statSync(jsonlPath);
-      const readSize = Math.min(stat.size, 65536); // last 64KB
+      const readSize = Math.min(stat.size, 262144); // last 256KB
       const buf = Buffer.alloc(readSize);
       const fd = fs.openSync(jsonlPath, 'r');
       fs.readSync(fd, buf, 0, readSize, stat.size - readSize);
