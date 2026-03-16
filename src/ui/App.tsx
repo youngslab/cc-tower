@@ -17,7 +17,7 @@ interface Props {
 export function App({ tower }: Props) {
   const { exit } = useApp();
   const { sessions, tmuxCount } = useSessionStore(tower.store);
-  const { send, peek, zoom } = useTmux();
+  const { send, peek } = useTmux();
   const [view, setView] = useState<View>('dashboard');
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
 
@@ -35,11 +35,6 @@ export function App({ tower }: Props) {
     if (!session.hasTmux) return;
     await peek(session);
   }, [peek]);
-
-  const handleZoom = useCallback(async (session: Session) => {
-    if (!session.hasTmux) return;
-    await zoom(session);
-  }, [zoom]);
 
   const handleSendText = useCallback(async (text: string) => {
     if (selectedSession) {
@@ -117,7 +112,6 @@ export function App({ tower }: Props) {
             onSelect={handleSelect}
             onSend={handleSend}
             onPeek={handlePeek}
-            onZoom={handleZoom}
             onQuit={handleQuit}
           />
         )}
@@ -128,7 +122,6 @@ export function App({ tower }: Props) {
             onBack={handleBack}
             onSend={handleSend}
             onPeek={handlePeek}
-            onZoom={handleZoom}
           />
         )}
 

@@ -132,33 +132,6 @@ program
     await tower.stop();
   });
 
-// Zoom
-program
-  .command('zoom <session>')
-  .action(async (sessionArg: string) => {
-    const tower = new Tower();
-    await tower.start();
-    const sessions = tower.store.getAll();
-    const s = sessions.find(s => s.sessionId.startsWith(sessionArg) || s.label === sessionArg || s.paneId === sessionArg);
-    if (!s || !s.paneId) {
-      console.log(s ? 'Session has no tmux pane' : `Session not found: ${sessionArg}`);
-    } else {
-      const current = await tmux.getCurrentPane();
-      if (current) {
-        const returnCmd = `resize-pane -Z \\; select-window -t @${current.windowId} \\; select-pane -t ${current.paneId}`;
-        await tmux.bindKey('F12', returnCmd);
-      }
-      const panes = await tmux.listPanes();
-      const targetPane = panes.find(p => p.paneId === s.paneId);
-      if (targetPane && current && targetPane.windowId !== current.windowId) {
-        await tmux.selectWindow(`@${targetPane.windowId}`);
-      }
-      await tmux.selectPane(s.paneId);
-      await tmux.toggleZoom(s.paneId);
-    }
-    await tower.stop();
-  });
-
 // Watch pane manually
 program
   .command('watch <paneId>')

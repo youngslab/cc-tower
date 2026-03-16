@@ -9,7 +9,6 @@ export class Notifier extends EventEmitter {
   private lastNotification: Map<string, number> = new Map(); // sessionId → timestamp
   private focused: boolean = true;
   private peekingSession: string | null = null;
-  private zoomingSession: string | null = null;
 
   constructor(
     private config: Config['notifications'],
@@ -26,9 +25,7 @@ export class Notifier extends EventEmitter {
     this.peekingSession = sessionId;
   }
 
-  setZooming(sessionId: string | null): void {
-    this.zoomingSession = sessionId;
-  }
+
 
   onStateChange(change: StateChange): void {
     if (!this.config.enabled) return;
@@ -62,7 +59,6 @@ export class Notifier extends EventEmitter {
 
     // 3. Session not currently being peeked/zoomed
     if (this.peekingSession === session.sessionId) return false;
-    if (this.zoomingSession === session.sessionId) return false;
 
     // 4. Cooldown
     const lastTime = this.lastNotification.get(session.sessionId) ?? 0;

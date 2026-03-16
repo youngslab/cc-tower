@@ -10,7 +10,6 @@ interface Props {
   onSelect: (session: Session) => void;
   onSend: (session: Session) => void;
   onPeek: (session: Session) => void;
-  onZoom: (session: Session) => void;
   onQuit: () => void;
 }
 
@@ -22,7 +21,7 @@ const STATUS_ICONS: Record<string, { icon: string; color: string }> = {
   dead: { icon: '✕', color: 'red' },
 };
 
-export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend, onPeek, onZoom, onQuit }: Props) {
+export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend, onPeek, onQuit }: Props) {
   const [cursor, setCursor] = useState(0);
 
   useInput((input, key) => {
@@ -31,7 +30,6 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
     if (key.return && sessions[cursor]) onSelect(sessions[cursor]!);
     if (input === '/' && sessions[cursor]) onSend(sessions[cursor]!);
     if (input === 'p' && sessions[cursor]) onPeek(sessions[cursor]!);
-    if (input === 'z' && sessions[cursor]) onZoom(sessions[cursor]!);
     if (input === 'q') onQuit();
   });
 
@@ -84,7 +82,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
 
       {/* Footer */}
       <Box marginTop={1}>
-        <Text dimColor>[Enter] Detail  [z] Zoom  [p] Peek  [/] Send  [q] Quit</Text>
+        <Text dimColor>[Enter] Detail  [p] Peek  [/] Send  [q] Quit</Text>
       </Box>
     </Box>
   );

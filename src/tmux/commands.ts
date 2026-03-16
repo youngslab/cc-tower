@@ -104,31 +104,6 @@ export const tmux = {
     }
   },
 
-  // tmux resize-pane -Z is a toggle (zoom/unzoom)
-  async toggleZoom(paneId: string): Promise<void> {
-    try {
-      await execa('tmux', ['resize-pane', '-Z', '-t', paneId]);
-    } catch (err) {
-      throw new Error(`tmux resize-pane ${paneId} failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  },
-
-  async bindKey(key: string, command: string): Promise<void> {
-    try {
-      await execa('tmux', ['bind-key', key, command]);
-    } catch (err) {
-      throw new Error(`tmux bind-key ${key} failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  },
-
-  async unbindKey(key: string): Promise<void> {
-    try {
-      await execa('tmux', ['unbind-key', key]);
-    } catch (err) {
-      throw new Error(`tmux unbind-key ${key} failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  },
-
   async newGroupSession(name: string, targetSession: string): Promise<void> {
     try {
       await execa('tmux', ['new-session', '-d', '-s', name, '-t', targetSession]);

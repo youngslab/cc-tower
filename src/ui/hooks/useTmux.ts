@@ -35,29 +35,5 @@ export function useTmux() {
     return true;
   }, []);
 
-  const zoom = useCallback(async (session: Session) => {
-    if (!session.paneId) return false;
-    const current = await tmux.getCurrentPane();
-    if (!current) return false;
-
-    // Get target pane info
-    const panes = await tmux.listPanes();
-    const targetPane = panes.find(p => p.paneId === session.paneId);
-    if (!targetPane) return false;
-
-    // Register F12 return keybinding
-    const returnCmd = `resize-pane -Z \\; select-window -t @${current.windowId} \\; select-pane -t ${current.paneId}`;
-    await tmux.bindKey('F12', returnCmd);
-
-    // Navigate to target and zoom
-    if (targetPane.windowId !== current.windowId) {
-      await tmux.selectWindow(`@${targetPane.windowId}`);
-    }
-    await tmux.selectPane(session.paneId);
-    await tmux.toggleZoom(session.paneId);
-
-    return true;
-  }, []);
-
-  return { send, peek, zoom };
+  return { send, peek };
 }
