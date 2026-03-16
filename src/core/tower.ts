@@ -198,7 +198,7 @@ export class Tower extends EventEmitter {
     this.discovery.stop();
     this.jsonlWatcher.unwatchAll();
     this.processMonitor.stopAll();
-    this.store.persist();
+    this.store.persistSync();
     // Fire-and-forget: don't await these to avoid slow shutdown
     this.hookReceiver.stop().catch(() => {});
     stopLlmSession().catch(() => {});

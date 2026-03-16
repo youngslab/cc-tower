@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { writeFile, mkdir } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { logger } from '../utils/logger.js';
 import { cwdToSlug } from '../utils/slug.js';
@@ -54,6 +54,7 @@ interface PersistFormat {
 export class SessionStore extends EventEmitter {
   private sessions: Map<string, Session> = new Map();
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
+  private persistedMeta: Map<string, PersistedEntry> = new Map(); // pre-loaded from state.json
 
   constructor(private persistPath: string) {
     super();
@@ -75,9 +76,15 @@ export class SessionStore extends EventEmitter {
   }
 
   register(session: Session): void {
-    // Derive projectName from cwd if not already set
     if (!session.projectName) {
       session.projectName = cwdToSlug(session.cwd);
+    }
+    // Merge persisted metadata (label, tags, contextSummary) from previous run
+    const meta = this.persistedMeta.get(session.sessionId);
+    if (meta) {
+      if (meta.label !== undefined && !session.label) session.label = meta.label;
+      if (meta.tags !== undefined && !session.tags) session.tags = meta.tags;
+      if (meta.contextSummary !== undefined && !session.contextSummary) session.contextSummary = meta.contextSummary;
     }
     this.sessions.set(session.sessionId, session);
     this.emit('session-added', session);
@@ -118,6 +125,26 @@ export class SessionStore extends EventEmitter {
     }, 2000);
   }
 
+  /** Synchronous persist — use at shutdown before process.exit() */
+  persistSync(): void {
+    if (this.persistTimer !== null) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
+    const data: PersistFormat = { sessions: {} };
+    for (const [id, session] of this.sessions) {
+      const entry: PersistedEntry = {};
+      if (session.label !== undefined) entry.label = session.label;
+      if (session.tags !== undefined) entry.tags = session.tags;
+      if (session.contextSummary !== undefined) entry.contextSummary = session.contextSummary;
+      if (Object.keys(entry).length > 0) data.sessions[id] = entry;
+    }
+    try {
+      mkdirSync(dirname(this.persistPath), { recursive: true });
+      writeFileSync(this.persistPath, JSON.stringify(data, null, 2));
+    } catch {}
+  }
+
   private async _writePersist(): Promise<void> {
     const data: PersistFormat = { sessions: {} };
     for (const [id, session] of this.sessions) {
@@ -148,6 +175,9 @@ export class SessionStore extends EventEmitter {
         return;
       }
       for (const [sessionId, entry] of Object.entries(data.sessions)) {
+        // Store for later merge when sessions are registered
+        this.persistedMeta.set(sessionId, entry);
+        // Also apply to already-registered sessions
         const session = this.sessions.get(sessionId);
         if (session) {
           if (entry.label !== undefined) session.label = entry.label;
