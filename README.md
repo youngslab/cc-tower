@@ -41,7 +41,7 @@ Optional but recommended:
 ## Installation
 
 ```bash
-npm install -g git+https://github.com/youngslab/cc-tower.git
+npm install -g https://github.com/youngslab/cc-tower/releases/download/v1.5.0/cc-tower-1.0.0.tgz
 ```
 
 > If you get a permission error, either use [nvm](https://github.com/nvm-sh/nvm)/[fnm](https://github.com/Schniz/fnm) (recommended)
