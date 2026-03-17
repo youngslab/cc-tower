@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync, statSync, renameSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -14,11 +14,30 @@ const LOG_DIR = join(homedir(), '.local', 'share', 'cc-tower');
 const LOG_FILE = join(LOG_DIR, 'cc-tower.log');
 let logFileReady = false;
 
+const MAX_LOG_SIZE = 5 * 1024 * 1024; // 5MB
+const MAX_OLD_LOGS = 3; // keep cc-tower.log.1, .2, .3
+
 function ensureLogDir(): void {
   if (logFileReady) return;
   try {
     mkdirSync(LOG_DIR, { recursive: true });
+    rotateIfNeeded();
     logFileReady = true;
+  } catch {}
+}
+
+function rotateIfNeeded(): void {
+  try {
+    const stat = statSync(LOG_FILE);
+    if (stat.size < MAX_LOG_SIZE) return;
+
+    // Remove oldest
+    try { unlinkSync(`${LOG_FILE}.${MAX_OLD_LOGS}`); } catch {}
+    // Shift: .2→.3, .1→.2, current→.1
+    for (let i = MAX_OLD_LOGS - 1; i >= 1; i--) {
+      try { renameSync(`${LOG_FILE}.${i}`, `${LOG_FILE}.${i + 1}`); } catch {}
+    }
+    try { renameSync(LOG_FILE, `${LOG_FILE}.1`); } catch {}
   } catch {}
 }
 
