@@ -147,6 +147,9 @@ export class DiscoveryEngine extends EventEmitter {
         } catch { continue; }
         if (!cwd) continue;
 
+        // Skip temporary/ephemeral claude processes (e.g., claude --print from /tmp)
+        if (cwd === '/tmp' || cwd.startsWith('/tmp/')) continue;
+
         // Only include if we have a matching project directory in claude_dir
         const slug = cwdToSlug(cwd);
         const projectDir = join(this.config.claude_dir, 'projects', slug);

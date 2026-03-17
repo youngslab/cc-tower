@@ -18,6 +18,10 @@ export function cleanDisplayText(raw: string): string {
   text = text.replace(/<[^>]+>/g, '');
   // Remove ANSI escape sequences
   text = text.replace(/\x1b\[[0-9;]*m/g, '');
+  // Remove markdown formatting (bold, italic, headers, links)
+  text = text.replace(/\*{1,2}([^*]+)\*{1,2}/g, '$1');
+  text = text.replace(/#{1,6}\s*/g, '');
+  text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
   // Collapse whitespace / newlines into single space
   text = text.replace(/\s+/g, ' ').trim();
   return text;

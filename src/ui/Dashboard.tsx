@@ -87,7 +87,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
             )}
             <Box>
               <Text>{isCursor ? '▸' : ' '}</Text>
-              <Text dimColor>{`${i + 1} `}</Text>
+              <Text dimColor>{pad(`${i + 1}`, 3)}</Text>
               <Text dimColor={isDim}>{pad(session.paneId ?? '—', 7)}</Text>
               <Text dimColor={isDim}>{pad(session.host, 9)}</Text>
               <Text dimColor={isDim}>{pad(session.label ?? session.projectName, 18)}</Text>
