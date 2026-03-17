@@ -13,7 +13,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "build": "tsc"
+    "build": "tsc",
+    "prepare": "tsc"
   },
   "keywords": [
     "claude",
@@ -31,14 +32,14 @@
     "ink": "^5.2.0",
     "js-yaml": "^4.1.0",
     "node-notifier": "^10.0.1",
-    "react": "^18.3.1",
-    "tsx": "^4.21.0"
+    "react": "^18.3.1"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.5.0",
     "@types/node-notifier": "^8.0.5",
     "@types/react": "^19.2.14",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.0"
   }
