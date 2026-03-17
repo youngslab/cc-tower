@@ -16,6 +16,7 @@
 | 0.1.0 | 2026-03-15 | Initial draft |
 | 0.1.1 | 2026-03-15 | 리뷰 반영: Hook 포맷 검증, JSONL 필드 경로 수정, ppid 체인 워킹, 3-tier 키바인딩 분리, 스마트 알림, no-daemon 설계, session group Peek, 성공 지표, 테스트 전략 |
 | 0.1.2 | 2026-03-16 | 구현 반영: Zoom 제거 → 2-Tier 상호작용(Send/Peek), LLM 요약 방식 변경(parallel claude --print), JSONL 경로 fallback, 세션 라이프사이클 개선(session-changed 이벤트, dead 세션 처리), TUI 개선(alt screen, SIGWINCH, cleanDisplayText), Hook sender shell script(socat/nc fallback), persistSync 종료 처리 |
+| 0.1.3 | 2026-03-17 | Phase 2 재설계: WebSocket 서버 제거 → SSH 기반 원격 세션 지원(Phase 1.5)으로 대체. SSH socket forwarding(hooks: true) + JSONL polling(hooks: false) 2-mode 설계. Remote Peek/Send/Hook install. HOST 컬럼 추가. 기존 WebSocket 서버 아키텍처는 Phase 2(Web UI/팀 협업)로 이동. |
 
 ---
 
@@ -36,10 +37,11 @@
 8. [CLI Interface](#8-cli-interface)
 9. [Configuration](#9-configuration)
 10. [Key Interactions & Edge Cases](#10-key-interactions--edge-cases)
-11. [Phase 2 Considerations](#11-phase-2-considerations)
-12. [Milestones & Deliverables](#12-milestones--deliverables)
-13. [Open Questions](#13-open-questions)
-14. [Appendices](#appendix-a-competitive-analysis)
+11. [Phase 1.5 — SSH Remote Support](#11-phase-15--ssh-remote-support)
+12. [Phase 2 Considerations](#12-phase-2-considerations-web-ui--team-features)
+13. [Milestones & Deliverables](#13-milestones--deliverables)
+14. [Open Questions](#14-open-questions)
+15. [Appendices](#appendix-a-competitive-analysis)
 
 ---
 
@@ -90,11 +92,11 @@ tmux pane 정보 + Claude Code 내부 상태 파일을 결합하여:
 
 | Phase | Scope | Target |
 |-------|-------|--------|
-| **Phase 1** (MVP) | Local 단일 머신, tmux + Claude Code | 4주 |
-| **Phase 2** | Multi-client 서버 모드 (SSH/WebSocket) | Phase 1 이후 |
-| **Phase 3** | Web UI, 팀 협업 기능 | Phase 2 이후 |
+| **Phase 1** | Local MVP — 단일 머신, tmux + Claude Code | ✓ Complete |
+| **Phase 1.5** | SSH Remote Support — 원격 서버 세션 통합 | Next |
+| **Phase 2** | Web UI + Team features — 팀 협업, 브라우저 대시보드 | Future |
 
-이 PRD는 **Phase 1 (Local MVP)** 에 집중하되, Phase 2/3 확장을 위한 아키텍처 설계를 포함한다.
+이 PRD는 **Phase 1 (Local MVP)** 에 집중하되, Phase 1.5 SSH 원격 지원 및 Phase 2 확장을 위한 아키텍처 설계를 포함한다.
 
 ---
 
@@ -1419,11 +1421,128 @@ cc-tower 재시작 시:
 
 ---
 
-## 11. Phase 2 Considerations (Server Mode)
+## 11. Phase 1.5 — SSH Remote Support
 
-Phase 1 설계 시 Phase 2를 위해 미리 고려할 사항:
+WebSocket 서버나 agent daemon 없이, SSH만으로 원격 서버의 Claude Code 세션을 로컬 대시보드에 통합한다.
 
-### 11.1 Agent-Server Protocol
+### 11.1 설계 원칙
+
+- **No WebSocket server, No agent daemon** — SSH만 사용
+- 원격 세션이 로컬 세션과 **동일한 대시보드**에 표시
+- Peek: `display-popup → ssh -t "tmux attach"`
+- Send: `ssh <host> "tmux send-keys"`
+- 호스트별 두 가지 모드: hooks(SSH socket forwarding) 또는 JSONL polling
+
+### 11.2 설정 (Config)
+
+```yaml
+# ~/.config/cc-tower/config.yaml
+hosts:
+  - name: server-a
+    ssh: user@192.168.1.10
+    hooks: true          # SSH socket forwarding → 실시간 이벤트
+  - name: server-b
+    ssh: user@dev-server
+    hooks: false         # JSONL polling fallback
+```
+
+### 11.3 원격 세션 탐지 (Remote Session Discovery)
+
+- `ssh <host> "cat ~/.claude/sessions/*.json"` — 5초마다 폴링
+- PID → TTY → pane 매핑은 로컬과 동일하지만 `ssh <host> "tmux list-panes -a"` 경유
+- 세션에 host 이름 태그 부여 → 대시보드에 HOST 컬럼으로 표시
+
+### 11.4 원격 상태 추적 — 두 가지 모드
+
+#### Mode A: SSH Socket Forwarding (hooks: true)
+
+- cc-tower 시작 시: `ssh -fN -R ${XDG_RUNTIME_DIR:-/tmp}/cc-tower.sock:${XDG_RUNTIME_DIR:-/tmp}/cc-tower.sock <host>`
+- 원격 Claude hook이 동일한 소켓 경로로 전송 → 이벤트가 로컬 cc-tower로 터널링
+- 원격 서버에 hook 플러그인 설치 필요: `cc-tower install-hooks --remote <host>`
+- 레이턴시: ~5ms + 네트워크 (~50ms)
+- 로컬 경험과 동일
+
+#### Mode B: JSONL Polling (hooks: false)
+
+- `ssh <host> "tail -c 262144 <jsonl_path>"` — 3초마다 폴링
+- JSONL 파싱으로 상태 추론 (로컬 secondary fallback과 동일)
+- 원격 설치 불필요
+- 레이턴시: ~200-300ms per poll cycle
+
+### 11.5 Remote Peek
+
+```bash
+# display-popup 안에서 로컬 tmux attach 대신 SSH로 연결
+tmux display-popup -E -w 80% -h 80% \
+  -T " <session> (<host>) | prefix+d to close " \
+  "ssh -t <host> 'tmux attach -t <session>'"
+```
+
+### 11.6 Remote Send
+
+```bash
+ssh <host> "tmux send-keys -t <pane_id> 'text' Enter"
+```
+
+### 11.7 원격 Hook 설치 (Remote Hook Installation)
+
+```bash
+# 원격 서버에 hook 플러그인 SSH로 설치
+cc-tower install-hooks --remote server-a
+
+# 내부 동작:
+# 1. scp hooks/ 디렉토리를 원격:~/.claude/plugins/cc-tower/ 로 복사
+# 2. 검증: ssh <host> "ls ~/.claude/plugins/cc-tower/hooks/hooks.json"
+```
+
+### 11.8 원격 LLM 요약
+
+원격 서버에서 직접 실행:
+```bash
+ssh <host> "cd /tmp && claude --print -p '...' --model haiku --no-session-persistence"
+```
+또는 프롬프트가 충분히 작은 경우 최근 메시지 텍스트만 가져와 로컬에서 실행.
+
+### 11.9 대시보드 표시
+
+HOST 컬럼 추가:
+
+```
+   #  HOST      PANE  LABEL           STATUS    TASK
+   1  local     %7    cc-session      ● EXEC    ...
+   2  local     %5    obsidian        ○ IDLE    ...
+   3  server-a  %3    api-backend     ◐ THINK   ...
+   4  server-b  %1    ml-training     ● EXEC    ...
+```
+
+- 로컬 세션: `local`
+- 원격 세션: config의 host name
+
+### 11.10 SSH 터널 관리
+
+- cc-tower 시작/종료 시 SSH 터널 자동 관리
+- 30초마다 SSH 연결 health check, 끊기면 자동 재연결
+- `q` 종료 시: 모든 SSH 터널 정리
+
+### 11.11 Session 인터페이스 확장
+
+```typescript
+interface Session {
+  // ... 기존 필드 유지 ...
+
+  // Phase 1.5 추가 필드
+  host: string;           // 'local' 또는 config의 host name
+  sshTarget?: string;     // e.g., 'user@192.168.1.10'
+}
+```
+
+---
+
+## 12. Phase 2 Considerations (Web UI & Team Features)
+
+Phase 1.5 이후, 팀 협업과 브라우저 기반 접근이 필요한 경우를 위한 확장:
+
+### 12.1 Agent-Server Protocol
 
 ```typescript
 interface AgentReport {
@@ -1441,14 +1560,14 @@ interface ServerCommand {
 }
 ```
 
-### 11.2 데이터 전송
+### 12.2 데이터 전송
 
 - WebSocket으로 실시간 상태 스트리밍
 - Agent → Server: 세션 상태 변화 이벤트
 - Server → Agent: 명령 전달 요청
 - 인증: JWT 기반 토큰
 
-### 11.3 Web UI
+### 12.3 Web UI
 
 - Phase 2에서 TUI 대시보드를 Web UI로 확장
 - 동일한 Session Store를 REST API로 노출
@@ -1456,7 +1575,7 @@ interface ServerCommand {
 
 ---
 
-## 12. Milestones & Deliverables
+## 13. Milestones & Deliverables
 
 ### Phase 1: Local MVP
 
@@ -1467,7 +1586,8 @@ interface ServerCommand {
 | **W3** | Dashboard + Notification | TUI 메인 뷰, 상세 뷰, 키보드 네비게이션, 스마트 알림 |
 | **W4** | Interaction + Polish | Send/Peek 2-tier, Config, 테스트 |
 
-> **Phase 1.5** (W5~W6): FR-12 히스토리, FR-13 그룹, `--json` 출력, LLM 요약 (Tier 3)
+> **Phase 1 후속** (W5~W6): FR-12 히스토리, FR-13 그룹, `--json` 출력, LLM 요약 (Tier 3)
+> **Phase 1.5** (W7~W8): SSH 원격 세션 지원 — 섹션 11 참조
 
 ### Definition of Done (Phase 1)
 
@@ -1482,7 +1602,7 @@ interface ServerCommand {
 
 ---
 
-## 12.1 Testing Strategy
+## 13.1 Testing Strategy
 
 | 영역 | 테스트 방식 |
 |------|-----------|
@@ -1499,7 +1619,7 @@ interface ServerCommand {
 
 ---
 
-## 13. Open Questions
+## 14. Open Questions
 
 | # | Question | Impact | Decision Needed By |
 |---|----------|--------|-------------------|
