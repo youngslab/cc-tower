@@ -43,13 +43,13 @@ Optional but recommended:
 ### Option A: Global install
 
 ```bash
-npm install -g git+https://github.com/jaeyoungs/cc-tower.git
+npm install -g git+https://github.com/youngslab/cc-tower.git
 ```
 
 ### Option B: User-local install (no sudo)
 
 ```bash
-npm install --prefix ~/.local git+https://github.com/jaeyoungs/cc-tower.git
+npm install --prefix ~/.local git+https://github.com/youngslab/cc-tower.git
 ```
 
 Make sure `~/.local/bin` is in your `PATH`:
@@ -61,7 +61,7 @@ export PATH="$HOME/.local/bin:$PATH"  # add to ~/.bashrc or ~/.zshrc
 ### Option C: Clone and link
 
 ```bash
-git clone https://github.com/jaeyoungs/cc-tower.git
+git clone https://github.com/youngslab/cc-tower.git
 cd cc-tower
 npm install
 npm link
