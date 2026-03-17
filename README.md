@@ -232,6 +232,59 @@ notifications:
 commands:
   confirm_before_send: true    # confirm when sending to session
   confirm_when_busy: true      # confirm if session is thinking/executing
+
+# SSH Remote hosts
+hosts:
+  - name: server-a
+    ssh: user@192.168.1.10
+    hooks: true                # SSH socket forwarding for real-time events
+    # ssh_options: "-i ~/.ssh/id_rsa -p 2222"
+    # claude_dir: "~/.claude"  # custom path if non-standard
+  - name: dev-box
+    ssh: user@dev.example.com
+    hooks: false               # JSONL polling fallback (no remote install needed)
+```
+
+## SSH Remote Sessions
+
+Monitor Claude Code sessions running on remote servers from your local dashboard.
+
+### Setup
+
+1. Add hosts to `~/.config/cc-tower/config.yaml` (see above)
+2. Ensure SSH key-based auth works: `ssh user@host "echo ok"`
+3. (Optional) Install hooks on remote for real-time tracking:
+
+```bash
+cc-tower install-hooks --remote server-a
+```
+
+### Two Modes
+
+| Mode | Config | Latency | Remote Install |
+|------|--------|---------|----------------|
+| **Socket forwarding** | `hooks: true` | ~50ms (real-time) | Required (`install-hooks --remote`) |
+| **JSONL polling** | `hooks: false` | ~3s (polling) | Not needed |
+
+### How It Works
+
+```
+Local (cc-tower TUI)
+  ├─ SSH tunnel (-R) ──→ Remote: hooks → socket → tunnel → local cc-tower
+  ├─ SSH poll ──────────→ Remote: cat ~/.claude/sessions/*.json
+  ├─ SSH JSONL tail ───→ Remote: tail -c 262144 session.jsonl
+  ├─ Peek: display-popup → ssh -t host "tmux attach"
+  └─ Send: ssh host "tmux send-keys -t %5 'text' Enter"
+```
+
+Remote sessions appear in the dashboard with a HOST column:
+
+```
+   #  HOST      PANE  LABEL           STATUS    TASK
+   1  local     %7    cc-session      ● EXEC    ...
+   2  local     %5    obsidian        ○ IDLE    ...
+   3  server-a  %3    api-backend     ◐ THINK   ...
+   4  dev-box   %1    ml-pipeline     ● EXEC    ...
 ```
 
 ## Architecture
@@ -240,20 +293,21 @@ cc-tower combines multiple signals to provide semantic awareness:
 
 ```
 Session Discovery
-    ↓ (PID from ~/.claude/sessions/*.json)
-    ↓ (ppid chain walking to find tmux pane)
+    ├─ Local: PID scan + process CWD → project matching
+    └─ Remote: SSH polling (cat ~/.claude/sessions/*.json)
     ↓
 State Machine (Hook-Primary)
-    ├─ Primary: Claude Code hooks (real-time events via Unix socket)
-    ├─ Fallback: JSONL polling (when hooks unavailable)
-    └─ Fallback: Process scanning (when JSONL unavailable)
+    ├─ Primary: Claude Code hooks (Unix socket, local or SSH-tunneled)
+    ├─ Fallback: JSONL polling (local fs.watch or SSH tail)
+    └─ Fallback: Process scanning (local only)
     ↓
-Session Store (in-memory cache with persistence)
+Session Store (in-memory cache with file persistence)
     ↓
 TUI Dashboard (Ink + React)
-    ├─ Dashboard view (session list)
+    ├─ Dashboard view (session list with HOST column)
     ├─ Detail view (session info + recent activity)
-    └─ Send view (command input)
+    ├─ Send view (local tmux send-keys or SSH)
+    └─ Peek (local session group or SSH tmux attach)
 ```
 
 **Key Design Principles:**
@@ -268,7 +322,7 @@ TUI Dashboard (Ink + React)
 | Phase | Status | Features |
 |-------|--------|----------|
 | **Phase 1** | ✓ Complete | Local MVP: auto-discovery, TUI, hooks, JSONL fallback, Send/Peek |
-| **Phase 1.5** | → Next | SSH remote: socket forwarding, remote Peek/Send, multi-host display |
+| **Phase 1.5** | ✓ Complete | SSH remote: socket forwarding, remote Peek/Send, multi-host dashboard |
 | **Phase 2** | Future | Web UI: browser dashboard, team collaboration, cost tracking, analytics |
 
 ## License
