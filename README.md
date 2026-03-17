@@ -40,21 +40,22 @@ Optional but recommended:
 
 ## Installation
 
-### 1. Clone and Install
+### Option A: Install from git (global)
 
 ```bash
-git clone https://github.com/yourusername/cc-tower.git
-cd cc-tower
-npm install
+npm install -g git+https://github.com/jaeyoungs/cc-tower.git
 ```
 
-### 2. Link as Global Command
+### Option B: Clone and link
 
 ```bash
+git clone https://github.com/jaeyoungs/cc-tower.git
+cd cc-tower
+npm install
 npm link
 ```
 
-Now `cc-tower` is available as a command from anywhere.
+Either way, `cc-tower` is available as a command from anywhere.
 
 ### 3. Install Hook Plugin
 
