@@ -75,8 +75,9 @@ export const tmux = {
     }
   },
 
-  async displayPopup(opts: { width: string; height: string; title?: string; command: string }): Promise<void> {
+  async displayPopup(opts: { width: string; height: string; title?: string; command: string; closeOnExit?: boolean }): Promise<void> {
     const args = ['display-popup', '-w', opts.width, '-h', opts.height];
+    if (opts.closeOnExit) args.push('-E');
     if (opts.title) {
       args.push('-T', opts.title);
     }

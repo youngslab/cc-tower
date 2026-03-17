@@ -24,8 +24,9 @@ export function useTmux() {
       await tmux.displayPopup({
         width: '80%',
         height: '80%',
-        title: ` ${session.label ?? session.projectName} (${session.paneId}) `,
+        title: ` ${session.label ?? session.projectName} (${session.paneId}) | prefix+d to close `,
         command: `tmux attach -t ${sessionName} \\; select-window -t :${targetPane.windowIndex}`,
+        closeOnExit: true,
       });
     } catch {
       // Peek may fail in non-standard terminal environments

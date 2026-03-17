@@ -123,8 +123,9 @@ program
         await tmux.newGroupSession(sessionName, targetPane.sessionName);
         await tmux.displayPopup({
           width: '80%', height: '80%',
-          title: ` ${s.label ?? s.projectName} (${s.paneId}) `,
+          title: ` ${s.label ?? s.projectName} (${s.paneId}) | prefix+d to close `,
           command: `tmux attach -t ${sessionName} \\; select-window -t :${targetPane.windowIndex}`,
+          closeOnExit: true,
         });
         try { await tmux.killSession(sessionName); } catch {}
       }
