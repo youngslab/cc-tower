@@ -13,7 +13,7 @@ const STATUS_ICONS: Record<string, { icon: string; color: string }> = {
   executing: { icon: '●', color: 'green' },
   thinking: { icon: '◐', color: 'yellow' },
   agent: { icon: '◑', color: 'cyan' },
-  idle: { icon: '○', color: 'gray' },
+  idle: { icon: '○', color: 'white' },
   dead: { icon: '✕', color: 'red' },
 };
 

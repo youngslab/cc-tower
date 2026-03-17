@@ -37,7 +37,7 @@ export async function generateContextSummary(
 
   inflight.add(sessionId);
   try {
-    const prompt = `아래 개발 세션 대화를 읽고, 사용자가 하고 있는 작업의 목표를 한국어 25자 이내 한 줄로 요약해. 요약만 출력하고 다른 말은 하지 마.\n\n${recentMessages.slice(-2500)}`;
+    const prompt = `Read the dev session conversation below. Summarize the user's goal in one line (max 30 words). Use the same language the user is using. Output ONLY the summary, nothing else.\n\n${recentMessages.slice(-2500)}`;
 
     const stdout = await runClaude(prompt);
 

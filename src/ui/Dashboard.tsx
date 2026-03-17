@@ -17,20 +17,39 @@ const STATUS_ICONS: Record<string, { icon: string; color: string }> = {
   executing: { icon: '●', color: 'green' },
   thinking: { icon: '◐', color: 'yellow' },
   agent: { icon: '◑', color: 'cyan' },
-  idle: { icon: '○', color: 'gray' },
+  idle: { icon: '○', color: 'white' },
   dead: { icon: '✕', color: 'red' },
 };
 
 export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend, onPeek, onQuit }: Props) {
   const [cursor, setCursor] = useState(0);
+  const [confirmQuit, setConfirmQuit] = useState(false);
 
   useInput((input, key) => {
-    if (key.upArrow) setCursor(c => Math.max(0, c - 1));
-    if (key.downArrow) setCursor(c => Math.min(sessions.length - 1, c + 1));
+    // Quit confirmation mode
+    if (confirmQuit) {
+      if (input === 'y') onQuit();
+      if (input === 'n' || key.escape) setConfirmQuit(false);
+      return;
+    }
+
+    // Navigation: arrow keys + j/k (vim style)
+    if (key.upArrow || input === 'k') setCursor(c => Math.max(0, c - 1));
+    if (key.downArrow || input === 'j') setCursor(c => Math.min(sessions.length - 1, c + 1));
+
+    // Number keys: jump to session (1-9)
+    if (input >= '1' && input <= '9') {
+      const idx = parseInt(input) - 1;
+      if (idx < sessions.length) setCursor(idx);
+    }
+
+    // Actions
     if (key.return && sessions[cursor]) onSelect(sessions[cursor]!);
     if (input === '/' && sessions[cursor]) onSend(sessions[cursor]!);
     if (input === 'p' && sessions[cursor]) onPeek(sessions[cursor]!);
-    if (input === 'q') onQuit();
+
+    // Quit with confirmation
+    if (input === 'q' || (key.ctrl && input === 'c')) setConfirmQuit(true);
   });
 
   const nonTmuxStart = sessions.findIndex(s => !s.hasTmux);
@@ -44,7 +63,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
 
       {/* Header */}
       <Box>
-        <Text bold>  </Text>
+        <Text bold>   </Text>
         <Text bold dimColor>{pad('PANE', 7)}</Text>
         <Text bold dimColor>{pad('LABEL', 18)}</Text>
         <Text bold dimColor>{pad('STATUS', 14)}</Text>
@@ -66,7 +85,8 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
               <Text dimColor>{'─'.repeat(60)} (monitor-only)</Text>
             )}
             <Box>
-              <Text>{isCursor ? '▸ ' : '  '}</Text>
+              <Text>{isCursor ? '▸' : ' '}</Text>
+              <Text dimColor>{`${i + 1} `}</Text>
               <Text dimColor={isDim}>{pad(session.paneId ?? '—', 7)}</Text>
               <Text dimColor={isDim}>{pad(session.label ?? session.projectName, 18)}</Text>
               <Text color={isDim ? 'gray' : color}>{pad(`${icon} ${session.status.toUpperCase()}`, 14)}</Text>
@@ -80,10 +100,21 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
         <EmptyState inTmux={tmuxCount > 0} hookInstalled={true} />
       )}
 
+      {/* Quit confirmation popup */}
+      {confirmQuit && (
+        <Box marginTop={1} borderStyle="round" borderColor="yellow" paddingX={2} paddingY={0} justifyContent="center">
+          <Text color="yellow">Quit cc-tower?  </Text>
+          <Text bold color="green">[y] Yes  </Text>
+          <Text bold color="red">[n] No</Text>
+        </Box>
+      )}
+
       {/* Footer */}
-      <Box marginTop={1}>
-        <Text dimColor>[Enter] Detail  [p] Peek  [/] Send  [q] Quit</Text>
-      </Box>
+      {!confirmQuit && (
+        <Box marginTop={1}>
+          <Text dimColor>[j/k] Navigate  [1-9] Jump  [Enter] Detail  [p] Peek  [/] Send  [q] Quit</Text>
+        </Box>
+      )}
     </Box>
   );
 }
