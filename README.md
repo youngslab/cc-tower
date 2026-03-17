@@ -52,7 +52,8 @@ npm install -g git+https://github.com/youngslab/cc-tower.git
 git clone https://github.com/youngslab/cc-tower.git ~/.cc-tower
 cd ~/.cc-tower
 npm install
-npm link --prefix ~/.local
+mkdir -p ~/.local/bin
+ln -sf ~/.cc-tower/bin/cc-tower.js ~/.local/bin/cc-tower
 ```
 
 Make sure `~/.local/bin` is in your `PATH`:
@@ -61,7 +62,7 @@ Make sure `~/.local/bin` is in your `PATH`:
 export PATH="$HOME/.local/bin:$PATH"  # add to ~/.bashrc or ~/.zshrc
 ```
 
-### Option C: Clone and link
+### Option C: Clone and run directly
 
 ```bash
 git clone https://github.com/youngslab/cc-tower.git
