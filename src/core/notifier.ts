@@ -57,7 +57,7 @@ export class Notifier extends EventEmitter {
     // 2. Dashboard not focused (suppress_when_focused)
     if (this.config.suppress_when_focused && this.focused) return false;
 
-    // 3. Session not currently being peeked/zoomed
+    // 3. Session not currently being peeked
     if (this.peekingSession === session.sessionId) return false;
 
     // 4. Cooldown
