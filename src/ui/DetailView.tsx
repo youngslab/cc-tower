@@ -49,17 +49,17 @@ export function DetailView({ session, onBack, onSend, onPeek }: Props) {
         </Box>
       )}
 
-      {session.currentActivity && (
-        <Box marginTop={1} paddingX={2} flexDirection="column">
-          <Text bold dimColor>── Current Activity ──</Text>
-          <Text>{session.currentActivity}</Text>
-        </Box>
-      )}
-
       {session.currentTask && (
         <Box marginTop={1} paddingX={2} flexDirection="column">
           <Text bold dimColor>── Last Request ──</Text>
-          <Text dimColor>{session.currentTask}</Text>
+          <Text>{session.currentTask}</Text>
+        </Box>
+      )}
+
+      {session.currentActivity && (
+        <Box marginTop={1} paddingX={2} flexDirection="column">
+          <Text bold dimColor>── Current Activity ──</Text>
+          <Text dimColor>{session.currentActivity}</Text>
         </Box>
       )}
 
