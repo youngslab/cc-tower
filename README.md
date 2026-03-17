@@ -49,7 +49,10 @@ npm install -g git+https://github.com/youngslab/cc-tower.git
 ### Option B: User-local install (no sudo)
 
 ```bash
-npm install --prefix ~/.local git+https://github.com/youngslab/cc-tower.git
+git clone https://github.com/youngslab/cc-tower.git ~/.cc-tower
+cd ~/.cc-tower
+npm install
+npm link --prefix ~/.local
 ```
 
 Make sure `~/.local/bin` is in your `PATH`:
