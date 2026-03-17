@@ -42,7 +42,7 @@ export function SendInput({ session, confirmWhenBusy, onSend, onCancel }: Props)
   if (!session.hasTmux) {
     return (
       <Box paddingX={1}>
-        <Text color="yellow">이 세션은 tmux와 연결되지 않았습니다.</Text>
+        <Text color="yellow">This session is not connected to tmux.</Text>
       </Box>
     );
   }
@@ -50,7 +50,7 @@ export function SendInput({ session, confirmWhenBusy, onSend, onCancel }: Props)
   if (confirming) {
     return (
       <Box paddingX={1} flexDirection="column">
-        <Text color="yellow">세션이 실행 중입니다. 전송하시겠습니까? [y/n]</Text>
+        <Text color="yellow">Session is busy. Send anyway? [y/n]</Text>
       </Box>
     );
   }
