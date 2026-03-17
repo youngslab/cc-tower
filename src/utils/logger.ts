@@ -1,9 +1,26 @@
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+
 const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 } as const;
 type Level = keyof typeof LEVELS;
 
-// TUI mode suppresses logs unless LOG_LEVEL is explicitly set
+// TUI mode suppresses stderr logs unless LOG_LEVEL is explicitly set
 let tui = false;
 export function setTuiMode(enabled: boolean): void { tui = enabled; }
+
+// Log file: always writes info+ regardless of TUI mode
+const LOG_DIR = join(homedir(), '.local', 'share', 'cc-tower');
+const LOG_FILE = join(LOG_DIR, 'cc-tower.log');
+let logFileReady = false;
+
+function ensureLogDir(): void {
+  if (logFileReady) return;
+  try {
+    mkdirSync(LOG_DIR, { recursive: true });
+    logFileReady = true;
+  } catch {}
+}
 
 function getConfiguredLevel(): Level {
   if (tui && !process.env['LOG_LEVEL']) return 'error';
@@ -12,16 +29,26 @@ function getConfiguredLevel(): Level {
   return 'info';
 }
 
-function shouldLog(level: Level): boolean {
+function shouldLogStderr(level: Level): boolean {
   return LEVELS[level] >= LEVELS[getConfiguredLevel()];
 }
 
 function log(level: Level, msg: string, data?: Record<string, unknown>): void {
-  if (!shouldLog(level)) return;
   const ts = new Date().toISOString();
   const entry: Record<string, unknown> = { ts, level, msg };
   if (data !== undefined) entry['data'] = data;
-  process.stderr.write(JSON.stringify(entry) + '\n');
+  const line = JSON.stringify(entry) + '\n';
+
+  // Always write info+ to log file
+  if (LEVELS[level] >= LEVELS['info']) {
+    ensureLogDir();
+    try { appendFileSync(LOG_FILE, line); } catch {}
+  }
+
+  // stderr: respect TUI mode / LOG_LEVEL
+  if (shouldLogStderr(level)) {
+    process.stderr.write(line);
+  }
 }
 
 export const logger = {
