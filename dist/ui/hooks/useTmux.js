@@ -34,47 +34,21 @@ export function useTmux() {
             });
             return true;
         }
-        // Local peek
-        const current = await tmux.getCurrentPane();
-        if (!current)
-            return false;
-        const sessionName = `_cctower_peek_${process.pid}`;
-        // Clean up any stale peek sessions
-        try {
-            const { execSync } = await import('node:child_process');
-            const sessions = execSync("tmux list-sessions -F '#{session_name}' 2>/dev/null", { encoding: 'utf8' });
-            for (const name of sessions.trim().split('\n')) {
-                if (name.startsWith('_cctower_peek_')) {
-                    try {
-                        await tmux.killSession(name);
-                    }
-                    catch { }
-                }
-            }
-        }
-        catch { }
+        // Local peek: direct attach to target session in popup (no session group)
         const panes = await tmux.listPanes();
         const targetPane = panes.find(p => p.paneId === session.paneId);
         if (!targetPane)
             return false;
         try {
-            await tmux.newGroupSession(sessionName, targetPane.sessionName);
             await tmux.displayPopup({
                 width: '80%',
                 height: '80%',
                 title: ` ${session.label ?? session.projectName} (${session.paneId}) | prefix+d to close `,
-                command: `tmux attach -t ${sessionName} \\; select-window -t :${targetPane.windowIndex}`,
+                command: `tmux attach -t ${targetPane.sessionName} \\; select-window -t :${targetPane.windowIndex}`,
                 closeOnExit: true,
             });
         }
-        catch {
-        }
-        finally {
-            try {
-                await tmux.killSession(sessionName);
-            }
-            catch { }
-        }
+        catch { }
         return true;
     }, []);
     return { send, peek };

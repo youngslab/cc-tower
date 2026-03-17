@@ -139,16 +139,12 @@ program
       const panes = await tmux.listPanes();
       const targetPane = panes.find(p => p.paneId === s.paneId);
       if (targetPane) {
-        const sessionName = `_cctower_peek_${process.pid}`;
-        try { await tmux.killSession(sessionName); } catch {}
-        await tmux.newGroupSession(sessionName, targetPane.sessionName);
         await tmux.displayPopup({
           width: '80%', height: '80%',
           title: ` ${s.label ?? s.projectName} (${s.paneId}) | prefix+d to close `,
-          command: `tmux attach -t ${sessionName} \\; select-window -t :${targetPane.windowIndex}`,
+          command: `tmux attach -t ${targetPane.sessionName} \\; select-window -t :${targetPane.windowIndex}`,
           closeOnExit: true,
         });
-        try { await tmux.killSession(sessionName); } catch {}
       }
     }
     await tower.stop();
