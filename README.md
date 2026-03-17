@@ -40,29 +40,14 @@ Optional but recommended:
 
 ## Installation
 
-### Option A: Global install
-
 ```bash
 npm install -g git+https://github.com/youngslab/cc-tower.git
 ```
 
-### Option B: User-local install (no sudo)
+> If you get a permission error, either use [nvm](https://github.com/nvm-sh/nvm)/[fnm](https://github.com/Schniz/fnm) (recommended)
+> or run `npm config set prefix ~/.local` and ensure `~/.local/bin` is in your PATH.
 
-```bash
-git clone https://github.com/youngslab/cc-tower.git ~/.cc-tower
-cd ~/.cc-tower
-npm install
-mkdir -p ~/.local/bin
-ln -sf ~/.cc-tower/bin/cc-tower.js ~/.local/bin/cc-tower
-```
-
-Make sure `~/.local/bin` is in your `PATH`:
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"  # add to ~/.bashrc or ~/.zshrc
-```
-
-### Option C: Clone and run directly
+### Alternative: Clone and run directly
 
 ```bash
 git clone https://github.com/youngslab/cc-tower.git
