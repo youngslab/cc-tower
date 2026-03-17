@@ -63,7 +63,7 @@ export function useTmux() {
                 width: '80%',
                 height: '80%',
                 title: ` ${session.label ?? session.projectName} (${session.paneId}) | prefix+d to close `,
-                command: `tmux attach -d -t ${sessionName} \\; select-window -t :${targetPane.windowIndex}`,
+                command: `tmux attach -t ${sessionName} \\; select-window -t :${targetPane.windowIndex}`,
                 closeOnExit: true,
             });
         }
