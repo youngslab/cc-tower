@@ -48,27 +48,25 @@ cd cc-tower
 npm install
 ```
 
-### 2. Install Hook Plugin
+### 2. Link as Global Command
+
+```bash
+npm link
+```
+
+Now `cc-tower` is available as a command from anywhere.
+
+### 3. Install Hook Plugin
 
 The hook plugin enables real-time state updates. Install it once:
 
 ```bash
-npx tsx src/index.tsx install-hooks
+cc-tower install-hooks
 ```
 
 This creates `~/.claude/plugins/cc-tower/` with hook definitions. New Claude Code sessions will immediately report state changes to cc-tower.
 
 **Note:** Already-running sessions will fall back to JSONL polling until restarted.
-
-### 3. (Optional) Create Alias
-
-For convenience, add to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.):
-
-```bash
-alias cc-tower="npx tsx /absolute/path/to/cc-tower/src/index.tsx"
-```
-
-Then you can use `cc-tower` directly instead of `npx tsx src/index.tsx`.
 
 ## Usage
 
@@ -77,7 +75,7 @@ Then you can use `cc-tower` directly instead of `npx tsx src/index.tsx`.
 Launch the interactive dashboard:
 
 ```bash
-npx tsx src/index.tsx
+cc-tower
 ```
 
 The dashboard displays all active Claude Code sessions with real-time status updates. See keybindings below.
@@ -87,13 +85,13 @@ The dashboard displays all active Claude Code sessions with real-time status upd
 Show all sessions in table format:
 
 ```bash
-npx tsx src/index.tsx list
+cc-tower list
 ```
 
 Export as JSON:
 
 ```bash
-npx tsx src/index.tsx list --json
+cc-tower list --json
 ```
 
 ### Send Command to Session
@@ -101,7 +99,7 @@ npx tsx src/index.tsx list --json
 Send a message or command to a running session:
 
 ```bash
-npx tsx src/index.tsx send <session> "message"
+cc-tower send <session> "message"
 ```
 
 Where `<session>` can be:
@@ -112,7 +110,7 @@ Where `<session>` can be:
 Example:
 
 ```bash
-npx tsx src/index.tsx send migration-api "npm test -- --watch"
+cc-tower send migration-api "npm test -- --watch"
 ```
 
 ### Peek at Session
@@ -120,7 +118,7 @@ npx tsx src/index.tsx send migration-api "npm test -- --watch"
 Open a read-only popup view of a session's output:
 
 ```bash
-npx tsx src/index.tsx peek <session>
+cc-tower peek <session>
 ```
 
 Press `prefix + d` (default: `Ctrl-b d`) to close the popup and return to the dashboard.
@@ -130,7 +128,7 @@ Press `prefix + d` (default: `Ctrl-b d`) to close the popup and return to the da
 Assign a human-readable name:
 
 ```bash
-npx tsx src/index.tsx label 9445bc28 "feature-branch"
+cc-tower label 9445bc28 "feature-branch"
 ```
 
 ### Tag Sessions
@@ -138,7 +136,7 @@ npx tsx src/index.tsx label 9445bc28 "feature-branch"
 Add custom tags for organization:
 
 ```bash
-npx tsx src/index.tsx tag migration-api backend important
+cc-tower tag migration-api backend important
 ```
 
 ### View Status
@@ -146,13 +144,13 @@ npx tsx src/index.tsx tag migration-api backend important
 Quick status check:
 
 ```bash
-npx tsx src/index.tsx status
+cc-tower status
 ```
 
 Show details for one session:
 
 ```bash
-npx tsx src/index.tsx status migration-api
+cc-tower status migration-api
 ```
 
 ### Manage Configuration
@@ -160,7 +158,7 @@ npx tsx src/index.tsx status migration-api
 Edit the config file in your default editor:
 
 ```bash
-npx tsx src/index.tsx config
+cc-tower config
 ```
 
 Config location: `~/.config/cc-tower/config.yaml`
