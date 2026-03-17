@@ -65,6 +65,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
       <Box>
         <Text bold>   </Text>
         <Text bold dimColor>{pad('PANE', 7)}</Text>
+        <Text bold dimColor>{pad('HOST', 9)}</Text>
         <Text bold dimColor>{pad('LABEL', 18)}</Text>
         <Text bold dimColor>{pad('STATUS', 14)}</Text>
         <Text bold dimColor>TASK</Text>
@@ -88,6 +89,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
               <Text>{isCursor ? '▸' : ' '}</Text>
               <Text dimColor>{`${i + 1} `}</Text>
               <Text dimColor={isDim}>{pad(session.paneId ?? '—', 7)}</Text>
+              <Text dimColor={isDim}>{pad(session.host, 9)}</Text>
               <Text dimColor={isDim}>{pad(session.label ?? session.projectName, 18)}</Text>
               <Text color={isDim ? 'gray' : color}>{pad(`${icon} ${session.status.toUpperCase()}`, 14)}</Text>
               <Text dimColor={isDim}>{truncate(session.contextSummary ?? session.currentActivity ?? session.currentTask ?? (session.summaryLoading ? '⟳ summarizing...' : ''), maxTaskWidth)}</Text>

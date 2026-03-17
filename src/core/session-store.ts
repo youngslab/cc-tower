@@ -39,12 +39,16 @@ export interface Session {
   estimatedCost?: number;
   label?: string;
   tags?: string[];
+  host: string;           // 'local' | host name from config
+  sshTarget?: string;     // e.g., 'user@192.168.1.10' — undefined for local
+  hostOnline?: boolean;   // remote host reachability status
 }
 
 interface PersistedEntry {
   label?: string;
   tags?: string[];
   contextSummary?: string;
+  host?: string;
 }
 
 interface PersistFormat {

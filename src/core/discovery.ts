@@ -1,13 +1,18 @@
 import { EventEmitter } from 'node:events';
 import { readdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readFileSync, readdirSync, readlinkSync, statSync } from 'node:fs';
+import { join, basename } from 'node:path';
+import { execSync } from 'node:child_process';
 import { logger } from '../utils/logger.js';
+import { cwdToSlug } from '../utils/slug.js';
 
 export interface SessionInfo {
   pid: number;
   sessionId: string;
   cwd: string;
   startedAt: number;
+  host?: string;        // undefined = local
+  sshTarget?: string;   // undefined = local
 }
 
 export interface DiscoveryConfig {
@@ -50,6 +55,12 @@ export class DiscoveryEngine extends EventEmitter {
     }
 
     const jsonFiles = files.filter((f) => f.endsWith('.json'));
+
+    // If sessions dir is empty, fall back to process scanning
+    if (jsonFiles.length === 0) {
+      return this.scanProcesses();
+    }
+
     const active: SessionInfo[] = [];
 
     for (const file of jsonFiles) {
@@ -108,6 +119,75 @@ export class DiscoveryEngine extends EventEmitter {
       }
     }
 
+    return active;
+  }
+
+  /**
+   * Fallback: discover Claude sessions by scanning running processes.
+   * Used when ~/.claude/sessions/ is empty (Claude Code >= 2.1.77).
+   */
+  private scanProcesses(): SessionInfo[] {
+    const active: SessionInfo[] = [];
+    try {
+      // Find all 'claude' processes with a CWD
+      const out = execSync(
+        "ps -eo pid,comm | grep '^[[:space:]]*[0-9].*claude$' | awk '{print $1}'",
+        { encoding: 'utf8', timeout: 5000 },
+      ).trim();
+      if (!out) return active;
+
+      for (const pidStr of out.split('\n')) {
+        const pid = parseInt(pidStr.trim());
+        if (isNaN(pid)) continue;
+
+        // Get CWD from /proc
+        let cwd: string;
+        try {
+          cwd = readlinkSync(`/proc/${pid}/cwd`);
+        } catch { continue; }
+        if (!cwd) continue;
+
+        // Only include if we have a matching project directory in claude_dir
+        const slug = cwdToSlug(cwd);
+        const projectDir = join(this.config.claude_dir, 'projects', slug);
+        try { readdirSync(projectDir); } catch { continue; } // no project dir = not a tracked session
+
+        let sessionId = `proc-${pid}`;
+        try {
+          const jsonls = readdirSync(projectDir)
+            .filter(f => f.endsWith('.jsonl'))
+            .map(f => { try { return { name: f, mtime: statSync(join(projectDir, f)).mtimeMs }; } catch { return { name: f, mtime: 0 }; } })
+            .sort((a, b) => b.mtime - a.mtime);
+          if (jsonls.length > 0) {
+            sessionId = jsonls[0]!.name.replace('.jsonl', '');
+          }
+        } catch {}
+
+        const info: SessionInfo = {
+          pid,
+          sessionId,
+          cwd,
+          startedAt: Date.now(),
+        };
+
+        if (!this.known.has(pid)) {
+          this.known.set(pid, info);
+          this.emit('session-found', info);
+          logger.debug('discovery: session-found (process scan)', { pid, cwd });
+        }
+        active.push(info);
+      }
+
+      // Check for dead processes
+      for (const [pid, session] of this.known) {
+        if (!active.find(s => s.pid === pid) && !isPidAlive(pid)) {
+          this.known.delete(pid);
+          this.emit('session-lost', session);
+        }
+      }
+    } catch (err) {
+      logger.debug('discovery: process scan failed', { error: String(err) });
+    }
     return active;
   }
 }

@@ -13,6 +13,10 @@ import { mapPidToPane } from '../tmux/pane-mapper.js';
 import { cwdToSlug, cleanDisplayText, isInternalMessage } from '../utils/slug.js';
 import { generateContextSummary, startLlmSession, stopLlmSession, getLlmSessionName } from './llm-summarizer.js';
 import { logger } from '../utils/logger.js';
+import { parseJsonlLine } from '../utils/jsonl-parser.js';
+import { ConnectionManager } from '../ssh/connection-manager.js';
+import { RemoteDiscovery, RemoteSessionInfo } from '../ssh/remote-discovery.js';
+import { remoteReadJsonlTail, RemoteHostConfig } from '../ssh/remote-commands.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -30,6 +34,9 @@ export class Tower extends EventEmitter {
   private jsonlPaths: Map<string, string> = new Map(); // sessionId → jsonlPath
   private summaryTimer: ReturnType<typeof setInterval> | null = null;
   private stopping = false;
+  private connectionManager!: ConnectionManager;
+  private remoteDiscovery: RemoteDiscovery | null = null;
+  private remotePollers: Map<string, ReturnType<typeof setInterval>> = new Map();
 
   constructor(config?: Config) {
     super();
@@ -110,6 +117,62 @@ export class Tower extends EventEmitter {
 
     // 10. Start hidden LLM session (non-blocking, boots in background)
     void startLlmSession();
+
+    // 11. Setup SSH remote hosts (if configured)
+    if (this.config.hosts.length > 0) {
+      this.connectionManager = new ConnectionManager();
+      const socketPath = `${process.env['XDG_RUNTIME_DIR'] ?? '/tmp'}/cc-tower.sock`;
+
+      // Start SSH tunnels for hooks:true hosts
+      for (const host of this.config.hosts) {
+        if (host.hooks) {
+          const success = await this.connectionManager.startTunnel(
+            host.name, host.ssh, socketPath, host.ssh_options
+          );
+          if (!success) {
+            logger.warn('tower: SSH tunnel failed, falling back to JSONL polling', { host: host.name });
+          }
+        }
+      }
+      this.connectionManager.startHealthCheck(socketPath);
+
+      // Start remote discovery
+      const remoteHosts = this.config.hosts.map(h => ({
+        name: h.name,
+        config: { sshTarget: h.ssh, sshOptions: h.ssh_options, claudeDir: h.claude_dir } as RemoteHostConfig,
+      }));
+      this.remoteDiscovery = new RemoteDiscovery(remoteHosts);
+
+      this.remoteDiscovery.on('session-found', async (info: RemoteSessionInfo) => {
+        logger.info('tower: remote session found', { host: info.host, sessionId: info.sessionId });
+        await this.registerRemoteSession(info);
+      });
+
+      this.remoteDiscovery.on('session-lost', (info: RemoteSessionInfo) => {
+        const key = `${info.host}::${info.sessionId}`;
+        logger.info('tower: remote session lost', { host: info.host, sessionId: info.sessionId });
+        this.deregisterSession(key);
+      });
+
+      this.remoteDiscovery.on('host-offline', (hostName: string) => {
+        // Mark all sessions from this host as offline
+        for (const session of this.store.getAll()) {
+          if (session.host === hostName) {
+            this.store.update(session.sessionId, { hostOnline: false });
+          }
+        }
+      });
+
+      this.remoteDiscovery.on('host-online', (hostName: string) => {
+        for (const session of this.store.getAll()) {
+          if (session.host === hostName) {
+            this.store.update(session.sessionId, { hostOnline: true });
+          }
+        }
+      });
+
+      this.remoteDiscovery.start(5000);
+    }
 
     logger.info('tower: started successfully', { sessions: this.store.getAll().length });
   }
@@ -202,6 +265,11 @@ export class Tower extends EventEmitter {
     // Fire-and-forget: don't await these to avoid slow shutdown
     this.hookReceiver.stop().catch(() => {});
     stopLlmSession().catch(() => {});
+    // SSH cleanup
+    if (this.remoteDiscovery) this.remoteDiscovery.stop();
+    if (this.connectionManager) this.connectionManager.stopAll();
+    for (const [, timer] of this.remotePollers) clearInterval(timer);
+    this.remotePollers.clear();
   }
 
   private async registerSession(info: SessionInfo): Promise<void> {
@@ -255,6 +323,8 @@ export class Tower extends EventEmitter {
       startedAt: new Date(info.startedAt),
       messageCount: 0,
       toolCallCount: 0,
+      host: info.host ?? 'local',
+      sshTarget: info.sshTarget,
     };
     this.store.register(session);
 
@@ -299,6 +369,135 @@ export class Tower extends EventEmitter {
     });
   }
 
+  private async registerRemoteSession(info: RemoteSessionInfo): Promise<void> {
+    const compositeId = `${info.host}::${info.sessionId}`;
+
+    // Find host config
+    const hostConfig = this.config.hosts.find(h => h.name === info.host);
+    if (!hostConfig) return;
+
+    const remoteConfig: RemoteHostConfig = {
+      sshTarget: hostConfig.ssh,
+      sshOptions: hostConfig.ssh_options,
+      claudeDir: hostConfig.claude_dir,
+    };
+
+    // Compute remote JSONL path
+    const claudeDir = hostConfig.claude_dir ?? '~/.claude';
+    const slug = cwdToSlug(info.cwd);
+    const jsonlPath = `${claudeDir}/projects/${slug}/${info.sessionId}.jsonl`;
+
+    // Cold start: read remote JSONL tail for initial state
+    let initialState: 'idle' | 'thinking' | 'executing' = 'idle';
+    let lastTask: string | undefined;
+    try {
+      const tail = await remoteReadJsonlTail(remoteConfig, jsonlPath);
+      // Parse the tail to determine state (reuse existing parsing logic)
+      const lines = tail.split('\n').filter(l => l.trim());
+      // Walk backwards like coldStartScan
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const parsed = parseJsonlLine(lines[i]!);
+        if (!parsed) continue;
+        if (parsed.type === 'system' && (parsed.systemSubtype === 'turn_duration' || parsed.systemSubtype === 'stop_hook_summary')) {
+          initialState = 'idle'; break;
+        }
+        if (parsed.type === 'assistant') {
+          if (parsed.stopReason === 'end_turn') { initialState = 'idle'; break; }
+          if (parsed.stopReason === 'tool_use') { initialState = 'executing'; break; }
+          if (parsed.stopReason === null) { initialState = 'thinking'; break; }
+        }
+      }
+      // Find last user task
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const parsed = parseJsonlLine(lines[i]!);
+        if (parsed?.type === 'user' && parsed.userContent) {
+          const text = parsed.userContent.trim();
+          if (!isInternalMessage(text)) {
+            lastTask = cleanDisplayText(text).slice(0, 80);
+            break;
+          }
+        }
+      }
+    } catch {}
+
+    const projectName = info.cwd.split('/').pop() ?? info.cwd;
+    const session: Session = {
+      pid: info.pid,
+      sessionId: compositeId,
+      hasTmux: true, // assume tmux on remote
+      detectionMode: hostConfig.hooks ? 'hook' : 'jsonl',
+      cwd: info.cwd,
+      projectName,
+      status: initialState,
+      lastActivity: new Date(),
+      currentTask: lastTask,
+      startedAt: new Date(info.startedAt),
+      messageCount: 0,
+      toolCallCount: 0,
+      host: info.host,
+      sshTarget: info.sshTarget,
+      hostOnline: true,
+    };
+    this.store.register(session);
+
+    // Create state machine
+    const fsm = new SessionStateMachine(compositeId, initialState);
+    fsm.on('state-change', (change) => {
+      this.store.update(compositeId, {
+        status: change.to,
+        lastActivity: new Date(),
+      });
+      this.emit('state-change', change);
+      this.notifier.onStateChange(change);
+    });
+    this.stateMachines.set(compositeId, fsm);
+
+    // Store JSONL path for remote polling
+    this.jsonlPaths.set(compositeId, jsonlPath);
+
+    // Start remote JSONL polling for non-hook hosts
+    if (!hostConfig.hooks) {
+      this.startRemoteJsonlPoller(compositeId, remoteConfig, jsonlPath);
+    }
+
+    logger.info('tower: remote session registered', {
+      compositeId, host: info.host, state: initialState,
+    });
+  }
+
+  private startRemoteJsonlPoller(compositeId: string, config: RemoteHostConfig, jsonlPath: string): void {
+    const timer = setInterval(async () => {
+      if (this.stopping) return;
+      const session = this.store.get(compositeId);
+      if (!session) { clearInterval(timer); return; }
+
+      try {
+        const tail = await remoteReadJsonlTail(config, jsonlPath);
+        const lines = tail.split('\n').filter(l => l.trim());
+        // Find the most recent state-determining message
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const parsed = parseJsonlLine(lines[i]!);
+          if (!parsed) continue;
+          const fsm = this.stateMachines.get(compositeId);
+          if (!fsm) break;
+
+          if (parsed.type === 'user' && parsed.userContent) {
+            const text = parsed.userContent.trim();
+            if (!isInternalMessage(text)) {
+              this.store.update(compositeId, { currentTask: cleanDisplayText(text).slice(0, 80) });
+            }
+            break;
+          }
+          if (parsed.type === 'assistant' && parsed.stopReason !== undefined) {
+            fsm.transition({ type: 'jsonl', stopReason: parsed.stopReason } as InputEvent);
+            break;
+          }
+        }
+      } catch {}
+    }, 3000);
+    this.remotePollers.set(compositeId, timer);
+  }
+
   private deregisterSession(sessionId: string): void {
     const session = this.store.get(sessionId);
     if (!session) return;
@@ -315,6 +514,13 @@ export class Tower extends EventEmitter {
     this.jsonlWatcher.unwatch(sessionId);
     this.jsonlPaths.delete(sessionId);
     this.processMonitor.stopPolling(session.pid);
+
+    // Clean up remote poller if any
+    const remoteTimer = this.remotePollers.get(sessionId);
+    if (remoteTimer) {
+      clearInterval(remoteTimer);
+      this.remotePollers.delete(sessionId);
+    }
 
     // Mark as dead, auto-remove after 30 seconds
     this.store.update(sessionId, { status: 'dead', currentActivity: 'Session ended' });

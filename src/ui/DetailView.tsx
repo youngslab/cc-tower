@@ -36,6 +36,7 @@ export function DetailView({ session, onBack, onSend, onPeek }: Props) {
 
       <Box flexDirection="column" paddingX={2}>
         <Text>Project:  {session.cwd}</Text>
+        <Text>Host:     {session.host}{session.sshTarget ? ` (${session.sshTarget})` : ''}</Text>
         <Text>PID:      {session.pid}  │  Pane: {session.paneId ?? '—'}  │  Mode: {session.detectionMode}</Text>
         <Text>Status:   <Text color={color}>{icon} {session.status.toUpperCase()}</Text></Text>
         <Text>Started:  {elapsed} ago</Text>

@@ -1,3 +1,11 @@
+export interface HostConfig {
+  name: string;           // display name, e.g., 'server-a'
+  ssh: string;            // SSH target, e.g., 'user@192.168.1.10'
+  hooks: boolean;         // true = socket forwarding, false = JSONL polling
+  ssh_options?: string;   // extra SSH flags, e.g., '-i ~/.ssh/id_rsa -p 2222'
+  claude_dir?: string;    // remote claude dir, default: '~/.claude'
+}
+
 export interface Config {
   discovery: {
     scan_interval: number;       // ms, default 2000
@@ -39,6 +47,7 @@ export interface Config {
     confirm_before_send: boolean;
     confirm_when_busy: boolean;
   };
+  hosts: HostConfig[];
 }
 
 export const defaults: Config = {
@@ -82,4 +91,5 @@ export const defaults: Config = {
     confirm_before_send: true,
     confirm_when_busy: true,
   },
+  hosts: [],
 };

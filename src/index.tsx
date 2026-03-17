@@ -2,7 +2,7 @@
 import { program } from 'commander';
 import React from 'react';
 import { render } from 'ink';
-import { execSync } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -10,6 +10,7 @@ import { Tower } from './core/tower.js';
 import { App } from './ui/App.js';
 import { tmux } from './tmux/commands.js';
 import { setTuiMode } from './utils/logger.js';
+import { loadConfig } from './config/loader.js';
 
 program
   .name('cc-tower')
@@ -95,8 +96,19 @@ program
     await tower.start();
     const sessions = tower.store.getAll();
     const s = sessions.find(s => s.sessionId.startsWith(sessionArg) || s.label === sessionArg || s.paneId === sessionArg);
-    if (!s || !s.paneId) {
-      console.log(s ? 'Session has no tmux pane' : `Session not found: ${sessionArg}`);
+    if (!s) {
+      console.log(`Session not found: ${sessionArg}`);
+    } else if (s.sshTarget) {
+      const escaped = message.replace(/'/g, "'\\''");
+      const cmd = `ssh ${s.sshTarget} "tmux send-keys -t ${s.paneId} '${escaped}' Enter"`;
+      await new Promise<void>((resolve) => {
+        const child = spawn('sh', ['-c', cmd], { stdio: 'inherit' });
+        child.on('close', () => resolve());
+        child.on('error', () => resolve());
+      });
+      console.log(`Sent to ${s.label ?? s.projectName} (${s.sshTarget}:${s.paneId})`);
+    } else if (!s.paneId) {
+      console.log('Session has no tmux pane');
     } else {
       await tmux.sendKeys(s.paneId, message);
       console.log(`Sent to ${s.label ?? s.projectName} (${s.paneId})`);
@@ -112,8 +124,17 @@ program
     await tower.start();
     const sessions = tower.store.getAll();
     const s = sessions.find(s => s.sessionId.startsWith(sessionArg) || s.label === sessionArg || s.paneId === sessionArg);
-    if (!s || !s.paneId) {
-      console.log(s ? 'Session has no tmux pane' : `Session not found: ${sessionArg}`);
+    if (!s) {
+      console.log(`Session not found: ${sessionArg}`);
+    } else if (s.sshTarget) {
+      await tmux.displayPopup({
+        width: '80%', height: '80%',
+        title: ` ${s.label ?? s.projectName} (${s.host}) | prefix+d to close `,
+        command: `ssh -t ${s.sshTarget} "tmux attach"`,
+        closeOnExit: true,
+      });
+    } else if (!s.paneId) {
+      console.log('Session has no tmux pane');
     } else {
       const panes = await tmux.listPanes();
       const targetPane = panes.find(p => p.paneId === s.paneId);
@@ -143,27 +164,43 @@ program
 // Install hooks
 program
   .command('install-hooks')
-  .action(async () => {
-    const pluginDir = path.join(os.homedir(), '.claude', 'plugins', 'cc-tower');
-    const hooksDir = path.join(pluginDir, 'hooks');
-    fs.mkdirSync(hooksDir, { recursive: true });
+  .option('--remote <host>', 'Install hooks on a remote host')
+  .action(async (opts: { remote?: string }) => {
+    if (opts.remote) {
+      // Remote install
+      const config = loadConfig();
+      const hostConfig = config.hosts.find(h => h.name === opts.remote);
+      if (!hostConfig) {
+        console.log(`Host not found in config: ${opts.remote}`);
+        console.log('Configure hosts in ~/.config/cc-tower/config.yaml');
+        process.exit(1);
+      }
+      const { installRemoteHooks } = await import('./ssh/install-remote-hooks.js');
+      const result = await installRemoteHooks(hostConfig.ssh, hostConfig.ssh_options);
+      console.log(result.success ? `✓ ${result.message}` : `✗ ${result.message}`);
+    } else {
+      // Local install
+      const pluginDir = path.join(os.homedir(), '.claude', 'plugins', 'cc-tower');
+      const hooksDir = path.join(pluginDir, 'hooks');
+      fs.mkdirSync(hooksDir, { recursive: true });
 
-    // Copy hooks files from our package
-    const srcHooksDir = path.resolve(import.meta.dirname, '..', 'hooks');
-    for (const file of ['hooks.json', 'plugin.json', 'cc-tower-hook.sh']) {
-      const src = path.join(srcHooksDir, file);
-      const dest = path.join(file === 'plugin.json' ? pluginDir : hooksDir, file);
-      if (fs.existsSync(src)) {
-        fs.copyFileSync(src, dest);
-        if (file.endsWith('.sh')) {
-          fs.chmodSync(dest, 0o755);
+      // Copy hooks files from our package
+      const srcHooksDir = path.resolve(import.meta.dirname, '..', 'hooks');
+      for (const file of ['hooks.json', 'plugin.json', 'cc-tower-hook.sh']) {
+        const src = path.join(srcHooksDir, file);
+        const dest = path.join(file === 'plugin.json' ? pluginDir : hooksDir, file);
+        if (fs.existsSync(src)) {
+          fs.copyFileSync(src, dest);
+          if (file.endsWith('.sh')) {
+            fs.chmodSync(dest, 0o755);
+          }
         }
       }
-    }
 
-    console.log(`✓ Hook plugin installed at ${pluginDir}`);
-    console.log('  New Claude Code sessions will report to cc-tower.');
-    console.log('  Already running sessions use JSONL fallback.');
+      console.log(`✓ Hook plugin installed at ${pluginDir}`);
+      console.log('  New Claude Code sessions will report to cc-tower.');
+      console.log('  Already running sessions use JSONL fallback.');
+    }
   });
 
 // Label
