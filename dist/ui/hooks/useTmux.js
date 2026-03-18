@@ -23,15 +23,27 @@ export function useTmux(closeKey = 'Escape') {
         return true;
     }, []);
     const peek = useCallback(async (session) => {
-        if (!session.paneId)
-            return false;
         if (session.sshTarget) {
-            // Remote peek: display-popup → ssh -t "tmux attach"
+            // Remote peek: ssh into host, create group session, attach to specific pane
+            // Find remote tmux session/window for this pane
+            const paneSelect = session.paneId
+                ? `tmux list-panes -a -F '#{pane_id} #{session_name} #{window_index}' | grep '^${session.paneId} ' | head -1`
+                : '';
+            const setupCmd = session.paneId
+                ? `PINFO=\\$(${paneSelect}); SESS=\\$(echo \\$PINFO | awk '{print \\$2}'); WIDX=\\$(echo \\$PINFO | awk '{print \\$3}'); ` +
+                    `PEEK=_cctower_peek_\\$\\$; tmux kill-session -t \\$PEEK 2>/dev/null; ` +
+                    `tmux new-session -d -s \\$PEEK -t \\$SESS && ` +
+                    `tmux bind-key -T cctower-peek ${tmuxKey} detach-client && ` +
+                    `tmux attach -t \\$PEEK \\\\; select-window -t :\\$WIDX \\\\; set-option key-table cctower-peek; ` +
+                    `tmux unbind-key -T cctower-peek ${tmuxKey}; tmux kill-session -t \\$PEEK 2>/dev/null`
+                : `tmux bind-key -T cctower-peek ${tmuxKey} detach-client && ` +
+                    `tmux attach \\\\; set-option key-table cctower-peek; ` +
+                    `tmux unbind-key -T cctower-peek ${tmuxKey}`;
             await tmux.displayPopup({
                 width: '80%',
                 height: '80%',
                 title: ` ${session.label ?? session.projectName} (${session.host}) | ${tmuxKey} to close `,
-                command: `ssh -t ${session.sshTarget} "tmux attach"`,
+                command: `ssh -t -o LogLevel=ERROR ${session.sshTarget} "${setupCmd}"`,
                 closeOnExit: true,
             });
             return true;

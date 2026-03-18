@@ -18,10 +18,10 @@ export async function remoteListPanes(host: RemoteHostConfig): Promise<Array<{
   windowIndex: number;
 }>> {
   try {
-    const format = '#{pane_id}\\t#{pane_tty}\\t#{pane_pid}\\t#{session_name}\\t#{window_index}';
+    const format = '#{pane_id}|||#{pane_tty}|||#{pane_pid}|||#{session_name}|||#{window_index}';
     const out = await sshExec(host.sshTarget, `tmux list-panes -a -F '${format}'`, { sshOptions: host.sshOptions });
     return out.trim().split('\n').filter(Boolean).map(line => {
-      const [paneId, tty, pidStr, sessionName, windowIdx] = line.split('\t');
+      const [paneId, tty, pidStr, sessionName, windowIdx] = line.split('|||');
       return {
         paneId: paneId ?? '',
         tty: tty ?? '',
@@ -47,7 +47,7 @@ export async function remoteReadSessions(host: RemoteHostConfig): Promise<string
  * Read tail of a remote JSONL file.
  */
 export async function remoteReadJsonlTail(host: RemoteHostConfig, jsonlPath: string, bytes: number = 262144): Promise<string> {
-  return sshExec(host.sshTarget, `tail -c ${bytes} '${jsonlPath}' 2>/dev/null || true`, {
+  return sshExec(host.sshTarget, `tail -c ${bytes} ${jsonlPath} 2>/dev/null || true`, {
     sshOptions: host.sshOptions,
     timeout: 15000,
   });

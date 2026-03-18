@@ -31,6 +31,8 @@ export declare class Tower extends EventEmitter {
     start(): Promise<void>;
     private refreshGoalSummary;
     private refreshContextSummary;
+    private refreshRemoteGoalSummary;
+    private refreshRemoteContextSummary;
     stop(): Promise<void>;
     private registerSession;
     private registerRemoteSession;

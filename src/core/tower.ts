@@ -16,7 +16,9 @@ import { logger } from '../utils/logger.js';
 import { parseJsonlLine } from '../utils/jsonl-parser.js';
 import { ConnectionManager } from '../ssh/connection-manager.js';
 import { RemoteDiscovery, RemoteSessionInfo } from '../ssh/remote-discovery.js';
-import { remoteReadJsonlTail, RemoteHostConfig } from '../ssh/remote-commands.js';
+import { remoteReadJsonlTail, remoteListPanes, RemoteHostConfig } from '../ssh/remote-commands.js';
+import { sshExec } from '../ssh/exec.js';
+
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -61,7 +63,7 @@ export class Tower extends EventEmitter {
   }
 
   async start(): Promise<void> {
-    logger.info('tower: starting cc-tower');
+    logger.info('tower: starting cc-tower', { hosts: this.config.hosts.map(h => h.name) });
 
     // === Cold Start Sequence ===
     // 0. Clean up stale peek sessions from previous runs
@@ -277,6 +279,50 @@ export class Tower extends EventEmitter {
     }
   }
 
+  private async refreshRemoteGoalSummary(compositeId: string, config: RemoteHostConfig, jsonlPath: string): Promise<void> {
+    try {
+      const session = this.store.get(compositeId);
+      if (session?.goalSummary) return; // already have one
+      const tail = await remoteReadJsonlTail(config, jsonlPath, 32768);
+      if (!tail || tail.length < 20) return;
+      // Extract early messages (first N lines)
+      const lines = tail.split('\n').filter(l => l.trim());
+      const earlyLines = lines.slice(0, 15);
+      const earlyText = earlyLines.join('\n');
+      if (earlyText.length < 20) return;
+      const summary = await generateGoalSummary(compositeId, earlyText);
+      if (summary) {
+        logger.info('tower: remote goal summary received', { compositeId, summary });
+        this.store.update(compositeId, { goalSummary: summary });
+      }
+    } catch (err) {
+      logger.debug('tower: remote goal summary error', { compositeId, error: String(err) });
+    }
+  }
+
+  private async refreshRemoteContextSummary(compositeId: string, config: RemoteHostConfig, jsonlPath: string): Promise<void> {
+    try {
+      const tail = await remoteReadJsonlTail(config, jsonlPath, 65536);
+      if (!tail || tail.length < 20) return;
+      // Extract recent messages (last N lines)
+      const lines = tail.split('\n').filter(l => l.trim());
+      const recentLines = lines.slice(-15);
+      const recentText = recentLines.join('\n');
+      if (recentText.length < 20) return;
+      this.store.update(compositeId, { summaryLoading: true });
+      const summary = await generateContextSummary(compositeId, recentText);
+      if (summary) {
+        logger.info('tower: remote context summary received', { compositeId, summary });
+        this.store.update(compositeId, { contextSummary: summary, summaryLoading: false });
+      } else {
+        this.store.update(compositeId, { summaryLoading: false });
+      }
+    } catch (err) {
+      logger.debug('tower: remote context summary error', { compositeId, error: String(err) });
+      this.store.update(compositeId, { summaryLoading: false });
+    }
+  }
+
   async stop(): Promise<void> {
     this.stopping = true;
     this.discovery.stop();
@@ -450,11 +496,30 @@ export class Tower extends EventEmitter {
       }
     } catch {}
 
+    // Find remote pane for this session's PID (single SSH call — walk ancestors)
+    let paneId: string | undefined;
+    try {
+      const panes = await remoteListPanes(remoteConfig);
+      const panePidSet = new Set(panes.map(p => p.pid));
+      // Walk up the process tree from claude PID until we hit a pane PID
+      const ancestryCmd = `P=${info.pid}; for i in 1 2 3 4 5; do P=$(ps -o ppid= -p $P 2>/dev/null | tr -d " "); [ -z "$P" ] || [ "$P" = "1" ] && break; echo $P; done`;
+      const ancestryOut = await sshExec(hostConfig.ssh, ancestryCmd, { sshOptions: hostConfig.ssh_options, timeout: 5000 });
+      logger.info('tower: remote pane ancestry', { pid: info.pid, ancestry: ancestryOut.trim(), panePids: Array.from(panePidSet) });
+      for (const line of ancestryOut.trim().split('\n')) {
+        const ancestor = parseInt(line);
+        if (ancestor && panePidSet.has(ancestor)) {
+          paneId = panes.find(p => p.pid === ancestor)?.paneId;
+          break;
+        }
+      }
+    } catch {}
+
     const projectName = info.cwd.split('/').pop() ?? info.cwd;
     const session: Session = {
       pid: info.pid,
       sessionId: compositeId,
-      hasTmux: true, // assume tmux on remote
+      paneId,
+      hasTmux: !!paneId,
       detectionMode: hostConfig.hooks ? 'hook' : 'jsonl',
       cwd: info.cwd,
       projectName,
@@ -479,8 +544,20 @@ export class Tower extends EventEmitter {
       });
       this.emit('state-change', change);
       this.notifier.onStateChange(change);
+
+      // Trigger LLM summary refresh on idle transition
+      if (change.to === 'idle') {
+        void this.refreshRemoteGoalSummary(compositeId, remoteConfig, jsonlPath);
+        void this.refreshRemoteContextSummary(compositeId, remoteConfig, jsonlPath);
+      }
     });
     this.stateMachines.set(compositeId, fsm);
+
+    // Initial summary for idle sessions
+    if (initialState === 'idle') {
+      void this.refreshRemoteGoalSummary(compositeId, remoteConfig, jsonlPath);
+      void this.refreshRemoteContextSummary(compositeId, remoteConfig, jsonlPath);
+    }
 
     // Store JSONL path for remote polling
     this.jsonlPaths.set(compositeId, jsonlPath);
@@ -491,7 +568,7 @@ export class Tower extends EventEmitter {
     }
 
     logger.info('tower: remote session registered', {
-      compositeId, host: info.host, state: initialState,
+      compositeId, host: info.host, state: initialState, paneId: paneId ?? 'none',
     });
   }
 

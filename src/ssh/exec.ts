@@ -21,7 +21,9 @@ export function sshExec(
 
     // Common options: no TTY allocation, batch mode (no password prompts)
     sshArgs.push('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5');
-    sshArgs.push(sshTarget, command);
+    // Quote the remote command so globs/redirects run on the remote shell, not locally
+    const escaped = command.replace(/'/g, "'\\''");
+    sshArgs.push(sshTarget, `'${escaped}'`);
 
     const child = spawn('sh', ['-c', sshArgs.join(' ')], {
       stdio: ['ignore', 'pipe', 'pipe'],
