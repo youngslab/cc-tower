@@ -120,6 +120,20 @@ describe('SessionStateMachine', () => {
     expect(fsm.getDuration()).toBeGreaterThanOrEqual(40);
   });
 
+  // session-start is acknowledged but no state change
+  it('session-start from idle stays idle (no-op)', () => {
+    const fsm = new SessionStateMachine('s1', 'idle');
+    fsm.transition({ type: 'session-start' });
+    expect(fsm.getState()).toBe('idle');
+  });
+
+  // stop from executing → idle (guard relaxation)
+  it('transitions executing → idle on stop', () => {
+    const fsm = new SessionStateMachine('s1', 'executing');
+    fsm.transition({ type: 'stop' });
+    expect(fsm.getState()).toBe('idle');
+  });
+
   // JSONL-based events (for fallback mode)
   it('handles jsonl-based stop_reason events', () => {
     const fsm = new SessionStateMachine('s1', 'idle');

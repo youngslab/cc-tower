@@ -31,6 +31,7 @@ export class Tower extends EventEmitter {
   summarizer: Summarizer;
   notifier: Notifier;
   private stateMachines: Map<string, SessionStateMachine> = new Map();
+  private hookSidToSessionId: Map<string, string> = new Map(); // CLAUDE_SESSION_ID → internal sessionId
   private jsonlPaths: Map<string, string> = new Map(); // sessionId → jsonlPath
   private summaryTimer: ReturnType<typeof setInterval> | null = null;
   private stopping = false;
@@ -38,9 +39,12 @@ export class Tower extends EventEmitter {
   private remoteDiscovery: RemoteDiscovery | null = null;
   private remotePollers: Map<string, ReturnType<typeof setInterval>> = new Map();
 
-  constructor(config?: Config) {
+  private skipHooks: boolean;
+
+  constructor(config?: Config, opts?: { skipHooks?: boolean }) {
     super();
     this.config = config ?? loadConfig();
+    this.skipHooks = opts?.skipHooks ?? false;
 
     const persistPath = path.join(os.homedir(), '.local', 'share', 'cc-tower', 'state.json');
     const socketPath = `${process.env['XDG_RUNTIME_DIR'] ?? '/tmp'}/cc-tower.sock`;
@@ -64,12 +68,14 @@ export class Tower extends EventEmitter {
     // 1. Restore user metadata (labels, tags) from disk
     this.store.restore();
 
-    // 2. Start hook receiver (socket bind)
-    try {
-      await this.hookReceiver.start();
-      logger.info('tower: hook receiver started');
-    } catch (err) {
-      logger.warn('tower: hook receiver failed to start, continuing without hooks', { error: String(err) });
+    // 2. Start hook receiver (socket bind) — skip for one-shot commands to avoid stealing the TUI's socket
+    if (!this.skipHooks) {
+      try {
+        await this.hookReceiver.start();
+        logger.info('tower: hook receiver started');
+      } catch (err) {
+        logger.warn('tower: hook receiver failed to start, continuing without hooks', { error: String(err) });
+      }
     }
 
     // 3. Scan for active sessions
@@ -529,9 +535,52 @@ export class Tower extends EventEmitter {
     }, 30000);
   }
 
+  private resolveSessionId(hookSid: string, hookCwd: string | undefined): string | null {
+    // 1. Direct match (hook sid === internal sessionId)
+    if (this.stateMachines.has(hookSid)) return hookSid;
+
+    // 2. Cached reverse mapping from previous resolution
+    const cached = this.hookSidToSessionId.get(hookSid);
+    if (cached && this.stateMachines.has(cached)) return cached;
+
+    // 3. Fallback: match by CWD across all sessions
+    if (hookCwd) {
+      for (const session of this.store.getAll()) {
+        if (session.cwd === hookCwd && session.status !== 'dead' && this.stateMachines.has(session.sessionId)) {
+          this.hookSidToSessionId.set(hookSid, session.sessionId);
+          logger.debug('tower: hook sid mapped to session via CWD', { hookSid, sessionId: session.sessionId, cwd: hookCwd });
+          return session.sessionId;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private resolveSessionIdByCwd(hookCwd: string | undefined): string | null {
+    if (!hookCwd) return null;
+    for (const session of this.store.getAll()) {
+      if (session.cwd === hookCwd && session.status !== 'dead' && this.stateMachines.has(session.sessionId)) {
+        logger.debug('tower: hook resolved by CWD (no session ID)', { sessionId: session.sessionId, cwd: hookCwd });
+        return session.sessionId;
+      }
+    }
+    return null;
+  }
+
   private handleHookEvent(event: any): void {
-    const sessionId = event.sid;
-    if (!sessionId) return;
+    const hookSid = event.sid;
+    if (!hookSid) return;
+
+    // When CLAUDE_SESSION_ID is not available (sid='unknown'), resolve by CWD only
+    const sessionId = hookSid === 'unknown'
+      ? this.resolveSessionIdByCwd(event.cwd)
+      : this.resolveSessionId(hookSid, event.cwd);
+    if (!sessionId) {
+      logger.info('tower: hook event for unknown session', { hookSid, event: event.event, cwd: event.cwd });
+      return;
+    }
+    logger.info('tower: hook event received', { event: event.event, sessionId, hookSid });
 
     const session = this.store.get(sessionId);
     if (session && session.detectionMode !== 'hook') {

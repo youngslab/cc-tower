@@ -36,20 +36,25 @@ export function useTmux() {
       return true;
     }
 
-    // Local peek: direct attach to target session in popup (no session group)
+    // Local peek: use session group to avoid syncing windows with the original session
     const panes = await tmux.listPanes();
     const targetPane = panes.find(p => p.paneId === session.paneId);
     if (!targetPane) return false;
 
+    const peekName = `_cctower_peek_${process.pid}`;
+    try { await tmux.killSession(peekName); } catch {}
+
     try {
+      await tmux.newGroupSession(peekName, targetPane.sessionName);
       await tmux.displayPopup({
         width: '80%',
         height: '80%',
         title: ` ${session.label ?? session.projectName} (${session.paneId}) | prefix+d to close `,
-        command: `tmux attach -t ${targetPane.sessionName} \\; select-window -t :${targetPane.windowIndex}`,
+        command: `tmux attach -t ${peekName} \\; select-window -t :${targetPane.windowIndex}`,
         closeOnExit: true,
       });
     } catch {}
+    try { await tmux.killSession(peekName); } catch {}
     return true;
   }, []);
 

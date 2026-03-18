@@ -44,7 +44,7 @@ program
   .command('list')
   .option('--json', 'Output as JSON')
   .action(async (opts) => {
-    const tower = new Tower();
+    const tower = new Tower(undefined, { skipHooks: true });
     await tower.start();
     const sessions = tower.store.getAll();
     if (opts.json) {
@@ -70,7 +70,7 @@ program
 program
   .command('status [session]')
   .action(async (sessionArg) => {
-    const tower = new Tower();
+    const tower = new Tower(undefined, { skipHooks: true });
     await tower.start();
     const sessions = tower.store.getAll();
     if (sessionArg) {
@@ -92,7 +92,7 @@ program
 program
   .command('send <session> <message>')
   .action(async (sessionArg, message) => {
-    const tower = new Tower();
+    const tower = new Tower(undefined, { skipHooks: true });
     await tower.start();
     const sessions = tower.store.getAll();
     const s = sessions.find(s => s.sessionId.startsWith(sessionArg) || s.label === sessionArg || s.paneId === sessionArg);
@@ -120,7 +120,7 @@ program
 program
   .command('peek <session>')
   .action(async (sessionArg: string) => {
-    const tower = new Tower();
+    const tower = new Tower(undefined, { skipHooks: true });
     await tower.start();
     const sessions = tower.store.getAll();
     const s = sessions.find(s => s.sessionId.startsWith(sessionArg) || s.label === sessionArg || s.paneId === sessionArg);
@@ -203,7 +203,7 @@ program
 program
   .command('label <session> <name>')
   .action(async (sessionArg, name) => {
-    const tower = new Tower();
+    const tower = new Tower(undefined, { skipHooks: true });
     await tower.start();
     const sessions = tower.store.getAll();
     const s = sessions.find(s => s.sessionId.startsWith(sessionArg) || s.paneId === sessionArg);
@@ -221,7 +221,7 @@ program
 program
   .command('tag <session> <tags...>')
   .action(async (sessionArg, tags) => {
-    const tower = new Tower();
+    const tower = new Tower(undefined, { skipHooks: true });
     await tower.start();
     const sessions = tower.store.getAll();
     const s = sessions.find(s => s.sessionId.startsWith(sessionArg) || s.label === sessionArg || s.paneId === sessionArg);
