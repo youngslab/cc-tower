@@ -43,6 +43,9 @@ export interface Config {
       end: string;
     };
   };
+  keys: {
+    close: string;                   // key to close peek/back from detail, default 'Escape'
+  };
   commands: {
     confirm_before_send: boolean;
     confirm_when_busy: boolean;
@@ -86,6 +89,9 @@ export const defaults: Config = {
       start: '23:00',
       end: '07:00',
     },
+  },
+  keys: {
+    close: 'Escape',
   },
   commands: {
     confirm_before_send: true,

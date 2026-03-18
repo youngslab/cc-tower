@@ -51,6 +51,8 @@ export class SessionStateMachine extends EventEmitter {
         }
         // Handle hook-based events
         switch (event.type) {
+            case 'session-start':
+                return this.state === 'idle' ? 'idle' : null; // acknowledge but no transition
             case 'session-end':
                 return 'dead';
             case 'agent-start':
@@ -64,7 +66,7 @@ export class SessionStateMachine extends EventEmitter {
             case 'post-tool':
                 return this.state === 'executing' ? 'thinking' : null;
             case 'stop':
-                return this.state === 'thinking' ? 'idle' : null;
+                return this.state !== 'idle' && this.state !== 'dead' ? 'idle' : null;
             default:
                 return null;
         }

@@ -35,6 +35,9 @@ export const defaults = {
             end: '07:00',
         },
     },
+    keys: {
+        close: 'Escape',
+    },
     commands: {
         confirm_before_send: true,
         confirm_when_busy: true,

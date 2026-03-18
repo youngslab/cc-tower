@@ -37,6 +37,12 @@ export class SessionStore extends EventEmitter {
                 session.label = meta.label;
             if (meta.tags !== undefined && !session.tags)
                 session.tags = meta.tags;
+            if (meta.favorite !== undefined && !session.favorite) {
+                session.favorite = meta.favorite;
+                session.favoritedAt = meta.favoritedAt;
+            }
+            if (meta.goalSummary !== undefined && !session.goalSummary)
+                session.goalSummary = meta.goalSummary;
             if (meta.contextSummary !== undefined && !session.contextSummary)
                 session.contextSummary = meta.contextSummary;
         }
@@ -62,7 +68,7 @@ export class SessionStore extends EventEmitter {
         this.emit('session-updated', session);
         logger.debug('session-store: updated session', { sessionId, patch: Object.keys(patch) });
         // If user metadata changed, schedule persist
-        if ('label' in patch || 'tags' in patch) {
+        if ('label' in patch || 'tags' in patch || 'favorite' in patch) {
             this.persist();
         }
     }
@@ -88,6 +94,12 @@ export class SessionStore extends EventEmitter {
                 entry.label = session.label;
             if (session.tags !== undefined)
                 entry.tags = session.tags;
+            if (session.favorite !== undefined)
+                entry.favorite = session.favorite;
+            if (session.favoritedAt !== undefined)
+                entry.favoritedAt = session.favoritedAt;
+            if (session.goalSummary !== undefined)
+                entry.goalSummary = session.goalSummary;
             if (session.contextSummary !== undefined)
                 entry.contextSummary = session.contextSummary;
             if (Object.keys(entry).length > 0)
@@ -107,6 +119,12 @@ export class SessionStore extends EventEmitter {
                 entry.label = session.label;
             if (session.tags !== undefined)
                 entry.tags = session.tags;
+            if (session.favorite !== undefined)
+                entry.favorite = session.favorite;
+            if (session.favoritedAt !== undefined)
+                entry.favoritedAt = session.favoritedAt;
+            if (session.goalSummary !== undefined)
+                entry.goalSummary = session.goalSummary;
             if (session.contextSummary !== undefined)
                 entry.contextSummary = session.contextSummary;
             if (Object.keys(entry).length > 0) {
@@ -140,6 +158,12 @@ export class SessionStore extends EventEmitter {
                         session.label = entry.label;
                     if (entry.tags !== undefined)
                         session.tags = entry.tags;
+                    if (entry.favorite !== undefined) {
+                        session.favorite = entry.favorite;
+                        session.favoritedAt = entry.favoritedAt;
+                    }
+                    if (entry.goalSummary !== undefined)
+                        session.goalSummary = entry.goalSummary;
                     if (entry.contextSummary !== undefined)
                         session.contextSummary = entry.contextSummary;
                 }

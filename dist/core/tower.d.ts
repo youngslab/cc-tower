@@ -18,23 +18,28 @@ export declare class Tower extends EventEmitter {
     summarizer: Summarizer;
     notifier: Notifier;
     private stateMachines;
+    private hookSidToSessionId;
     private jsonlPaths;
-    private summaryTimer;
     private stopping;
     private connectionManager;
     private remoteDiscovery;
     private remotePollers;
-    constructor(config?: Config);
+    private skipHooks;
+    constructor(config?: Config, opts?: {
+        skipHooks?: boolean;
+    });
     start(): Promise<void>;
-    private summaryRunning;
-    private scheduleSummaryUpdate;
-    private updateSummaries;
+    private refreshGoalSummary;
     private refreshContextSummary;
     stop(): Promise<void>;
     private registerSession;
     private registerRemoteSession;
     private startRemoteJsonlPoller;
+    /** Immediate cleanup — no dead state, no 30s delay. Used for session migration (clear/resume). */
+    private cleanupSession;
     private deregisterSession;
+    private resolveSessionId;
+    private resolveSessionIdByCwd;
     private handleHookEvent;
     private handleJsonlEvent;
     private mapHookToInput;

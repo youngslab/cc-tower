@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { readdir, readFile } from 'node:fs/promises';
-import { readdirSync, readlinkSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, readlinkSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import { logger } from '../utils/logger.js';
@@ -135,21 +135,35 @@ export class DiscoveryEngine extends EventEmitter {
                     continue;
                 } // no project dir = not a tracked session
                 let sessionId = `proc-${pid}`;
+                // 1. Try to get CLAUDE_SESSION_ID from process environment (highest priority)
                 try {
-                    const jsonls = readdirSync(projectDir)
-                        .filter(f => f.endsWith('.jsonl'))
-                        .map(f => { try {
-                        return { name: f, mtime: statSync(join(projectDir, f)).mtimeMs };
-                    }
-                    catch {
-                        return { name: f, mtime: 0 };
-                    } })
-                        .sort((a, b) => b.mtime - a.mtime);
-                    if (jsonls.length > 0) {
-                        sessionId = jsonls[0].name.replace('.jsonl', '');
+                    const environPath = `/proc/${pid}/environ`;
+                    const environData = readFileSync(environPath, 'utf-8');
+                    const environ = environData.split('\0');
+                    const claudeSessionIdEntry = environ.find(entry => entry.startsWith('CLAUDE_SESSION_ID='));
+                    if (claudeSessionIdEntry) {
+                        sessionId = claudeSessionIdEntry.replace('CLAUDE_SESSION_ID=', '');
                     }
                 }
                 catch { }
+                // 2. Fallback: use JSONL filename if CLAUDE_SESSION_ID not found
+                if (sessionId.startsWith('proc-')) {
+                    try {
+                        const jsonls = readdirSync(projectDir)
+                            .filter(f => f.endsWith('.jsonl'))
+                            .map(f => { try {
+                            return { name: f, mtime: statSync(join(projectDir, f)).mtimeMs };
+                        }
+                        catch {
+                            return { name: f, mtime: 0 };
+                        } })
+                            .sort((a, b) => b.mtime - a.mtime);
+                        if (jsonls.length > 0) {
+                            sessionId = jsonls[0].name.replace('.jsonl', '');
+                        }
+                    }
+                    catch { }
+                }
                 const info = {
                     pid,
                     sessionId,

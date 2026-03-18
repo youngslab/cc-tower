@@ -6,7 +6,8 @@ interface Props {
     onSelect: (session: Session) => void;
     onSend: (session: Session) => void;
     onPeek: (session: Session) => void;
+    onToggleFavorite: (session: Session) => void;
     onQuit: () => void;
 }
-export declare function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend, onPeek, onQuit }: Props): import("react/jsx-runtime").JSX.Element;
+export declare function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend, onPeek, onToggleFavorite, onQuit }: Props): import("react/jsx-runtime").JSX.Element;
 export {};

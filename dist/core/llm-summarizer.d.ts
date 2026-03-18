@@ -6,3 +6,8 @@ export declare function getLlmSessionName(): string;
  * Fully async + non-blocking. Returns cached result if messages unchanged.
  */
 export declare function generateContextSummary(sessionId: string, recentMessages: string): Promise<string | undefined>;
+/**
+ * Generate a 1-line goal summary using `claude --print`.
+ * Generated once from early messages. Returns cached result if messages unchanged.
+ */
+export declare function generateGoalSummary(sessionId: string, earlyMessages: string): Promise<string | undefined>;

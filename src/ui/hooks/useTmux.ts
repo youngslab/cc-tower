@@ -2,7 +2,9 @@ import { useCallback } from 'react';
 import { tmux } from '../../tmux/commands.js';
 import { Session } from '../../core/session-store.js';
 
-export function useTmux() {
+export function useTmux(closeKey: string = 'Escape') {
+  // Map config key name to tmux key name
+  const tmuxKey = closeKey === 'Escape' ? 'Escape' : closeKey;
   const send = useCallback(async (session: Session, text: string) => {
     if (!session.paneId && !session.sshTarget) return false;
     if (session.sshTarget) {
@@ -29,7 +31,7 @@ export function useTmux() {
       await tmux.displayPopup({
         width: '80%',
         height: '80%',
-        title: ` ${session.label ?? session.projectName} (${session.host}) | prefix+d to close `,
+        title: ` ${session.label ?? session.projectName} (${session.host}) | ${tmuxKey} to close `,
         command: `ssh -t ${session.sshTarget} "tmux attach"`,
         closeOnExit: true,
       });
@@ -46,11 +48,13 @@ export function useTmux() {
 
     try {
       await tmux.newGroupSession(peekName, targetPane.sessionName);
+      // Set copy-command on peek session to work around display-popup blocking OSC52
+      const clipCmd = 'CLIP=$(command -v xclip && echo "xclip -selection clipboard" || command -v xsel && echo "xsel --clipboard --input" || echo ""); [ -n "$CLIP" ] && tmux set-option -s copy-command "$CLIP"';
       await tmux.displayPopup({
         width: '80%',
         height: '80%',
-        title: ` ${session.label ?? session.projectName} (${session.paneId}) | prefix+d to close `,
-        command: `tmux attach -t ${peekName} \\; select-window -t :${targetPane.windowIndex}`,
+        title: ` ${session.label ?? session.projectName} (${session.paneId}) | ${tmuxKey} to close `,
+        command: `tmux bind-key -T cctower-peek ${tmuxKey} detach-client && ${clipCmd}; tmux attach -t ${peekName} \\; select-window -t :${targetPane.windowIndex} \\; set-option key-table cctower-peek`,
         closeOnExit: true,
       });
     } catch {}

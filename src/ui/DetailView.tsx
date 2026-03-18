@@ -32,6 +32,7 @@ export function DetailView({ session, onBack, onSend, onPeek }: Props) {
       <Box marginBottom={1}>
         <Text bold color="cyan">Session: {session.label ?? session.projectName}</Text>
         <Text> ({session.paneId ?? 'no pane'})</Text>
+        {session.favorite && <Text color="yellow">  ★ Favorite</Text>}
       </Box>
 
       <Box flexDirection="column" paddingX={2}>
@@ -43,10 +44,17 @@ export function DetailView({ session, onBack, onSend, onPeek }: Props) {
         <Text>Messages: {session.messageCount}  │  Tools: {session.toolCallCount}  │  Cost: ~${(session.estimatedCost ?? 0).toFixed(2)}</Text>
       </Box>
 
+      {session.goalSummary && (
+        <Box marginTop={1} paddingX={2} flexDirection="column">
+          <Text bold dimColor>── Goal ──</Text>
+          <Text color="cyan">{session.goalSummary}</Text>
+        </Box>
+      )}
+
       {session.contextSummary && (
         <Box marginTop={1} paddingX={2} flexDirection="column">
-          <Text bold dimColor>── Context ──</Text>
-          <Text color="cyan">{session.contextSummary}</Text>
+          <Text bold dimColor>── Now ──</Text>
+          <Text color="green">{session.contextSummary}</Text>
         </Box>
       )}
 

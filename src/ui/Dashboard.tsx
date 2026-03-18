@@ -10,6 +10,7 @@ interface Props {
   onSelect: (session: Session) => void;
   onSend: (session: Session) => void;
   onPeek: (session: Session) => void;
+  onToggleFavorite: (session: Session) => void;
   onQuit: () => void;
 }
 
@@ -21,9 +22,14 @@ const STATUS_ICONS: Record<string, { icon: string; color: string }> = {
   dead: { icon: '✕', color: 'red' },
 };
 
-export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend, onPeek, onQuit }: Props) {
+export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend, onPeek, onToggleFavorite, onQuit }: Props) {
   const [cursor, setCursor] = useState(0);
   const [confirmQuit, setConfirmQuit] = useState(false);
+
+  // Sort: favorites (stable order) → tmux sessions (by status) → non-tmux sessions (by status)
+  const favorites = sessions.filter(s => s.favorite).sort((a, b) => (a.favoritedAt ?? 0) - (b.favoritedAt ?? 0));
+  const nonFavorites = sessions.filter(s => !s.favorite);
+  const sorted = [...favorites, ...nonFavorites];
 
   useInput((input, key) => {
     // Quit confirmation mode
@@ -35,30 +41,35 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
 
     // Navigation: arrow keys + j/k (vim style)
     if (key.upArrow || input === 'k') setCursor(c => Math.max(0, c - 1));
-    if (key.downArrow || input === 'j') setCursor(c => Math.min(sessions.length - 1, c + 1));
+    if (key.downArrow || input === 'j') setCursor(c => Math.min(sorted.length - 1, c + 1));
 
     // Number keys: jump to session (1-9)
     if (input >= '1' && input <= '9') {
       const idx = parseInt(input) - 1;
-      if (idx < sessions.length) setCursor(idx);
+      if (idx < sorted.length) setCursor(idx);
     }
 
     // Actions
-    if (key.return && sessions[cursor]) onSelect(sessions[cursor]!);
-    if (input === '/' && sessions[cursor]) onSend(sessions[cursor]!);
-    if (input === 'p' && sessions[cursor]) onPeek(sessions[cursor]!);
+    if (key.return && sorted[cursor]) onSelect(sorted[cursor]!);
+    if (input === '/' && sorted[cursor]) onSend(sorted[cursor]!);
+    if (input === 'p' && sorted[cursor]) onPeek(sorted[cursor]!);
+    if (input === 'f' && sorted[cursor]) onToggleFavorite(sorted[cursor]!);
 
     // Quit with confirmation
     if (input === 'q' || (key.ctrl && input === 'c')) setConfirmQuit(true);
   });
 
-  const nonTmuxStart = sessions.findIndex(s => !s.hasTmux);
+  const hasFavorites = favorites.length > 0;
+  const hasNonFavorites = nonFavorites.length > 0;
+  const nonTmuxStart = nonFavorites.findIndex(s => !s.hasTmux);
+  // Index in sorted array where non-tmux non-favorites start
+  const nonTmuxSortedStart = nonTmuxStart >= 0 ? favorites.length + nonTmuxStart : -1;
 
   return (
     <Box flexDirection="column">
       <Box marginBottom={1}>
         <Text bold color="cyan">cc-tower</Text>
-        <Text> — {sessions.length} sessions</Text>
+        <Text> — {sorted.length} sessions</Text>
       </Box>
 
       {/* Header */}
@@ -68,37 +79,44 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
         <Text bold dimColor>{pad('HOST', 9)}</Text>
         <Text bold dimColor>{pad('LABEL', 18)}</Text>
         <Text bold dimColor>{pad('STATUS', 14)}</Text>
-        <Text bold dimColor>TASK</Text>
+        <Text bold dimColor>GOAL</Text>
       </Box>
 
       {/* Session rows */}
-      {sessions.map((session, i) => {
+      {sorted.map((session, i) => {
         const isCursor = i === cursor;
         const isDim = !session.hasTmux || session.status === 'dead';
         const { icon, color } = STATUS_ICONS[session.status] ?? STATUS_ICONS['idle']!;
 
-        // Separator before non-tmux sessions
-        const showSep = i === nonTmuxStart && nonTmuxStart > 0;
+        // Separator before non-tmux non-favorite sessions
+        const showNonTmuxSep = i === nonTmuxSortedStart && nonTmuxSortedStart > 0;
+        // Separator between favorites and non-favorites
+        const showFavSep = hasFavorites && hasNonFavorites && i === favorites.length;
+
+        const labelText = (session.favorite ? '★ ' : '') + (session.label ?? session.projectName);
 
         return (
           <React.Fragment key={session.sessionId}>
-            {showSep && (
+            {showFavSep && (
+              <Text dimColor>{'─'.repeat(60)} favorites ↑</Text>
+            )}
+            {showNonTmuxSep && (
               <Text dimColor>{'─'.repeat(60)} (monitor-only)</Text>
             )}
             <Box>
-              <Text>{isCursor ? '▸' : ' '}</Text>
-              <Text dimColor>{pad(`${i + 1}`, 3)}</Text>
-              <Text dimColor={isDim}>{pad(session.paneId ?? '—', 7)}</Text>
-              <Text dimColor={isDim}>{pad(session.host, 9)}</Text>
-              <Text dimColor={isDim}>{pad(session.label ?? session.projectName, 18)}</Text>
-              <Text color={isDim ? 'gray' : color}>{pad(`${icon} ${session.status.toUpperCase()}`, 14)}</Text>
-              <Text dimColor={isDim}>{truncate(session.contextSummary ?? session.currentActivity ?? session.currentTask ?? (session.summaryLoading ? '⟳ summarizing...' : ''), maxTaskWidth)}</Text>
+              <Text color={isCursor ? 'cyan' : undefined} bold={isCursor}>{isCursor ? '▸' : ' '}</Text>
+              <Text color={isCursor ? 'cyan' : undefined} dimColor={!isCursor}>{pad(`${i + 1}`, 3)}</Text>
+              <Text color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{pad(session.paneId ?? '—', 7)}</Text>
+              <Text color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{pad(session.host, 9)}</Text>
+              <Text color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{pad(labelText, 18)}</Text>
+              <Text color={isCursor ? 'cyan' : (isDim ? 'gray' : color)}>{pad(`${icon} ${session.status.toUpperCase()}`, 14)}</Text>
+              <Text color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{truncate(session.goalSummary ?? session.contextSummary ?? session.currentTask ?? (session.summaryLoading ? '⟳ summarizing...' : ''), maxTaskWidth)}</Text>
             </Box>
           </React.Fragment>
         );
       })}
 
-      {sessions.length === 0 && (
+      {sorted.length === 0 && (
         <EmptyState inTmux={tmuxCount > 0} hookInstalled={true} />
       )}
 
@@ -114,7 +132,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
       {/* Footer */}
       {!confirmQuit && (
         <Box marginTop={1}>
-          <Text dimColor>[j/k] Navigate  [1-9] Jump  [Enter] Detail  [p] Peek  [/] Send  [q] Quit</Text>
+          <Text dimColor>[j/k] Navigate  [1-9] Jump  [Enter] Detail  [p] Peek  [/] Send  [f] Fav  [q] Quit</Text>
         </Box>
       )}
     </Box>

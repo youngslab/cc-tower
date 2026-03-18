@@ -177,6 +177,7 @@ Dashboard navigation and controls:
 | `Enter` | View session details |
 | `/` | Send command to session |
 | `p` | Peek at session output |
+| `f` | Toggle favorite (pinned to top) |
 | `q` / `Ctrl-C` | Quit with confirmation |
 
 ## Configuration
@@ -305,6 +306,35 @@ TUI Dashboard (Ink + React)
 - **Hook-primary architecture** — Hooks deliver real-time updates; JSONL/process are fallbacks
 - **Monitor-only graceful degradation** — Sessions run outside tmux are still tracked but don't support Peek/Send
 - **Cold start recovery** — On startup, reads `~/.claude/sessions/` and JSONL files to restore current state
+
+## Known Limitations
+
+### Peek Popup: Clipboard (OSC52) Not Supported
+
+tmux `display-popup` does not forward OSC52 escape sequences to the parent terminal. This is a [confirmed tmux limitation](https://github.com/tmux/tmux/issues/3817) — the maintainer states "OSC 52 does not work inside popups." All tmux versions up to 3.6a are affected. `allow-passthrough on/all` does not help.
+
+**Impact:** Copy operations inside Peek (vim yank, tmux copy-mode) don't reach the system clipboard.
+
+**Workarounds:**
+
+1. **tmux copy-mode** — cc-tower automatically sets `copy-command` to `xclip`/`xsel` for the peek session, so tmux copy-mode works.
+2. **vim/neovim** — Configure clipboard provider to write OSC52 directly to the parent TTY:
+   ```lua
+   -- neovim: bypass tmux popup by writing to parent TTY
+   vim.g.clipboard = {
+     name = 'OSC 52 via TTY',
+     copy = {
+       ['+'] = function(lines)
+         local encoded = vim.fn.system({'base64', '-w0'}, table.concat(lines, '\n'))
+         local tty = vim.fn.system('tmux display-message -p "#{client_tty}"'):gsub('%s+$', '')
+         local f = io.open(tty, 'w')
+         if f then f:write('\027]52;c;' .. encoded .. '\007'); f:close() end
+       end,
+       ['*'] = function() end,
+     },
+     paste = { ['+'] = function() return vim.fn.split(vim.fn.getreg('+'), '\n') end, ['*'] = function() return {} end },
+   }
+   ```
 
 ## Roadmap
 

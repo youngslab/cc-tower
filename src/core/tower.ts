@@ -11,7 +11,7 @@ import { Summarizer } from './summarizer.js';
 import { Notifier } from './notifier.js';
 import { mapPidToPane } from '../tmux/pane-mapper.js';
 import { cwdToSlug, cleanDisplayText, isInternalMessage } from '../utils/slug.js';
-import { generateContextSummary, startLlmSession, stopLlmSession, getLlmSessionName } from './llm-summarizer.js';
+import { generateContextSummary, generateGoalSummary, startLlmSession, stopLlmSession, getLlmSessionName } from './llm-summarizer.js';
 import { logger } from '../utils/logger.js';
 import { parseJsonlLine } from '../utils/jsonl-parser.js';
 import { ConnectionManager } from '../ssh/connection-manager.js';
@@ -33,7 +33,6 @@ export class Tower extends EventEmitter {
   private stateMachines: Map<string, SessionStateMachine> = new Map();
   private hookSidToSessionId: Map<string, string> = new Map(); // CLAUDE_SESSION_ID → internal sessionId
   private jsonlPaths: Map<string, string> = new Map(); // sessionId → jsonlPath
-  private summaryTimer: ReturnType<typeof setInterval> | null = null;
   private stopping = false;
   private connectionManager!: ConnectionManager;
   private remoteDiscovery: RemoteDiscovery | null = null;
@@ -65,6 +64,17 @@ export class Tower extends EventEmitter {
     logger.info('tower: starting cc-tower');
 
     // === Cold Start Sequence ===
+    // 0. Clean up stale peek sessions from previous runs
+    try {
+      const { execSync } = await import('node:child_process');
+      const sessions = execSync('tmux list-sessions -F "#{session_name}" 2>/dev/null', { encoding: 'utf8' });
+      for (const name of sessions.split('\n')) {
+        if (name.startsWith('_cctower_peek_')) {
+          try { execSync(`tmux kill-session -t ${name} 2>/dev/null`); } catch {}
+        }
+      }
+    } catch {}
+
     // 1. Restore user metadata (labels, tags) from disk
     this.store.restore();
 
@@ -110,16 +120,46 @@ export class Tower extends EventEmitter {
 
     this.discovery.on('session-changed', async ({ prev, next }: { prev: SessionInfo; next: SessionInfo }) => {
       logger.info('tower: session changed (resume/clear)', { pid: next.pid, old: prev.sessionId, new: next.sessionId });
-      // Deregister old session, re-register with new sessionId/JSONL
-      this.deregisterSession(prev.sessionId);
+      // Migrate metadata from old session before deregistering
+      const oldSession = this.store.get(prev.sessionId);
+      // Migrate only identity metadata (not summaries — new session needs fresh context)
+      const migratedMeta = oldSession ? {
+        label: oldSession.label,
+        tags: oldSession.tags,
+        favorite: oldSession.favorite,
+        favoritedAt: oldSession.favoritedAt,
+      } : undefined;
+
+      // Deregister old session immediately (no 30s dead delay for migrations)
+      this.cleanupSession(prev.sessionId);
+
+      // Register new session, then apply migrated metadata
       await this.registerSession(next);
+      if (migratedMeta) {
+        const patch: Record<string, unknown> = {};
+        if (migratedMeta.label) patch['label'] = migratedMeta.label;
+        if (migratedMeta.tags) patch['tags'] = migratedMeta.tags;
+        if (migratedMeta.favorite) { patch['favorite'] = migratedMeta.favorite; patch['favoritedAt'] = migratedMeta.favoritedAt; }
+        if (Object.keys(patch).length > 0) {
+          this.store.update(next.sessionId, patch);
+          logger.info('tower: session migrated (clear/resume)', { from: prev.sessionId, to: next.sessionId, keys: Object.keys(patch) });
+        }
+      }
     });
 
     // 8. Start periodic discovery
     this.discovery.start();
 
-    // 9. Immediately trigger first summary update, then schedule next after completion
-    void this.scheduleSummaryUpdate();
+    // 9. Trigger initial summary for sessions that are already idle
+    for (const session of this.store.getAll()) {
+      if (session.status !== 'dead') {
+        const jp = this.jsonlPaths.get(session.sessionId);
+        if (jp) {
+          if (!session.goalSummary) void this.refreshGoalSummary(session.sessionId, jp);
+          if (!session.contextSummary) void this.refreshContextSummary(session.sessionId, jp);
+        }
+      }
+    }
 
     // 10. Start hidden LLM session (non-blocking, boots in background)
     void startLlmSession();
@@ -183,87 +223,62 @@ export class Tower extends EventEmitter {
     logger.info('tower: started successfully', { sessions: this.store.getAll().length });
   }
 
-  private summaryRunning = false;
 
-  private async scheduleSummaryUpdate(): Promise<void> {
-    if (this.stopping) return;
-    await this.updateSummaries();
-    if (this.stopping) return;
-    // Schedule next update: 5s for activity refresh, longer if all summaries are done
-    const hasMissing = this.store.getAll().some(s => s.status !== 'dead' && !s.contextSummary);
-    const delay = hasMissing ? 5000 : 30000;
-    this.summaryTimer = setTimeout(() => {
-      void this.scheduleSummaryUpdate();
-    }, delay);
-  }
-
-  private async updateSummaries(): Promise<void> {
-    // Update currentActivity for all sessions (instant, Tier 1+2)
-    for (const session of this.store.getAll()) {
-      if (session.status === 'dead') continue;
-      const jsonlPath = this.jsonlPaths.get(session.sessionId);
-      if (!jsonlPath) continue;
-      try {
-        const activity = await this.jsonlWatcher.readLatestActivity(jsonlPath);
-        if (activity && activity !== session.currentActivity) {
-          this.store.update(session.sessionId, { currentActivity: activity });
-        }
-      } catch {}
-    }
-
-    // LLM context summaries: parallel (tested: 4 parallel calls complete in ~8s)
-    if (this.summaryRunning || this.stopping) return;
-    this.summaryRunning = true;
+  private async refreshGoalSummary(sessionId: string, jsonlPath: string): Promise<void> {
     try {
-      const pending = this.store.getAll()
-        .filter(s => s.status !== 'dead' && !s.contextSummary)
-        .map(s => ({ sessionId: s.sessionId, jsonlPath: this.jsonlPaths.get(s.sessionId) }))
-        .filter((s): s is { sessionId: string; jsonlPath: string } => !!s.jsonlPath);
-
-      if (pending.length > 0) {
-        await Promise.all(
-          pending.map(s => this.refreshContextSummary(s.sessionId, s.jsonlPath))
-        );
+      logger.info('tower: refreshing goal summary', { sessionId, jsonlPath });
+      const earlyMessages = await this.jsonlWatcher.readEarlyContext(jsonlPath, 15);
+      if (!earlyMessages) {
+        logger.info('tower: no early messages found for goal', { sessionId });
+        return;
       }
-    } finally {
-      this.summaryRunning = false;
+      if (earlyMessages.length < 20) {
+        logger.info('tower: early messages too short for goal summary', { sessionId, len: earlyMessages.length });
+        return;
+      }
+      logger.info('tower: calling LLM for goal summary', { sessionId, msgLen: earlyMessages.length });
+      const summary = await generateGoalSummary(sessionId, earlyMessages);
+      if (summary) {
+        logger.info('tower: goal summary received', { sessionId, summary });
+        this.store.update(sessionId, { goalSummary: summary });
+      } else {
+        logger.info('tower: LLM returned no goal summary', { sessionId });
+      }
+    } catch (err) {
+      logger.info('tower: goal summary error', { sessionId, error: String(err) });
     }
   }
 
   private async refreshContextSummary(sessionId: string, jsonlPath: string): Promise<void> {
     try {
-      logger.debug('tower: refreshing context summary', { sessionId });
+      logger.info('tower: refreshing context summary', { sessionId, jsonlPath });
       const recentMessages = await this.jsonlWatcher.readRecentContext(jsonlPath, 15);
       if (!recentMessages) {
-        logger.debug('tower: no recent messages found', { sessionId });
+        logger.info('tower: no recent messages found', { sessionId });
         return;
       }
       // Skip if messages are too short to summarize meaningfully
       if (recentMessages.length < 20) {
-        logger.debug('tower: messages too short for LLM summary', { sessionId, len: recentMessages.length });
+        logger.info('tower: messages too short for LLM summary', { sessionId, len: recentMessages.length });
         return;
       }
-      logger.debug('tower: calling LLM for summary', { sessionId, msgLen: recentMessages.length });
+      logger.info('tower: calling LLM for summary', { sessionId, msgLen: recentMessages.length });
       this.store.update(sessionId, { summaryLoading: true });
       const summary = await generateContextSummary(sessionId, recentMessages);
       if (summary) {
-        logger.debug('tower: context summary received', { sessionId, summary });
+        logger.info('tower: context summary received', { sessionId, summary });
         this.store.update(sessionId, { contextSummary: summary, summaryLoading: false });
       } else {
-        logger.debug('tower: LLM returned no summary', { sessionId });
+        logger.info('tower: LLM returned no summary', { sessionId });
         this.store.update(sessionId, { summaryLoading: false });
       }
     } catch (err) {
-      logger.debug('tower: context summary error', { sessionId, error: String(err) });
+      logger.info('tower: context summary error', { sessionId, error: String(err) });
     }
   }
 
   async stop(): Promise<void> {
     this.stopping = true;
-    if (this.summaryTimer) {
-      clearTimeout(this.summaryTimer);
-      this.summaryTimer = null;
-    }
     this.discovery.stop();
     this.jsonlWatcher.unwatchAll();
     this.processMonitor.stopAll();
@@ -355,6 +370,15 @@ export class Tower extends EventEmitter {
       });
       this.emit('state-change', change);
       this.notifier.onStateChange(change);
+
+      // Trigger LLM summary refresh on idle transition
+      if (change.to === 'idle') {
+        const jp = this.jsonlPaths.get(info.sessionId);
+        if (jp) {
+          void this.refreshGoalSummary(info.sessionId, jp);
+          void this.refreshContextSummary(info.sessionId, jp);
+        }
+      }
     });
     this.stateMachines.set(info.sessionId, fsm);
 
@@ -504,6 +528,21 @@ export class Tower extends EventEmitter {
     this.remotePollers.set(compositeId, timer);
   }
 
+  /** Immediate cleanup — no dead state, no 30s delay. Used for session migration (clear/resume). */
+  private cleanupSession(sessionId: string): void {
+    const session = this.store.get(sessionId);
+    if (!session) return;
+    const fsm = this.stateMachines.get(sessionId);
+    if (fsm) { fsm.removeAllListeners(); this.stateMachines.delete(sessionId); }
+    this.jsonlWatcher.unwatch(sessionId);
+    this.jsonlPaths.delete(sessionId);
+    this.processMonitor.stopPolling(session.pid);
+    const remoteTimer = this.remotePollers.get(sessionId);
+    if (remoteTimer) { clearInterval(remoteTimer); this.remotePollers.delete(sessionId); }
+    this.hookSidToSessionId.delete(sessionId);
+    this.store.unregister(sessionId);
+  }
+
   private deregisterSession(sessionId: string): void {
     const session = this.store.get(sessionId);
     if (!session) return;
@@ -578,6 +617,44 @@ export class Tower extends EventEmitter {
       : this.resolveSessionId(hookSid, event.cwd);
     if (!sessionId) {
       logger.info('tower: hook event for unknown session', { hookSid, event: event.event, cwd: event.cwd });
+      // session-start from unknown session = likely /clear or new session — trigger immediate re-scan
+      if (event.event === 'session-start') {
+        // Find the dead/dying session with same CWD for metadata migration
+        const dyingSession = event.cwd
+          ? this.store.getAll().find(s => s.cwd === event.cwd && (s.status === 'dead' || s.status === 'idle'))
+          : undefined;
+        const migratedMeta = dyingSession ? {
+          label: dyingSession.label,
+          tags: dyingSession.tags,
+          favorite: dyingSession.favorite,
+          favoritedAt: dyingSession.favoritedAt,
+        } : undefined;
+
+        // Clean up the old session immediately if it was dead
+        if (dyingSession?.status === 'dead') {
+          this.cleanupSession(dyingSession.sessionId);
+        }
+
+        logger.info('tower: triggering re-scan for new session', { hookSid, cwd: event.cwd, migrateFrom: dyingSession?.sessionId });
+        void this.discovery.scanOnce().then(async (sessions) => {
+          for (const info of sessions) {
+            if (!this.store.get(info.sessionId)) {
+              await this.registerSession(info);
+              // Apply migrated metadata
+              if (migratedMeta && info.cwd === event.cwd) {
+                const patch: Record<string, unknown> = {};
+                if (migratedMeta.label) patch['label'] = migratedMeta.label;
+                if (migratedMeta.tags) patch['tags'] = migratedMeta.tags;
+                if (migratedMeta.favorite) { patch['favorite'] = migratedMeta.favorite; patch['favoritedAt'] = migratedMeta.favoritedAt; }
+                if (Object.keys(patch).length > 0) {
+                  this.store.update(info.sessionId, patch);
+                  logger.info('tower: migrated metadata via hook', { from: dyingSession?.sessionId, to: info.sessionId, keys: Object.keys(patch) });
+                }
+              }
+            }
+          }
+        });
+      }
       return;
     }
     logger.info('tower: hook event received', { event: event.event, sessionId, hookSid });
@@ -633,11 +710,7 @@ export class Tower extends EventEmitter {
           currentTask: cleaned.slice(0, 80),
           currentActivity: cleaned.slice(0, 60),
         });
-        // Trigger async LLM context summary (non-blocking)
-        const jsonlPath = this.jsonlPaths.get(sessionId);
-        if (jsonlPath) {
-          void this.refreshContextSummary(sessionId, jsonlPath);
-        }
+        // LLM summaries are triggered on idle transition (state-change handler)
       }
     } else if (parsed.type === 'assistant') {
       if (parsed.stopReason === 'tool_use' && parsed.toolName) {

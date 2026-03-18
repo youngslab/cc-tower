@@ -25,6 +25,7 @@ export interface Session {
     projectName: string;
     status: 'idle' | 'thinking' | 'executing' | 'agent' | 'dead';
     lastActivity: Date;
+    goalSummary?: string;
     contextSummary?: string;
     summaryLoading?: boolean;
     currentActivity?: string;
@@ -36,6 +37,8 @@ export interface Session {
     estimatedCost?: number;
     label?: string;
     tags?: string[];
+    favorite?: boolean;
+    favoritedAt?: number;
     host: string;
     sshTarget?: string;
     hostOnline?: boolean;

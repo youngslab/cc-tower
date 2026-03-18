@@ -123,8 +123,12 @@ export class JsonlWatcher extends EventEmitter {
             if (!entry)
                 return;
             // Read only new bytes
-            const fd = fs.openSync(jsonlPath, 'r');
             const length = newSize - entry.offset;
+            if (length <= 0) {
+                entry.offset = newSize;
+                return;
+            } // file truncated or rewound
+            const fd = fs.openSync(jsonlPath, 'r');
             const buf = Buffer.alloc(length);
             fs.readSync(fd, buf, 0, length, entry.offset);
             fs.closeSync(fd);
@@ -277,6 +281,55 @@ export class JsonlWatcher extends EventEmitter {
                         const text = cleanDisplayText(parsed.assistantText);
                         if (text.length > 5) {
                             messages.unshift(`CLAUDE: ${text.slice(0, 200)}`);
+                        }
+                    }
+                }
+            }
+            return messages.length > 0 ? messages.join('\n') : undefined;
+        }
+        catch {
+            return undefined;
+        }
+    }
+    /**
+     * Read early conversation context (first N messages) from JSONL for goal summarization.
+     * Reads from the beginning of the file (first 512KB).
+     */
+    async readEarlyContext(jsonlPath, maxMessages = 15) {
+        try {
+            const stat = fs.statSync(jsonlPath);
+            const readSize = Math.min(stat.size, 524288); // first 512KB
+            const buf = Buffer.alloc(readSize);
+            const fd = fs.openSync(jsonlPath, 'r');
+            fs.readSync(fd, buf, 0, readSize, 0);
+            fs.closeSync(fd);
+            const chunk = buf.toString('utf8');
+            const lines = chunk.split('\n').filter(l => l.trim());
+            const messages = [];
+            for (let i = 0; i < lines.length && messages.length < maxMessages; i++) {
+                const parsed = parseJsonlLine(lines[i]);
+                if (!parsed)
+                    continue;
+                if (parsed.type === 'user' && parsed.userContent) {
+                    const text = parsed.userContent.trim();
+                    if (isInternalMessage(text))
+                        continue;
+                    const cleaned = cleanDisplayText(text);
+                    if (cleaned.length <= 5)
+                        continue;
+                    messages.push(`USER: ${cleaned.slice(0, 200)}`);
+                }
+                else if (parsed.type === 'assistant') {
+                    if (parsed.stopReason === 'tool_use' && parsed.toolName) {
+                        const tool = parsed.toolInput
+                            ? `${parsed.toolName}: ${parsed.toolInput}`
+                            : parsed.toolName;
+                        messages.push(`TOOL: ${tool}`);
+                    }
+                    else if (parsed.stopReason === 'end_turn' && parsed.assistantText) {
+                        const text = cleanDisplayText(parsed.assistantText);
+                        if (text.length > 5) {
+                            messages.push(`CLAUDE: ${text.slice(0, 200)}`);
                         }
                     }
                 }

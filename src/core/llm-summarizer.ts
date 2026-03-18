@@ -17,6 +17,10 @@ import { cleanDisplayText } from '../utils/slug.js';
 const cache = new Map<string, { summary: string; hash: string }>();
 const inflight = new Set<string>();
 
+// Goal cache: sessionId → { summary, hash }
+const goalCache = new Map<string, { summary: string; hash: string }>();
+const goalInflight = new Set<string>();
+
 export async function startLlmSession(): Promise<void> {}
 export async function stopLlmSession(): Promise<void> {}
 export function getLlmSessionName(): string { return '_cctower_llm'; }
@@ -37,7 +41,7 @@ export async function generateContextSummary(
 
   inflight.add(sessionId);
   try {
-    const prompt = `Read the dev session conversation below. Summarize the user's goal in one line (max 30 words). Use the same language the user is using. Output ONLY the summary, nothing else.\n\n${recentMessages.slice(-2500)}`;
+    const prompt = `Read the recent dev session messages below. Summarize what the user is currently working on RIGHT NOW in one line (max 20 words). Use the same language the user is using. Output ONLY the summary.\n\n${recentMessages.slice(-2500)}`;
 
     const stdout = await runClaude(prompt);
 
@@ -50,9 +54,46 @@ export async function generateContextSummary(
       }
     }
   } catch (err) {
-    logger.debug('llm-summarizer: failed', { sessionId, error: String(err) });
+    logger.info('llm-summarizer: failed', { sessionId, error: String(err) });
   } finally {
     inflight.delete(sessionId);
+  }
+
+  return cached?.summary;
+}
+
+/**
+ * Generate a 1-line goal summary using `claude --print`.
+ * Generated once from early messages. Returns cached result if messages unchanged.
+ */
+export async function generateGoalSummary(
+  sessionId: string,
+  earlyMessages: string,
+): Promise<string | undefined> {
+  const hash = simpleHash(earlyMessages);
+  const cached = goalCache.get(sessionId);
+  if (cached && cached.hash === hash) return cached.summary;
+
+  if (goalInflight.has(sessionId)) return cached?.summary;
+
+  goalInflight.add(sessionId);
+  try {
+    const prompt = `Read the dev session conversation below. Summarize the user's overall goal/objective for this session in one line (max 20 words). Use the same language the user is using. Output ONLY the summary.\n\n${earlyMessages.slice(0, 2500)}`;
+
+    const stdout = await runClaude(prompt);
+
+    if (stdout) {
+      const firstLine = stdout.trim().split('\n')[0] ?? '';
+      const summary = cleanDisplayText(firstLine).slice(0, 50);
+      if (summary && summary.length > 3) {
+        goalCache.set(sessionId, { summary, hash });
+        return summary;
+      }
+    }
+  } catch (err) {
+    logger.info('llm-summarizer: goal summary failed', { sessionId, error: String(err) });
+  } finally {
+    goalInflight.delete(sessionId);
   }
 
   return cached?.summary;
@@ -63,12 +104,13 @@ export async function generateContextSummary(
  */
 function runClaude(prompt: string): Promise<string> {
   return new Promise((resolve) => {
-    const escaped = prompt.replace(/'/g, "'\\''");
-    const cmd = `cd /tmp && claude --print -p '${escaped}' --model haiku --no-session-persistence 2>/dev/null`;
-
-    const child = spawn('sh', ['-c', cmd], {
-      stdio: ['ignore', 'pipe', 'pipe'],
+    const child = spawn('claude', ['--print', '--model', 'haiku', '--no-session-persistence'], {
+      cwd: '/tmp',
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
+
+    child.stdin.write(prompt);
+    child.stdin.end();
 
     let out = '';
     child.stdout.on('data', (d: Buffer) => { out += d.toString(); });

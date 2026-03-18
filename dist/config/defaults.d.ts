@@ -42,6 +42,9 @@ export interface Config {
             end: string;
         };
     };
+    keys: {
+        close: string;
+    };
     commands: {
         confirm_before_send: boolean;
         confirm_when_busy: boolean;

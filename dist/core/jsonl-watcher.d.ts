@@ -31,6 +31,11 @@ export declare class JsonlWatcher extends EventEmitter {
      * Returns a formatted string with role labels for richer context.
      */
     readRecentContext(jsonlPath: string, maxMessages?: number): Promise<string | undefined>;
+    /**
+     * Read early conversation context (first N messages) from JSONL for goal summarization.
+     * Reads from the beginning of the file (first 512KB).
+     */
+    readEarlyContext(jsonlPath: string, maxMessages?: number): Promise<string | undefined>;
     unwatchAll(): void;
 }
 export {};

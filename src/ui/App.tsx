@@ -17,7 +17,7 @@ interface Props {
 export function App({ tower }: Props) {
   const { exit } = useApp();
   const { sessions, tmuxCount } = useSessionStore(tower.store);
-  const { send, peek } = useTmux();
+  const { send, peek } = useTmux(tower.config.keys.close);
   const [view, setView] = useState<View>('dashboard');
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
 
@@ -47,6 +47,11 @@ export function App({ tower }: Props) {
     setView('dashboard');
     setSelectedSession(null);
   }, []);
+
+  const handleToggleFavorite = useCallback((session: Session) => {
+    const nowFav = !session.favorite;
+    tower.store.update(session.sessionId, { favorite: nowFav, favoritedAt: nowFav ? Date.now() : undefined });
+  }, [tower]);
 
   const handleQuit = useCallback(async () => {
     await tower.stop();
@@ -112,6 +117,7 @@ export function App({ tower }: Props) {
             onSelect={handleSelect}
             onSend={handleSend}
             onPeek={handlePeek}
+            onToggleFavorite={handleToggleFavorite}
             onQuit={handleQuit}
           />
         )}

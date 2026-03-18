@@ -28,7 +28,8 @@ export interface Session {
   projectName: string;
   status: 'idle' | 'thinking' | 'executing' | 'agent' | 'dead';
   lastActivity: Date;
-  contextSummary?: string;     // LLM-generated: 전체 맥락 한 줄 (Dashboard TASK)
+  goalSummary?: string;        // LLM-generated: 세션 전체 목표 (generated once from early messages)
+  contextSummary?: string;     // LLM-generated: 최근 작업 방향 (Dashboard TASK)
   summaryLoading?: boolean;    // LLM 요약 대기 중
   currentActivity?: string;    // Tier1+2: 지금 하고 있는 일 (Detail View)
   currentTask?: string;        // 마지막 user 메시지 (raw, fallback용)
@@ -39,6 +40,8 @@ export interface Session {
   estimatedCost?: number;
   label?: string;
   tags?: string[];
+  favorite?: boolean;
+  favoritedAt?: number;  // timestamp when favorited, for stable sort order
   host: string;           // 'local' | host name from config
   sshTarget?: string;     // e.g., 'user@192.168.1.10' — undefined for local
   hostOnline?: boolean;   // remote host reachability status
@@ -47,6 +50,9 @@ export interface Session {
 interface PersistedEntry {
   label?: string;
   tags?: string[];
+  favorite?: boolean;
+  favoritedAt?: number;
+  goalSummary?: string;
   contextSummary?: string;
   host?: string;
 }
@@ -88,6 +94,8 @@ export class SessionStore extends EventEmitter {
     if (meta) {
       if (meta.label !== undefined && !session.label) session.label = meta.label;
       if (meta.tags !== undefined && !session.tags) session.tags = meta.tags;
+      if (meta.favorite !== undefined && !session.favorite) { session.favorite = meta.favorite; session.favoritedAt = meta.favoritedAt; }
+      if (meta.goalSummary !== undefined && !session.goalSummary) session.goalSummary = meta.goalSummary;
       if (meta.contextSummary !== undefined && !session.contextSummary) session.contextSummary = meta.contextSummary;
     }
     this.sessions.set(session.sessionId, session);
@@ -114,7 +122,7 @@ export class SessionStore extends EventEmitter {
     logger.debug('session-store: updated session', { sessionId, patch: Object.keys(patch) });
 
     // If user metadata changed, schedule persist
-    if ('label' in patch || 'tags' in patch) {
+    if ('label' in patch || 'tags' in patch || 'favorite' in patch) {
       this.persist();
     }
   }
@@ -140,6 +148,9 @@ export class SessionStore extends EventEmitter {
       const entry: PersistedEntry = {};
       if (session.label !== undefined) entry.label = session.label;
       if (session.tags !== undefined) entry.tags = session.tags;
+      if (session.favorite !== undefined) entry.favorite = session.favorite;
+      if (session.favoritedAt !== undefined) entry.favoritedAt = session.favoritedAt;
+      if (session.goalSummary !== undefined) entry.goalSummary = session.goalSummary;
       if (session.contextSummary !== undefined) entry.contextSummary = session.contextSummary;
       if (Object.keys(entry).length > 0) data.sessions[id] = entry;
     }
@@ -155,6 +166,9 @@ export class SessionStore extends EventEmitter {
       const entry: PersistedEntry = {};
       if (session.label !== undefined) entry.label = session.label;
       if (session.tags !== undefined) entry.tags = session.tags;
+      if (session.favorite !== undefined) entry.favorite = session.favorite;
+      if (session.favoritedAt !== undefined) entry.favoritedAt = session.favoritedAt;
+      if (session.goalSummary !== undefined) entry.goalSummary = session.goalSummary;
       if (session.contextSummary !== undefined) entry.contextSummary = session.contextSummary;
       if (Object.keys(entry).length > 0) {
         data.sessions[id] = entry;
@@ -186,6 +200,8 @@ export class SessionStore extends EventEmitter {
         if (session) {
           if (entry.label !== undefined) session.label = entry.label;
           if (entry.tags !== undefined) session.tags = entry.tags;
+          if (entry.favorite !== undefined) { session.favorite = entry.favorite; session.favoritedAt = entry.favoritedAt; }
+          if (entry.goalSummary !== undefined) session.goalSummary = entry.goalSummary;
           if (entry.contextSummary !== undefined) session.contextSummary = entry.contextSummary;
         }
       }

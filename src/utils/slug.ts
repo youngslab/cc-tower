@@ -5,7 +5,7 @@
  * Example: "/home/user/workspace/app" → "-home-user-workspace-app"
  */
 export function cwdToSlug(cwd: string): string {
-  return cwd.replace(/\//g, '-');
+  return cwd.replace(/[/.]/g, '-');
 }
 
 /**
