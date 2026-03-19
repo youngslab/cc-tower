@@ -45,7 +45,7 @@ export async function generateContextSummary(
 
   inflight.add(sessionId);
   try {
-    const prompt = `Read the recent dev session messages below. Summarize what the user is currently working on RIGHT NOW in one line (max 50 words). Use the same language the user is using. Output ONLY the summary.\n\n${recentMessages.slice(-2500)}`;
+    const prompt = `Read the recent dev session messages below. Summarize what was accomplished (the result/outcome) in one line (max 50 words). Use the same language the user is using. Output ONLY the summary.\n\n${recentMessages.slice(-2500)}`;
 
     const stdout = await runClaude(prompt);
 

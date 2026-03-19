@@ -30,6 +30,7 @@ export interface Session {
   lastActivity: Date;
   goalSummary?: string;        // LLM-generated: 세션 전체 목표 (generated once from early messages)
   contextSummary?: string;     // LLM-generated: 최근 작업 방향 (Dashboard TASK)
+  nextSteps?: string;          // LLM-generated: suggested next action on idle
   summaryLoading?: boolean;    // LLM 요약 대기 중
   currentActivity?: string;    // Tier1+2: 지금 하고 있는 일 (Detail View)
   currentTask?: string;        // 마지막 user 메시지 (raw, fallback용)
@@ -44,6 +45,7 @@ export interface Session {
   favoritedAt?: number;  // timestamp when favorited, for stable sort order
   host: string;           // 'local' | host name from config
   sshTarget?: string;     // e.g., 'user@192.168.1.10' — undefined for local
+  commandPrefix?: string; // e.g., 'docker exec devenv' — wraps remote commands
   hostOnline?: boolean;   // remote host reachability status
 }
 
@@ -54,6 +56,7 @@ interface PersistedEntry {
   favoritedAt?: number;
   goalSummary?: string;
   contextSummary?: string;
+  nextSteps?: string;
   host?: string;
 }
 
@@ -97,6 +100,7 @@ export class SessionStore extends EventEmitter {
       if (meta.favorite !== undefined && !session.favorite) { session.favorite = meta.favorite; session.favoritedAt = meta.favoritedAt; }
       if (meta.goalSummary !== undefined && !session.goalSummary) session.goalSummary = meta.goalSummary;
       if (meta.contextSummary !== undefined && !session.contextSummary) session.contextSummary = meta.contextSummary;
+      if (meta.nextSteps !== undefined && !session.nextSteps) session.nextSteps = meta.nextSteps;
     }
     this.sessions.set(session.sessionId, session);
     this.emit('session-added', session);
@@ -152,6 +156,7 @@ export class SessionStore extends EventEmitter {
       if (session.favoritedAt !== undefined) entry.favoritedAt = session.favoritedAt;
       if (session.goalSummary !== undefined) entry.goalSummary = session.goalSummary;
       if (session.contextSummary !== undefined) entry.contextSummary = session.contextSummary;
+      if (session.nextSteps !== undefined) entry.nextSteps = session.nextSteps;
       if (Object.keys(entry).length > 0) data.sessions[id] = entry;
     }
     try {
@@ -170,6 +175,7 @@ export class SessionStore extends EventEmitter {
       if (session.favoritedAt !== undefined) entry.favoritedAt = session.favoritedAt;
       if (session.goalSummary !== undefined) entry.goalSummary = session.goalSummary;
       if (session.contextSummary !== undefined) entry.contextSummary = session.contextSummary;
+      if (session.nextSteps !== undefined) entry.nextSteps = session.nextSteps;
       if (Object.keys(entry).length > 0) {
         data.sessions[id] = entry;
       }
@@ -203,6 +209,7 @@ export class SessionStore extends EventEmitter {
           if (entry.favorite !== undefined) { session.favorite = entry.favorite; session.favoritedAt = entry.favoritedAt; }
           if (entry.goalSummary !== undefined) session.goalSummary = entry.goalSummary;
           if (entry.contextSummary !== undefined) session.contextSummary = entry.contextSummary;
+          if (entry.nextSteps !== undefined) session.nextSteps = entry.nextSteps;
         }
       }
       logger.debug('session-store: restored state', { path: this.persistPath });
