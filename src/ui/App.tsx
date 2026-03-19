@@ -32,7 +32,7 @@ export function App({ tower }: Props) {
   }, []);
 
   const handlePeek = useCallback(async (session: Session) => {
-    if (!session.hasTmux) return;
+    if (!session.hasTmux && !session.sshTarget) return;
     await peek(session);
   }, [peek]);
 
@@ -93,13 +93,20 @@ export function App({ tower }: Props) {
   // Dynamic sizing: use 90% of terminal, capped at reasonable max
   const boxWidth = Math.min(termWidth - 4, Math.max(MIN_WIDTH, Math.floor(termWidth * 0.9)));
 
+  // Calculate content height estimate for manual vertical centering.
+  // We use flex-start + marginTop instead of justifyContent="center" to avoid
+  // ink cursor tracking drift when tmux display-popup refreshes the pane.
+  // Border (2) + paddingY (2) + min content (~3) = ~7 minimum
+  const estimatedContentHeight = Math.min(termHeight - 4, Math.max(7, sessions.length * 2 + 6));
+  const topMargin = Math.max(0, Math.floor((termHeight - estimatedContentHeight) / 2));
+
   return (
     <Box
       width={termWidth}
       height={termHeight}
       flexDirection="column"
       alignItems="center"
-      justifyContent="center"
+      justifyContent="flex-start"
     >
       <Box
         flexDirection="column"
@@ -108,6 +115,7 @@ export function App({ tower }: Props) {
         paddingX={2}
         paddingY={1}
         width={boxWidth}
+        marginTop={topMargin}
       >
         {view === 'dashboard' && (
           <Dashboard

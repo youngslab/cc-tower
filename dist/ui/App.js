@@ -21,7 +21,7 @@ export function App({ tower }) {
         setView('send');
     }, []);
     const handlePeek = useCallback(async (session) => {
-        if (!session.hasTmux)
+        if (!session.hasTmux && !session.sshTarget)
             return;
         await peek(session);
     }, [peek]);
@@ -68,6 +68,12 @@ export function App({ tower }) {
     }
     // Dynamic sizing: use 90% of terminal, capped at reasonable max
     const boxWidth = Math.min(termWidth - 4, Math.max(MIN_WIDTH, Math.floor(termWidth * 0.9)));
-    return (_jsx(Box, { width: termWidth, height: termHeight, flexDirection: "column", alignItems: "center", justifyContent: "center", children: _jsxs(Box, { flexDirection: "column", borderStyle: "round", borderColor: "cyan", paddingX: 2, paddingY: 1, width: boxWidth, children: [view === 'dashboard' && (_jsx(Dashboard, { sessions: sessions, tmuxCount: tmuxCount, maxTaskWidth: Math.max(10, boxWidth - 59), onSelect: handleSelect, onSend: handleSend, onPeek: handlePeek, onToggleFavorite: handleToggleFavorite, onQuit: handleQuit })), view === 'detail' && selectedSession && (_jsx(DetailView, { session: selectedSession, onBack: handleBack, onSend: handleSend, onPeek: handlePeek })), view === 'send' && selectedSession && (_jsx(SendInput, { session: selectedSession, confirmWhenBusy: tower.config.commands.confirm_when_busy, onSend: handleSendText, onCancel: () => setView('dashboard') }))] }) }));
+    // Calculate content height estimate for manual vertical centering.
+    // We use flex-start + marginTop instead of justifyContent="center" to avoid
+    // ink cursor tracking drift when tmux display-popup refreshes the pane.
+    // Border (2) + paddingY (2) + min content (~3) = ~7 minimum
+    const estimatedContentHeight = Math.min(termHeight - 4, Math.max(7, sessions.length * 2 + 6));
+    const topMargin = Math.max(0, Math.floor((termHeight - estimatedContentHeight) / 2));
+    return (_jsx(Box, { width: termWidth, height: termHeight, flexDirection: "column", alignItems: "center", justifyContent: "flex-start", children: _jsxs(Box, { flexDirection: "column", borderStyle: "round", borderColor: "cyan", paddingX: 2, paddingY: 1, width: boxWidth, marginTop: topMargin, children: [view === 'dashboard' && (_jsx(Dashboard, { sessions: sessions, tmuxCount: tmuxCount, maxTaskWidth: Math.max(10, boxWidth - 59), onSelect: handleSelect, onSend: handleSend, onPeek: handlePeek, onToggleFavorite: handleToggleFavorite, onQuit: handleQuit })), view === 'detail' && selectedSession && (_jsx(DetailView, { session: selectedSession, onBack: handleBack, onSend: handleSend, onPeek: handlePeek })), view === 'send' && selectedSession && (_jsx(SendInput, { session: selectedSession, confirmWhenBusy: tower.config.commands.confirm_when_busy, onSend: handleSendText, onCancel: () => setView('dashboard') }))] }) }));
 }
 //# sourceMappingURL=App.js.map
