@@ -338,13 +338,15 @@ export class Tower extends EventEmitter {
         let jsonlPath = path.join(projectDir, `${info.sessionId}.jsonl`);
         // Fallback: if exact JSONL doesn't exist, use most recently modified one
         // (handles --continue/--resume where sessionId differs from JSONL filename)
+        // But only if the fallback file was modified within the last 30 seconds (avoid stale match after /clear)
         if (!fs.existsSync(jsonlPath)) {
             try {
+                const now = Date.now();
                 const files = fs.readdirSync(projectDir)
                     .filter(f => f.endsWith('.jsonl'))
                     .map(f => ({ name: f, mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
                     .sort((a, b) => b.mtime - a.mtime);
-                if (files.length > 0) {
+                if (files.length > 0 && (now - files[0].mtime) < 30000) {
                     jsonlPath = path.join(projectDir, files[0].name);
                     logger.debug('tower: using fallback JSONL', { sessionId: info.sessionId, fallback: files[0].name });
                 }
@@ -395,7 +397,18 @@ export class Tower extends EventEmitter {
             this.notifier.onStateChange(change);
             // Trigger LLM summary refresh on idle transition
             if (change.to === 'idle') {
-                const jp = this.jsonlPaths.get(info.sessionId);
+                let jp = this.jsonlPaths.get(info.sessionId);
+                // Re-check: if JSONL path doesn't match sessionId (stale after /clear), correct it
+                if (jp && !jp.includes(info.sessionId)) {
+                    const exactPath = path.join(path.dirname(jp), `${info.sessionId}.jsonl`);
+                    if (fs.existsSync(exactPath)) {
+                        jp = exactPath;
+                        this.jsonlPaths.set(info.sessionId, jp);
+                        this.jsonlWatcher.unwatch(info.sessionId);
+                        this.jsonlWatcher.watch(info.sessionId, jp);
+                        logger.info('tower: JSONL path corrected on idle', { sessionId: info.sessionId, newPath: jp });
+                    }
+                }
                 if (jp) {
                     void this.refreshGoalSummary(info.sessionId, jp);
                     void this.refreshContextSummary(info.sessionId, jp);
@@ -634,11 +647,20 @@ export class Tower extends EventEmitter {
         // 1. Direct match (hook sid === internal sessionId)
         if (this.stateMachines.has(hookSid))
             return hookSid;
-        // 2. Cached reverse mapping from previous resolution
+        // 2. Cached reverse mapping from previous resolution (O(1) fast path)
         const cached = this.hookSidToSessionId.get(hookSid);
         if (cached && this.stateMachines.has(cached))
             return cached;
-        // 3. Fallback: match by CWD across all sessions
+        // 3. Composite key match: stateMachines stores "host::bareId", hook sends bare id.
+        //    With multiple matches, first-match-wins is intentional (most recently added key wins).
+        for (const key of this.stateMachines.keys()) {
+            if (key.endsWith(`::${hookSid}`)) {
+                this.hookSidToSessionId.set(hookSid, key);
+                logger.debug('tower: hook sid matched via composite key', { hookSid, compositeId: key });
+                return key;
+            }
+        }
+        // 4. Fallback: match by CWD across all sessions
         if (hookCwd) {
             for (const session of this.store.getAll()) {
                 if (session.cwd === hookCwd && session.status !== 'dead' && this.stateMachines.has(session.sessionId)) {
@@ -663,7 +685,7 @@ export class Tower extends EventEmitter {
     }
     handleHookEvent(event) {
         const hookSid = event.sid;
-        if (!hookSid)
+        if (!hookSid || typeof hookSid !== 'string')
             return;
         // When CLAUDE_SESSION_ID is not available (sid='unknown'), resolve by CWD only
         const sessionId = hookSid === 'unknown'
