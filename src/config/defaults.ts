@@ -4,6 +4,7 @@ export interface HostConfig {
   hooks: boolean;         // true = socket forwarding, false = JSONL polling
   ssh_options?: string;   // extra SSH flags, e.g., '-i ~/.ssh/id_rsa -p 2222'
   claude_dir?: string;    // remote claude dir, default: '~/.claude'
+  command_prefix?: string; // prefix to wrap remote commands, e.g., 'docker exec devenv'
 }
 
 export interface Config {

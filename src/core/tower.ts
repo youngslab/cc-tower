@@ -188,7 +188,7 @@ export class Tower extends EventEmitter {
       // Start remote discovery
       const remoteHosts = this.config.hosts.map(h => ({
         name: h.name,
-        config: { sshTarget: h.ssh, sshOptions: h.ssh_options, claudeDir: h.claude_dir } as RemoteHostConfig,
+        config: { sshTarget: h.ssh, sshOptions: h.ssh_options, claudeDir: h.claude_dir, commandPrefix: h.command_prefix } as RemoteHostConfig,
       }));
       this.remoteDiscovery = new RemoteDiscovery(remoteHosts);
 
@@ -485,6 +485,7 @@ export class Tower extends EventEmitter {
       sshTarget: hostConfig.ssh,
       sshOptions: hostConfig.ssh_options,
       claudeDir: hostConfig.claude_dir,
+      commandPrefix: hostConfig.command_prefix,
     };
 
     // Compute remote JSONL path
@@ -532,7 +533,7 @@ export class Tower extends EventEmitter {
       const panePidSet = new Set(panes.map(p => p.pid));
       // Walk up the process tree from claude PID until we hit a pane PID
       const ancestryCmd = `P=${info.pid}; for i in 1 2 3 4 5; do P=$(ps -o ppid= -p $P 2>/dev/null | tr -d " "); [ -z "$P" ] || [ "$P" = "1" ] && break; echo $P; done`;
-      const ancestryOut = await sshExec(hostConfig.ssh, ancestryCmd, { sshOptions: hostConfig.ssh_options, timeout: 5000 });
+      const ancestryOut = await sshExec(hostConfig.ssh, ancestryCmd, { sshOptions: hostConfig.ssh_options, commandPrefix: hostConfig.command_prefix, timeout: 5000 });
       logger.info('tower: remote pane ancestry', { pid: info.pid, ancestry: ancestryOut.trim(), panePids: Array.from(panePidSet) });
       for (const line of ancestryOut.trim().split('\n')) {
         const ancestor = parseInt(line);
@@ -560,6 +561,7 @@ export class Tower extends EventEmitter {
       toolCallCount: 0,
       host: info.host,
       sshTarget: info.sshTarget,
+      commandPrefix: hostConfig.command_prefix,
       hostOnline: true,
     };
     this.store.register(session);
