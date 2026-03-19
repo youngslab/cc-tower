@@ -1,4 +1,5 @@
 import { useCallback } from 'react';
+import { execa } from 'execa';
 import { tmux } from '../../tmux/commands.js';
 export function useTmux(closeKey = 'Escape') {
     // Map config key name to tmux key name
@@ -25,7 +26,6 @@ export function useTmux(closeKey = 'Escape') {
     const peek = useCallback(async (session) => {
         if (session.sshTarget) {
             // Remote peek: ssh into host, create group session, attach to specific pane
-            // Find remote tmux session/window for this pane
             const paneSelect = session.paneId
                 ? `tmux list-panes -a -F '#{pane_id} #{session_name} #{window_index}' | grep '^${session.paneId} ' | head -1`
                 : '';
@@ -60,6 +60,11 @@ export function useTmux(closeKey = 'Escape') {
         catch { }
         try {
             await tmux.newGroupSession(peekName, targetPane.sessionName);
+            // Prevent peek client (smaller popup) from resizing original session's windows
+            try {
+                await execa('tmux', ['set-option', '-t', peekName, 'window-size', 'largest']);
+            }
+            catch { }
             // Set copy-command on peek session to work around display-popup blocking OSC52
             const clipCmd = 'CLIP=$(command -v xclip && echo "xclip -selection clipboard" || command -v xsel && echo "xsel --clipboard --input" || echo ""); [ -n "$CLIP" ] && tmux set-option -s copy-command "$CLIP"';
             await tmux.displayPopup({
