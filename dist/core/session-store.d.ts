@@ -27,6 +27,7 @@ export interface Session {
     lastActivity: Date;
     goalSummary?: string;
     contextSummary?: string;
+    nextSteps?: string;
     summaryLoading?: boolean;
     currentActivity?: string;
     currentTask?: string;

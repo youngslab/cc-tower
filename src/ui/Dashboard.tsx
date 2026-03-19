@@ -67,11 +67,6 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
 
   return (
     <Box flexDirection="column">
-      <Box marginBottom={1}>
-        <Text bold color="cyan">cc-tower</Text>
-        <Text> — {sorted.length} sessions</Text>
-      </Box>
-
       {/* Header */}
       <Box>
         <Text bold>   </Text>
@@ -112,6 +107,11 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
               <Text color={isCursor ? 'cyan' : (isDim ? 'gray' : color)}>{pad(`${icon} ${session.status.toUpperCase()}`, 14)}</Text>
               <Text color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{truncate(session.goalSummary ?? session.contextSummary ?? session.currentTask ?? (session.summaryLoading ? '⟳ summarizing...' : ''), maxTaskWidth)}</Text>
             </Box>
+            {session.status === 'idle' && session.nextSteps && (
+              <Box paddingLeft={33}>
+                <Text color="yellow">↳ {truncate(session.nextSteps, maxTaskWidth)}</Text>
+              </Box>
+            )}
           </React.Fragment>
         );
       })}

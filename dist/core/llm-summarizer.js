@@ -17,6 +17,9 @@ const inflight = new Set();
 // Goal cache: sessionId → { summary, hash }
 const goalCache = new Map();
 const goalInflight = new Set();
+// Next steps cache: sessionId → { summary, hash }
+const nextStepsCache = new Map();
+const nextStepsInflight = new Set();
 export async function startLlmSession() { }
 export async function stopLlmSession() { }
 export function getLlmSessionName() { return '_cctower_llm'; }
@@ -33,11 +36,11 @@ export async function generateContextSummary(sessionId, recentMessages) {
         return cached?.summary;
     inflight.add(sessionId);
     try {
-        const prompt = `Read the recent dev session messages below. Summarize what the user is currently working on RIGHT NOW in one line (max 20 words). Use the same language the user is using. Output ONLY the summary.\n\n${recentMessages.slice(-2500)}`;
+        const prompt = `Read the recent dev session messages below. Summarize what the user is currently working on RIGHT NOW in one line (max 50 words). Use the same language the user is using. Output ONLY the summary.\n\n${recentMessages.slice(-2500)}`;
         const stdout = await runClaude(prompt);
         if (stdout) {
             const firstLine = stdout.trim().split('\n')[0] ?? '';
-            const summary = cleanDisplayText(firstLine).slice(0, 50);
+            const summary = cleanDisplayText(firstLine).slice(0, 120);
             if (summary && summary.length > 3) {
                 cache.set(sessionId, { summary, hash });
                 return summary;
@@ -65,11 +68,11 @@ export async function generateGoalSummary(sessionId, earlyMessages) {
         return cached?.summary;
     goalInflight.add(sessionId);
     try {
-        const prompt = `Read the dev session conversation below. Summarize the user's overall goal/objective for this session in one line (max 20 words). Use the same language the user is using. Output ONLY the summary.\n\n${earlyMessages.slice(0, 2500)}`;
+        const prompt = `Read the dev session conversation below. Summarize the user's overall goal/objective for this session in one line (max 50 words). Use the same language the user is using. Output ONLY the summary.\n\n${earlyMessages.slice(0, 2500)}`;
         const stdout = await runClaude(prompt);
         if (stdout) {
             const firstLine = stdout.trim().split('\n')[0] ?? '';
-            const summary = cleanDisplayText(firstLine).slice(0, 50);
+            const summary = cleanDisplayText(firstLine).slice(0, 120);
             if (summary && summary.length > 3) {
                 goalCache.set(sessionId, { summary, hash });
                 return summary;
@@ -81,6 +84,39 @@ export async function generateGoalSummary(sessionId, earlyMessages) {
     }
     finally {
         goalInflight.delete(sessionId);
+    }
+    return cached?.summary;
+}
+/**
+ * Generate a next-steps suggestion using `claude --print`.
+ * Called on idle transition. Returns undefined if no clear next step.
+ */
+export async function generateNextSteps(sessionId, recentMessages) {
+    const hash = simpleHash(recentMessages);
+    const cached = nextStepsCache.get(sessionId);
+    if (cached && cached.hash === hash)
+        return cached.summary;
+    if (nextStepsInflight.has(sessionId))
+        return cached?.summary;
+    nextStepsInflight.add(sessionId);
+    try {
+        const prompt = `Analyze this dev session and suggest what the user should do next. If the work is fully complete with no obvious next step, output "NONE". Max 30 words. Use the same language the user is using. Output ONLY the suggestion.\n\n${recentMessages.slice(-2500)}`;
+        const stdout = await runClaude(prompt);
+        if (stdout) {
+            const firstLine = stdout.trim().split('\n')[0] ?? '';
+            const suggestion = cleanDisplayText(firstLine).slice(0, 120);
+            if (!suggestion || suggestion.length < 3 || suggestion.toUpperCase() === 'NONE') {
+                return undefined;
+            }
+            nextStepsCache.set(sessionId, { summary: suggestion, hash });
+            return suggestion;
+        }
+    }
+    catch (err) {
+        logger.info('llm-summarizer: next steps failed', { sessionId, error: String(err) });
+    }
+    finally {
+        nextStepsInflight.delete(sessionId);
     }
     return cached?.summary;
 }

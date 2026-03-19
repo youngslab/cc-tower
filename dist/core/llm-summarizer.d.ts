@@ -11,3 +11,8 @@ export declare function generateContextSummary(sessionId: string, recentMessages
  * Generated once from early messages. Returns cached result if messages unchanged.
  */
 export declare function generateGoalSummary(sessionId: string, earlyMessages: string): Promise<string | undefined>;
+/**
+ * Generate a next-steps suggestion using `claude --print`.
+ * Called on idle transition. Returns undefined if no clear next step.
+ */
+export declare function generateNextSteps(sessionId: string, recentMessages: string): Promise<string | undefined>;

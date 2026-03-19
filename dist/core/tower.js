@@ -10,7 +10,7 @@ import { Summarizer } from './summarizer.js';
 import { Notifier } from './notifier.js';
 import { mapPidToPane } from '../tmux/pane-mapper.js';
 import { cwdToSlug, cleanDisplayText, isInternalMessage } from '../utils/slug.js';
-import { generateContextSummary, generateGoalSummary, startLlmSession, stopLlmSession } from './llm-summarizer.js';
+import { generateContextSummary, generateGoalSummary, generateNextSteps, startLlmSession, stopLlmSession } from './llm-summarizer.js';
 import { logger } from '../utils/logger.js';
 import { parseJsonlLine } from '../utils/jsonl-parser.js';
 import { ConnectionManager } from '../ssh/connection-manager.js';
@@ -149,6 +149,8 @@ export class Tower extends EventEmitter {
                         void this.refreshGoalSummary(session.sessionId, jp);
                     if (!session.contextSummary)
                         void this.refreshContextSummary(session.sessionId, jp);
+                    if (!session.nextSteps && session.status === 'idle')
+                        void this.refreshNextSteps(session.sessionId, jp);
                 }
             }
         }
@@ -255,6 +257,21 @@ export class Tower extends EventEmitter {
         }
         catch (err) {
             logger.info('tower: context summary error', { sessionId, error: String(err) });
+        }
+    }
+    async refreshNextSteps(sessionId, jsonlPath) {
+        try {
+            const recentMessages = await this.jsonlWatcher.readRecentContext(jsonlPath, 15);
+            if (!recentMessages || recentMessages.length < 20)
+                return;
+            const suggestion = await generateNextSteps(sessionId, recentMessages);
+            if (suggestion) {
+                logger.info('tower: next steps received', { sessionId, suggestion });
+                this.store.update(sessionId, { nextSteps: suggestion });
+            }
+        }
+        catch (err) {
+            logger.info('tower: next steps error', { sessionId, error: String(err) });
         }
     }
     async refreshRemoteGoalSummary(compositeId, config, jsonlPath) {
@@ -412,6 +429,7 @@ export class Tower extends EventEmitter {
                 if (jp) {
                     void this.refreshGoalSummary(info.sessionId, jp);
                     void this.refreshContextSummary(info.sessionId, jp);
+                    void this.refreshNextSteps(info.sessionId, jp);
                 }
             }
         });

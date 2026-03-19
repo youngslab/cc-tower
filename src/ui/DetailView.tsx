@@ -72,6 +72,13 @@ export function DetailView({ session, onBack, onSend, onPeek }: Props) {
         </Box>
       )}
 
+      {session.nextSteps && (
+        <Box marginTop={1} paddingX={2} flexDirection="column">
+          <Text bold dimColor>── Action Item ──</Text>
+          <Text color="yellow">{session.nextSteps}</Text>
+        </Box>
+      )}
+
       <Box marginTop={1}>
         <Text dimColor>[/] Send  [p] Peek  [b] Back</Text>
       </Box>

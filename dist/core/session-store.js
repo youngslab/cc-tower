@@ -45,6 +45,8 @@ export class SessionStore extends EventEmitter {
                 session.goalSummary = meta.goalSummary;
             if (meta.contextSummary !== undefined && !session.contextSummary)
                 session.contextSummary = meta.contextSummary;
+            if (meta.nextSteps !== undefined && !session.nextSteps)
+                session.nextSteps = meta.nextSteps;
         }
         this.sessions.set(session.sessionId, session);
         this.emit('session-added', session);
@@ -102,6 +104,8 @@ export class SessionStore extends EventEmitter {
                 entry.goalSummary = session.goalSummary;
             if (session.contextSummary !== undefined)
                 entry.contextSummary = session.contextSummary;
+            if (session.nextSteps !== undefined)
+                entry.nextSteps = session.nextSteps;
             if (Object.keys(entry).length > 0)
                 data.sessions[id] = entry;
         }
@@ -127,6 +131,8 @@ export class SessionStore extends EventEmitter {
                 entry.goalSummary = session.goalSummary;
             if (session.contextSummary !== undefined)
                 entry.contextSummary = session.contextSummary;
+            if (session.nextSteps !== undefined)
+                entry.nextSteps = session.nextSteps;
             if (Object.keys(entry).length > 0) {
                 data.sessions[id] = entry;
             }
@@ -166,6 +172,8 @@ export class SessionStore extends EventEmitter {
                         session.goalSummary = entry.goalSummary;
                     if (entry.contextSummary !== undefined)
                         session.contextSummary = entry.contextSummary;
+                    if (entry.nextSteps !== undefined)
+                        session.nextSteps = entry.nextSteps;
                 }
             }
             logger.debug('session-store: restored state', { path: this.persistPath });

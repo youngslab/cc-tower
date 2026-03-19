@@ -101,6 +101,20 @@ export function App({ tower }: Props) {
       alignItems="center"
       justifyContent="center"
     >
+      {view === 'dashboard' && (
+        <Box width={boxWidth} justifyContent="flex-start" alignItems="flex-end" marginBottom={0}>
+          <Box flexDirection="column">
+            <Text color="cyan">{' ██████╗  ██████╗ ████████╗'}</Text>
+            <Text color="cyan">{'██╔════╝ ██╔════╝ ╚══██╔══╝'}</Text>
+            <Text color="cyan">{'██║      ██║         ██║'}</Text>
+            <Text color="cyan">{'╚██████╗ ╚██████╗    ██║'}</Text>
+            <Text color="cyan">{' ╚═════╝  ╚═════╝    ╚═╝'}</Text>
+          </Box>
+          <Box flexDirection="column" justifyContent="flex-end" marginLeft={2}>
+            <Text dimColor>{sessions.length} sessions</Text>
+          </Box>
+        </Box>
+      )}
       <Box
         flexDirection="column"
         borderStyle="round"
