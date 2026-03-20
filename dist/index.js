@@ -18,6 +18,36 @@ program
 // Default: TUI dashboard
 program
     .action(async () => {
+    // If not inside tmux, launch cc-tower inside a tmux session
+    if (!process.env['TMUX']) {
+        // Check if session already exists
+        let sessionExists = false;
+        try {
+            execSync('tmux has-session -t cc-tower 2>/dev/null', { stdio: 'ignore' });
+            sessionExists = true;
+        }
+        catch {
+            sessionExists = false;
+        }
+        if (sessionExists) {
+            const child = spawn('tmux', ['attach', '-t', 'cc-tower'], { stdio: 'inherit' });
+            child.on('close', (code) => process.exit(code ?? 0));
+            child.on('error', () => process.exit(1));
+        }
+        else {
+            // Re-launch in tmux. Use the resolved entry script path with npx tsx.
+            const cwd = process.cwd();
+            const entryScript = path.resolve(import.meta.dirname, '..', 'src', 'index.tsx');
+            const usesTsx = fs.existsSync(entryScript);
+            const args = usesTsx
+                ? ['new-session', '-s', 'cc-tower', '-c', cwd, '--', 'npx', 'tsx', entryScript]
+                : ['new-session', '-s', 'cc-tower', '-c', cwd, '--', ...process.argv];
+            const child = spawn('tmux', args, { stdio: 'inherit' });
+            child.on('close', (code) => process.exit(code ?? 0));
+            child.on('error', () => process.exit(1));
+        }
+        return;
+    }
     setTuiMode(true);
     const tower = new Tower();
     await tower.start();
