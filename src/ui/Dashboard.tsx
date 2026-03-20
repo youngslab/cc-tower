@@ -88,7 +88,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
         // Separator between favorites and non-favorites
         const showFavSep = hasFavorites && hasNonFavorites && i === favorites.length;
 
-        const labelText = (session.favorite ? '★ ' : '') + (session.label ?? session.projectName);
+        const labelText = (session.favorite ? '★ ' : '') + session.projectName;
 
         return (
           <React.Fragment key={session.sessionId}>
@@ -105,10 +105,10 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
               <Text color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{pad(session.host, 9)}</Text>
               <Text color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{pad(labelText, 18)}</Text>
               <Text color={isCursor ? 'cyan' : (isDim ? 'gray' : color)}>{pad(`${icon} ${session.status.toUpperCase()}`, 14)}</Text>
-              <Text color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{truncate(session.goalSummary ?? session.contextSummary ?? session.currentTask ?? (session.summaryLoading ? '⟳ summarizing...' : ''), maxTaskWidth)}</Text>
+              {session.label && <Text color={isCursor ? 'cyan' : 'blue'} bold>[{session.label}] </Text>}<Text color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{truncate(session.goalSummary ?? session.contextSummary ?? session.currentTask ?? (session.summaryLoading ? '⟳ summarizing...' : ''), maxTaskWidth - (session.label ? session.label.length + 3 : 0))}</Text>
             </Box>
             {session.status === 'idle' && session.nextSteps && (
-              <Box paddingLeft={33}>
+              <Box paddingLeft={52}>
                 <Text color="yellow">↳ {truncate(session.nextSteps, maxTaskWidth)}</Text>
               </Box>
             )}

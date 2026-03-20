@@ -1,5 +1,5 @@
 export interface ParsedMessage {
-  type: 'user' | 'assistant' | 'progress' | 'system' | 'file-history-snapshot' | 'unknown';
+  type: 'user' | 'assistant' | 'progress' | 'system' | 'file-history-snapshot' | 'custom-title' | 'unknown';
   timestamp?: string;
   sessionId?: string;
   // For assistant messages
@@ -23,6 +23,8 @@ export interface ParsedMessage {
   // For system messages
   systemSubtype?: string;
   durationMs?: number;
+  // For custom-title messages (/rename)
+  customTitle?: string;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -142,6 +144,9 @@ export function parseJsonlLine(line: string): ParsedMessage | null {
     if (typeof obj['durationMs'] === 'number') result.durationMs = obj['durationMs'];
   } else if (msgType === 'file-history-snapshot') {
     result.type = 'file-history-snapshot';
+  } else if (msgType === 'custom-title') {
+    result.type = 'custom-title';
+    if (typeof obj['customTitle'] === 'string') result.customTitle = obj['customTitle'];
   }
 
   return result;

@@ -127,6 +127,11 @@ export function parseJsonlLine(line) {
     else if (msgType === 'file-history-snapshot') {
         result.type = 'file-history-snapshot';
     }
+    else if (msgType === 'custom-title') {
+        result.type = 'custom-title';
+        if (typeof obj['customTitle'] === 'string')
+            result.customTitle = obj['customTitle'];
+    }
     return result;
 }
 //# sourceMappingURL=jsonl-parser.js.map

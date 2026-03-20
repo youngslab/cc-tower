@@ -1,5 +1,5 @@
 export interface ParsedMessage {
-    type: 'user' | 'assistant' | 'progress' | 'system' | 'file-history-snapshot' | 'unknown';
+    type: 'user' | 'assistant' | 'progress' | 'system' | 'file-history-snapshot' | 'custom-title' | 'unknown';
     timestamp?: string;
     sessionId?: string;
     stopReason?: 'end_turn' | 'tool_use' | null;
@@ -18,5 +18,6 @@ export interface ParsedMessage {
     agentId?: string;
     systemSubtype?: string;
     durationMs?: number;
+    customTitle?: string;
 }
 export declare function parseJsonlLine(line: string): ParsedMessage | null;
