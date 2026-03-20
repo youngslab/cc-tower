@@ -11,6 +11,8 @@ interface Props {
   onSend: (session: Session) => void;
   onPeek: (session: Session) => void;
   onToggleFavorite: (session: Session) => void;
+  onNewSession: () => void;
+  onRefresh: (session: Session) => void;
   onQuit: () => void;
 }
 
@@ -22,7 +24,7 @@ const STATUS_ICONS: Record<string, { icon: string; color: string }> = {
   dead: { icon: '✕', color: 'red' },
 };
 
-export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend, onPeek, onToggleFavorite, onQuit }: Props) {
+export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend, onPeek, onToggleFavorite, onNewSession, onRefresh, onQuit }: Props) {
   const [cursor, setCursor] = useState(0);
   const [confirmQuit, setConfirmQuit] = useState(false);
 
@@ -54,8 +56,11 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
     if (input === '/' && sorted[cursor]) onSend(sorted[cursor]!);
     if (input === 'p' && sorted[cursor]) onPeek(sorted[cursor]!);
     if (input === 'f' && sorted[cursor]) onToggleFavorite(sorted[cursor]!);
+    if (input === 'r' && sorted[cursor]) onRefresh(sorted[cursor]!);
 
     // Quit with confirmation
+    if (input === 'n') onNewSession();
+
     if (input === 'q' || (key.ctrl && input === 'c')) setConfirmQuit(true);
   });
 
@@ -132,7 +137,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
       {/* Footer */}
       {!confirmQuit && (
         <Box marginTop={1}>
-          <Text dimColor>[j/k] Navigate  [1-9] Jump  [Enter] Detail  [p] Peek  [/] Send  [f] Fav  [q] Quit</Text>
+          <Text dimColor>[j/k] Navigate  [1-9] Jump  [Enter] Detail  [p] Peek  [/] Send  [f] Fav  [n] New  [q] Quit</Text>
         </Box>
       )}
     </Box>

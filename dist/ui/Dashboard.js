@@ -9,7 +9,7 @@ const STATUS_ICONS = {
     idle: { icon: '○', color: 'white' },
     dead: { icon: '✕', color: 'red' },
 };
-export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend, onPeek, onToggleFavorite, onQuit }) {
+export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend, onPeek, onToggleFavorite, onNewSession, onRefresh, onQuit }) {
     const [cursor, setCursor] = useState(0);
     const [confirmQuit, setConfirmQuit] = useState(false);
     // Sort: favorites (stable order) → tmux sessions (by status) → non-tmux sessions (by status)
@@ -45,7 +45,11 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
             onPeek(sorted[cursor]);
         if (input === 'f' && sorted[cursor])
             onToggleFavorite(sorted[cursor]);
+        if (input === 'r' && sorted[cursor])
+            onRefresh(sorted[cursor]);
         // Quit with confirmation
+        if (input === 'n')
+            onNewSession();
         if (input === 'q' || (key.ctrl && input === 'c'))
             setConfirmQuit(true);
     });
@@ -64,7 +68,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
                 const showFavSep = hasFavorites && hasNonFavorites && i === favorites.length;
                 const labelText = (session.favorite ? '★ ' : '') + session.projectName;
                 return (_jsxs(React.Fragment, { children: [showFavSep && (_jsxs(Text, { dimColor: true, children: ['─'.repeat(60), " favorites \u2191"] })), showNonTmuxSep && (_jsxs(Text, { dimColor: true, children: ['─'.repeat(60), " (monitor-only)"] })), _jsxs(Box, { children: [_jsx(Text, { color: isCursor ? 'cyan' : undefined, bold: isCursor, children: isCursor ? '▸' : ' ' }), _jsx(Text, { color: isCursor ? 'cyan' : undefined, dimColor: !isCursor, children: pad(`${i + 1}`, 3) }), _jsx(Text, { color: isCursor ? 'cyan' : undefined, dimColor: !isCursor && isDim, children: pad(session.paneId ?? '—', 7) }), _jsx(Text, { color: isCursor ? 'cyan' : undefined, dimColor: !isCursor && isDim, children: pad(session.host, 9) }), _jsx(Text, { color: isCursor ? 'cyan' : undefined, dimColor: !isCursor && isDim, children: pad(labelText, 18) }), _jsx(Text, { color: isCursor ? 'cyan' : (isDim ? 'gray' : color), children: pad(`${icon} ${session.status.toUpperCase()}`, 14) }), session.label && _jsxs(Text, { color: isCursor ? 'cyan' : 'blue', bold: true, children: ["[", session.label, "] "] }), _jsx(Text, { color: isCursor ? 'cyan' : undefined, dimColor: !isCursor && isDim, children: truncate(session.goalSummary ?? session.contextSummary ?? session.currentTask ?? (session.summaryLoading ? '⟳ summarizing...' : ''), maxTaskWidth - (session.label ? session.label.length + 3 : 0)) })] }), session.status === 'idle' && session.nextSteps && (_jsx(Box, { paddingLeft: 52, children: _jsxs(Text, { color: "yellow", children: ["\u21B3 ", truncate(session.nextSteps, maxTaskWidth)] }) }))] }, session.sessionId));
-            }), sorted.length === 0 && (_jsx(EmptyState, { inTmux: tmuxCount > 0, hookInstalled: true })), confirmQuit && (_jsxs(Box, { marginTop: 1, borderStyle: "round", borderColor: "yellow", paddingX: 2, paddingY: 0, justifyContent: "center", children: [_jsx(Text, { color: "yellow", children: "Quit cc-tower?  " }), _jsx(Text, { bold: true, color: "green", children: "[y] Yes  " }), _jsx(Text, { bold: true, color: "red", children: "[n] No" })] })), !confirmQuit && (_jsx(Box, { marginTop: 1, children: _jsx(Text, { dimColor: true, children: "[j/k] Navigate  [1-9] Jump  [Enter] Detail  [p] Peek  [/] Send  [f] Fav  [q] Quit" }) }))] }));
+            }), sorted.length === 0 && (_jsx(EmptyState, { inTmux: tmuxCount > 0, hookInstalled: true })), confirmQuit && (_jsxs(Box, { marginTop: 1, borderStyle: "round", borderColor: "yellow", paddingX: 2, paddingY: 0, justifyContent: "center", children: [_jsx(Text, { color: "yellow", children: "Quit cc-tower?  " }), _jsx(Text, { bold: true, color: "green", children: "[y] Yes  " }), _jsx(Text, { bold: true, color: "red", children: "[n] No" })] })), !confirmQuit && (_jsx(Box, { marginTop: 1, children: _jsx(Text, { dimColor: true, children: "[j/k] Navigate  [1-9] Jump  [Enter] Detail  [p] Peek  [/] Send  [f] Fav  [n] New  [q] Quit" }) }))] }));
 }
 function pad(str, len) {
     return str.slice(0, len).padEnd(len);

@@ -7,8 +7,10 @@ import { useTmux } from './hooks/useTmux.js';
 import { Dashboard } from './Dashboard.js';
 import { DetailView } from './DetailView.js';
 import { SendInput } from './SendInput.js';
+import { NewSession } from './NewSession.js';
+import { getRecentProjects, RecentProject } from '../utils/recent-projects.js';
 
-type View = 'dashboard' | 'detail' | 'send';
+type View = 'dashboard' | 'detail' | 'send' | 'new-session';
 
 interface Props {
   tower: Tower;
@@ -20,6 +22,7 @@ export function App({ tower }: Props) {
   const { send, peek } = useTmux(tower.config.keys.close);
   const [view, setView] = useState<View>('dashboard');
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
+  const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
 
   const handleSelect = useCallback((session: Session) => {
     setSelectedSession(session);
@@ -52,6 +55,23 @@ export function App({ tower }: Props) {
     const nowFav = !session.favorite;
     tower.store.update(session.sessionId, { favorite: nowFav, favoritedAt: nowFav ? Date.now() : undefined });
   }, [tower]);
+
+  const handleRefresh = useCallback((session: Session) => {
+    void tower.refreshSession(session.sessionId);
+  }, [tower]);
+
+  const handleOpenNewSession = useCallback(() => {
+    const activePaths = new Set(sessions.map(s => s.cwd).filter(Boolean));
+    const projects = getRecentProjects(15).filter(p => !activePaths.has(p.path));
+    setRecentProjects(projects);
+    setView('new-session');
+  }, [sessions]);
+
+  const handleNewSession = useCallback(async (projectPath: string) => {
+    const { spawn } = await import('node:child_process');
+    spawn('tmux', ['new-window', '-c', projectPath, 'claude'], { detached: true, stdio: 'ignore' });
+    setView('dashboard');
+  }, []);
 
   const handleQuit = useCallback(async () => {
     await tower.stop();
@@ -132,7 +152,17 @@ export function App({ tower }: Props) {
             onSend={handleSend}
             onPeek={handlePeek}
             onToggleFavorite={handleToggleFavorite}
+            onRefresh={handleRefresh}
+            onNewSession={handleOpenNewSession}
             onQuit={handleQuit}
+          />
+        )}
+
+        {view === 'new-session' && (
+          <NewSession
+            projects={recentProjects}
+            onSelect={handleNewSession}
+            onCancel={() => setView('dashboard')}
           />
         )}
 
