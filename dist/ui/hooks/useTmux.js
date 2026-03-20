@@ -1,6 +1,13 @@
 import { useCallback } from 'react';
 import { execa } from 'execa';
 import { tmux } from '../../tmux/commands.js';
+function peekTitle(session, closeHint) {
+    const name = session.label ? `[${session.label}] ${session.projectName}` : session.projectName;
+    const loc = session.sshTarget ? session.host : (session.paneId ?? '');
+    const goal = session.goalSummary ?? session.contextSummary ?? '';
+    const goalPart = goal ? ` — ${goal.slice(0, 60)}` : '';
+    return ` ${name} (${loc})${goalPart} | ${closeHint} to close `;
+}
 export function useTmux(closeKey = 'Escape') {
     // Map config key name to tmux key name
     const tmuxKey = closeKey === 'Escape' ? 'Escape' : closeKey;
@@ -51,7 +58,7 @@ export function useTmux(closeKey = 'Escape') {
             await tmux.displayPopup({
                 width: '80%',
                 height: '80%',
-                title: ` ${session.label ?? session.projectName} (${session.host}) | ${tmuxKey} to close `,
+                title: peekTitle(session, tmuxKey),
                 command: `ssh -t -o LogLevel=ERROR ${session.sshTarget} "${remoteCmd}"`,
                 closeOnExit: true,
             });
@@ -79,7 +86,7 @@ export function useTmux(closeKey = 'Escape') {
             await tmux.displayPopup({
                 width: '80%',
                 height: '80%',
-                title: ` ${session.label ?? session.projectName} (${session.paneId}) | ${tmuxKey} to close `,
+                title: peekTitle(session, tmuxKey),
                 command: `tmux bind-key -T cctower-peek ${tmuxKey} detach-client && ${clipCmd}; tmux attach -t ${peekName} \\; select-window -t :${targetPane.windowIndex} \\; set-option key-table cctower-peek`,
                 closeOnExit: true,
             });

@@ -158,7 +158,7 @@ program
     } else if (s.sshTarget) {
       await tmux.displayPopup({
         width: '80%', height: '80%',
-        title: ` ${s.label ?? s.projectName} (${s.host}) | prefix+d to close `,
+        title: ` ${s.label ? `[${s.label}] ` : ''}${s.projectName} (${s.host})${s.goalSummary ? ` — ${s.goalSummary.slice(0, 60)}` : ''} | prefix+d to close `,
         command: `ssh -t ${s.sshTarget} "tmux attach"`,
         closeOnExit: true,
       });
@@ -170,7 +170,7 @@ program
       if (targetPane) {
         await tmux.displayPopup({
           width: '80%', height: '80%',
-          title: ` ${s.label ?? s.projectName} (${s.paneId}) | prefix+d to close `,
+          title: ` ${s.label ? `[${s.label}] ` : ''}${s.projectName} (${s.paneId})${s.goalSummary ? ` — ${s.goalSummary.slice(0, 60)}` : ''} | prefix+d to close `,
           command: `tmux attach -t ${targetPane.sessionName} \\; select-window -t :${targetPane.windowIndex}`,
           closeOnExit: true,
         });
