@@ -43,9 +43,13 @@ export function useTmux(closeKey = 'Escape') {
             const setupCmd = session.paneId
                 ? `PINFO=\\$(${paneSelect}); SESS=\\$(echo \\$PINFO | awk '{print \\$2}'); WIDX=\\$(echo \\$PINFO | awk '{print \\$3}'); ` +
                     `PEEK=_cctower_peek_\\$\\$; tmux kill-session -t \\$PEEK 2>/dev/null; ` +
-                    `tmux new-session -d -s \\$PEEK -t \\$SESS && ` +
+                    `DEFWIN=\\$(tmux new-session -d -s \\$PEEK -PF '#{window_id}') && ` +
+                    `tmux link-window -s \\$SESS:\\$WIDX -t \\$PEEK:99 && ` +
+                    `tmux kill-window -t \\$DEFWIN && ` +
+                    `tmux set-option -t \\$PEEK aggressive-resize on 2>/dev/null; ` +
+                    `tmux set-option -t \\$PEEK status off && ` +
                     `tmux bind-key -T cctower-peek ${tmuxKey} detach-client && ` +
-                    `tmux attach -t \\$PEEK \\\\; select-window -t :\\$WIDX \\\\; set-option key-table cctower-peek; ` +
+                    `TMUX= tmux attach -t \\$PEEK \\\\; set-option key-table cctower-peek; ` +
                     `tmux unbind-key -T cctower-peek ${tmuxKey}; tmux kill-session -t \\$PEEK 2>/dev/null`
                 : `tmux bind-key -T cctower-peek ${tmuxKey} detach-client && ` +
                     `tmux attach \\\\; set-option key-table cctower-peek; ` +
@@ -75,19 +79,26 @@ export function useTmux(closeKey = 'Escape') {
         }
         catch { }
         try {
-            await tmux.newGroupSession(peekName, targetPane.sessionName);
-            // Prevent peek client (smaller popup) from resizing original session's windows
+            // Create isolated session with only the target window (not a full session group)
+            const { stdout: defaultWindowId } = await execa('tmux', [
+                'new-session', '-d', '-s', peekName, '-PF', '#{window_id}',
+            ]);
+            const targetWindow = `${targetPane.sessionName}:${targetPane.windowIndex}`;
+            await execa('tmux', ['link-window', '-s', targetWindow, '-t', `${peekName}:99`]);
+            await execa('tmux', ['kill-window', '-t', defaultWindowId.trim()]);
+            // Allow popup to have its own size independent of original session
             try {
-                await execa('tmux', ['set-option', '-t', peekName, 'window-size', 'largest']);
+                await execa('tmux', ['set-option', '-g', '-t', peekName, 'aggressive-resize', 'on']);
             }
             catch { }
+            await execa('tmux', ['set-option', '-t', peekName, 'status', 'off']);
             // Set copy-command on peek session to work around display-popup blocking OSC52
             const clipCmd = 'CLIP=$(command -v xclip && echo "xclip -selection clipboard" || command -v xsel && echo "xsel --clipboard --input" || echo ""); [ -n "$CLIP" ] && tmux set-option -s copy-command "$CLIP"';
             await tmux.displayPopup({
                 width: '80%',
                 height: '80%',
                 title: peekTitle(session, tmuxKey),
-                command: `tmux bind-key -T cctower-peek ${tmuxKey} detach-client && ${clipCmd}; tmux attach -t ${peekName} \\; select-window -t :${targetPane.windowIndex} \\; set-option key-table cctower-peek`,
+                command: `tmux bind-key -T cctower-peek ${tmuxKey} detach-client && ${clipCmd}; TMUX= tmux attach -t ${peekName} \\; set-option key-table cctower-peek`,
                 closeOnExit: true,
             });
         }

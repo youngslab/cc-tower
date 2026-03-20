@@ -1,3 +1,4 @@
+import { execa } from 'execa';
 import { tmux } from './commands.js';
 
 export async function peekSession(opts: {
@@ -8,12 +9,26 @@ export async function peekSession(opts: {
 }): Promise<void> {
   const peekName = `_cctower_peek_${process.pid}`;
   try { await tmux.killSession(peekName); } catch {}
-  await tmux.newGroupSession(peekName, opts.sessionName);
+
+  // Create isolated session with only the target window visible.
+  // 1. Create empty session and capture its default window ID
+  const { stdout: defaultWindowId } = await execa('tmux', [
+    'new-session', '-d', '-s', peekName, '-PF', '#{window_id}',
+  ]);
+  // 2. Link the target window into the peek session
+  const targetWindow = `${opts.sessionName}:${opts.windowIndex}`;
+  await execa('tmux', ['link-window', '-s', targetWindow, '-t', `${peekName}:99`]);
+  // 3. Kill the default placeholder window, leaving only the target
+  await execa('tmux', ['kill-window', '-t', defaultWindowId.trim()]);
+  // 4. Hide status bar in peek session
+  await execa('tmux', ['set-option', '-t', peekName, 'status', 'off']);
+
   await tmux.displayPopup({
     width: '80%',
     height: '80%',
     title: ` ${opts.label} (${opts.paneId}) `,
-    command: `tmux attach -t ${peekName} \; select-window -t :${opts.windowIndex}`,
+    command: `TMUX= tmux attach -t ${peekName}`,
+    closeOnExit: true,
   });
   try { await tmux.killSession(peekName); } catch {}
 }
