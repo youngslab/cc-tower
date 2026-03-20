@@ -12,6 +12,10 @@ export declare class JsonlWatcher extends EventEmitter {
      */
     coldStartLastTask(jsonlPath: string): string | undefined;
     /**
+     * Extract the latest custom-title (/rename) from a JSONL file.
+     */
+    coldStartCustomTitle(jsonlPath: string): string | undefined;
+    /**
      * Start watching a JSONL file for new lines. Starts reading from the end
      * of the file so we only emit new events, not historical ones.
      */

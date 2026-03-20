@@ -23,7 +23,17 @@ export class JsonlWatcher extends EventEmitter {
   coldStartScan(jsonlPath: string): SessionState {
     let content: string;
     try {
-      content = fs.readFileSync(jsonlPath, 'utf8');
+      const stat = fs.statSync(jsonlPath);
+      const readSize = Math.min(stat.size, 65536); // last 64KB is enough
+      if (readSize < stat.size) {
+        const fd = fs.openSync(jsonlPath, 'r');
+        const buf = Buffer.alloc(readSize);
+        fs.readSync(fd, buf, 0, readSize, stat.size - readSize);
+        fs.closeSync(fd);
+        content = buf.toString('utf8');
+      } else {
+        content = fs.readFileSync(jsonlPath, 'utf8');
+      }
     } catch {
       return 'idle';
     }
@@ -44,8 +54,8 @@ export class JsonlWatcher extends EventEmitter {
       const parsed = parseJsonlLine(lines[i]);
       if (!parsed) continue;
 
-      // system turn_duration or stop_hook_summary = turn is over
-      if (parsed.type === 'system' && (parsed.systemSubtype === 'turn_duration' || parsed.systemSubtype === 'stop_hook_summary')) {
+      // system turn_duration, stop_hook_summary, or local_command = turn is over / idle
+      if (parsed.type === 'system' && (parsed.systemSubtype === 'turn_duration' || parsed.systemSubtype === 'stop_hook_summary' || parsed.systemSubtype === 'local_command')) {
         sawTurnEnd = true;
         continue;
       }
@@ -76,7 +86,17 @@ export class JsonlWatcher extends EventEmitter {
   coldStartLastTask(jsonlPath: string): string | undefined {
     let content: string;
     try {
-      content = fs.readFileSync(jsonlPath, 'utf8');
+      const stat = fs.statSync(jsonlPath);
+      const readSize = Math.min(stat.size, 65536); // last 64KB is enough
+      if (readSize < stat.size) {
+        const fd = fs.openSync(jsonlPath, 'r');
+        const buf = Buffer.alloc(readSize);
+        fs.readSync(fd, buf, 0, readSize, stat.size - readSize);
+        fs.closeSync(fd);
+        content = buf.toString('utf8');
+      } else {
+        content = fs.readFileSync(jsonlPath, 'utf8');
+      }
     } catch {
       return undefined;
     }
@@ -90,6 +110,36 @@ export class JsonlWatcher extends EventEmitter {
         const text = parsed.userContent.trim();
         if (isInternalMessage(text)) continue;
         return cleanDisplayText(text).slice(0, 80);
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Extract the latest custom-title (/rename) from a JSONL file.
+   */
+  coldStartCustomTitle(jsonlPath: string): string | undefined {
+    let content: string;
+    try {
+      const stat = fs.statSync(jsonlPath);
+      const readSize = Math.min(stat.size, 65536); // last 64KB is enough
+      if (readSize < stat.size) {
+        const fd = fs.openSync(jsonlPath, 'r');
+        const buf = Buffer.alloc(readSize);
+        fs.readSync(fd, buf, 0, readSize, stat.size - readSize);
+        fs.closeSync(fd);
+        content = buf.toString('utf8');
+      } else {
+        content = fs.readFileSync(jsonlPath, 'utf8');
+      }
+    } catch {
+      return undefined;
+    }
+    const lines = content.split('\n').filter(l => l.trim());
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const parsed = parseJsonlLine(lines[i]!);
+      if (parsed?.type === 'custom-title' && parsed.customTitle) {
+        return parsed.customTitle;
       }
     }
     return undefined;
