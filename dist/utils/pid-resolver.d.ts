@@ -9,7 +9,7 @@ export interface PaneMatch {
  */
 export declare function getPpid(pid: number): number | null;
 /**
- * Get the controlling TTY device path for a process using `ps`.
+ * Get the controlling TTY device path for a process by reading /proc/<pid>/fd/0.
  * Returns null if not available or process not found.
  */
 export declare function getTty(pid: number): string | null;

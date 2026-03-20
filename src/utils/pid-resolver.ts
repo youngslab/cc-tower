@@ -1,5 +1,4 @@
-import { readFileSync } from 'fs';
-import { execSync } from 'child_process';
+import { readFileSync, readlinkSync } from 'fs';
 
 export interface PaneMatch {
   paneId: string;    // e.g., "%7"
@@ -29,16 +28,14 @@ export function getPpid(pid: number): number | null {
 }
 
 /**
- * Get the controlling TTY device path for a process using `ps`.
+ * Get the controlling TTY device path for a process by reading /proc/<pid>/fd/0.
  * Returns null if not available or process not found.
  */
 export function getTty(pid: number): string | null {
   try {
-    const out = execSync(`ps -o tty= -p ${pid}`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-    if (!out || out === '?' || out === '') return null;
-    // ps returns just the device name (e.g. "pts/34"); prepend /dev/ if needed
-    if (out.startsWith('/')) return out;
-    return `/dev/${out}`;
+    const fd0 = readlinkSync(`/proc/${pid}/fd/0`);
+    if (fd0.startsWith('/dev/pts/')) return fd0;
+    return null;
   } catch {
     return null;
   }

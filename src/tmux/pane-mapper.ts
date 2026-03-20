@@ -1,9 +1,28 @@
-import { tmux } from './commands.js';
+import { tmux, PaneInfo } from './commands.js';
 import { resolvePaneForPid } from '../utils/pid-resolver.js';
 
 export interface MappingResult {
   paneId: string | undefined;
   hasTmux: boolean;
+}
+
+// Cached pane list for batch operations
+let cachedPanes: PaneInfo[] | null = null;
+let cacheTime = 0;
+const CACHE_TTL = 5000; // 5 seconds
+
+async function getPanes(): Promise<PaneInfo[] | null> {
+  const now = Date.now();
+  if (cachedPanes && (now - cacheTime) < CACHE_TTL) return cachedPanes;
+  const hasTmux = await tmux.isAvailable();
+  if (!hasTmux) return null;
+  try {
+    cachedPanes = await tmux.listPanes();
+    cacheTime = now;
+    return cachedPanes;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -12,18 +31,10 @@ export interface MappingResult {
  * Returns { paneId: undefined, hasTmux: true } if no matching pane found.
  */
 export async function mapPidToPane(claudePid: number): Promise<MappingResult> {
-  const hasTmux = await tmux.isAvailable();
-  if (!hasTmux) {
+  const panes = await getPanes();
+  if (panes === null) {
     return { paneId: undefined, hasTmux: false };
   }
-
-  let panes;
-  try {
-    panes = await tmux.listPanes();
-  } catch {
-    return { paneId: undefined, hasTmux: true };
-  }
-
   const match = await resolvePaneForPid(claudePid, panes);
   return {
     paneId: match?.paneId,
