@@ -28,7 +28,12 @@ export declare class Tower extends EventEmitter {
     constructor(config?: Config, opts?: {
         skipHooks?: boolean;
     });
+    private lockFd;
+    private acquireLock;
+    private releaseLock;
     start(): Promise<void>;
+    /** Refresh all LLM summaries for a specific session. */
+    refreshSession(sessionId: string): Promise<void>;
     private refreshGoalSummary;
     private refreshContextSummary;
     private refreshNextSteps;

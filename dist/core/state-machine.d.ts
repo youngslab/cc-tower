@@ -33,9 +33,13 @@ export declare class SessionStateMachine extends EventEmitter {
     private state;
     private stateEnteredAt;
     private previousState;
+    private inactivityTimer;
+    private static readonly INACTIVITY_TIMEOUT;
     constructor(sessionId: string, initialState: State);
     getState(): State;
     getDuration(): number;
     transition(event: InputEvent): void;
+    private clearInactivityTimer;
+    destroy(): void;
     private resolveNext;
 }

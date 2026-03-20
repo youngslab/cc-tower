@@ -54,8 +54,60 @@ export class Tower extends EventEmitter {
         this.summarizer = new Summarizer();
         this.notifier = new Notifier(this.config.notifications, this.store);
     }
+    lockFd = null;
+    acquireLock() {
+        const lockPath = path.join(os.homedir(), '.local', 'share', 'cc-tower', 'tower.lock');
+        fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+        try {
+            this.lockFd = fs.openSync(lockPath, 'wx');
+            fs.writeFileSync(lockPath, `${process.pid}\n`);
+            return true;
+        }
+        catch {
+            // File exists — check if PID is still alive
+            try {
+                const pid = parseInt(fs.readFileSync(lockPath, 'utf8').trim());
+                if (!isNaN(pid)) {
+                    try {
+                        process.kill(pid, 0);
+                        return false;
+                    }
+                    catch { /* stale lock */ }
+                }
+                // Stale lock — reclaim
+                fs.unlinkSync(lockPath);
+                this.lockFd = fs.openSync(lockPath, 'wx');
+                fs.writeFileSync(lockPath, `${process.pid}\n`);
+                return true;
+            }
+            catch {
+                return false;
+            }
+        }
+    }
+    releaseLock() {
+        const lockPath = path.join(os.homedir(), '.local', 'share', 'cc-tower', 'tower.lock');
+        try {
+            if (this.lockFd !== null)
+                fs.closeSync(this.lockFd);
+            fs.unlinkSync(lockPath);
+        }
+        catch { }
+        this.lockFd = null;
+    }
     async start() {
         logger.info('tower: starting cc-tower', { hosts: this.config.hosts.map(h => h.name) });
+        // === Single Instance Lock ===
+        if (!this.skipHooks && !this.acquireLock()) {
+            logger.error('tower: another instance is already running');
+            throw new Error('Another cc-tower instance is already running. Kill it first or use the existing one.');
+        }
+        if (!this.skipHooks) {
+            const cleanup = () => this.releaseLock();
+            process.on('exit', cleanup);
+            process.on('SIGINT', () => { cleanup(); process.exit(0); });
+            process.on('SIGTERM', () => { cleanup(); process.exit(0); });
+        }
         // === Cold Start Sequence ===
         // 0. Clean up stale peek sessions from previous runs
         try {
@@ -201,6 +253,15 @@ export class Tower extends EventEmitter {
         }
         logger.info('tower: started successfully', { sessions: this.store.getAll().length });
     }
+    /** Refresh all LLM summaries for a specific session. */
+    async refreshSession(sessionId) {
+        const jp = this.jsonlPaths.get(sessionId);
+        if (!jp)
+            return;
+        void this.refreshGoalSummary(sessionId, jp);
+        void this.refreshContextSummary(sessionId, jp);
+        void this.refreshNextSteps(sessionId, jp);
+    }
     async refreshGoalSummary(sessionId, jsonlPath) {
         try {
             logger.info('tower: refreshing goal summary', { sessionId, jsonlPath });
@@ -321,6 +382,7 @@ export class Tower extends EventEmitter {
     }
     async stop() {
         this.stopping = true;
+        this.releaseLock();
         this.discovery.stop();
         this.jsonlWatcher.unwatchAll();
         this.processMonitor.stopAll();
@@ -391,8 +453,8 @@ export class Tower extends EventEmitter {
             sshTarget: info.sshTarget,
         };
         this.store.register(session);
-        // Apply custom title from JSONL (/rename) if no label set yet
-        if (customTitle && !session.label) {
+        // Apply custom title from JSONL (/rename) — always overwrite persisted label
+        if (customTitle) {
             this.store.update(info.sessionId, { label: customTitle });
         }
         // f. Create state machine
@@ -632,6 +694,7 @@ export class Tower extends EventEmitter {
             return;
         const fsm = this.stateMachines.get(sessionId);
         if (fsm) {
+            fsm.destroy();
             fsm.removeAllListeners();
             this.stateMachines.delete(sessionId);
         }
@@ -654,6 +717,7 @@ export class Tower extends EventEmitter {
         const fsm = this.stateMachines.get(sessionId);
         if (fsm) {
             fsm.transition({ type: 'session-end' });
+            fsm.destroy();
             fsm.removeAllListeners();
             this.stateMachines.delete(sessionId);
         }

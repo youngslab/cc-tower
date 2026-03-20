@@ -4,6 +4,8 @@ export class SessionStateMachine extends EventEmitter {
     state;
     stateEnteredAt;
     previousState; // for agent-stop recovery
+    inactivityTimer = null;
+    static INACTIVITY_TIMEOUT = 60000; // 60s without JSONL activity → idle
     constructor(sessionId, initialState) {
         super();
         this.sessionId = sessionId;
@@ -37,6 +39,24 @@ export class SessionStateMachine extends EventEmitter {
         this.state = next;
         this.stateEnteredAt = Date.now();
         this.emit('state-change', change);
+        // Reset inactivity timer: active states get a timeout, idle/dead don't
+        this.clearInactivityTimer();
+        if (next !== 'idle' && next !== 'dead') {
+            this.inactivityTimer = setTimeout(() => {
+                if (this.state !== 'idle' && this.state !== 'dead') {
+                    this.transition({ type: 'stop' });
+                }
+            }, SessionStateMachine.INACTIVITY_TIMEOUT);
+        }
+    }
+    clearInactivityTimer() {
+        if (this.inactivityTimer) {
+            clearTimeout(this.inactivityTimer);
+            this.inactivityTimer = null;
+        }
+    }
+    destroy() {
+        this.clearInactivityTimer();
     }
     resolveNext(event) {
         // Handle JSONL-based events (fallback mode)
