@@ -98,7 +98,7 @@ export class SessionStore extends EventEmitter {
       if (meta.label !== undefined && !session.label) session.label = meta.label;
       if (meta.tags !== undefined && !session.tags) session.tags = meta.tags;
       if (meta.favorite !== undefined && !session.favorite) { session.favorite = meta.favorite; session.favoritedAt = meta.favoritedAt; }
-      if (meta.goalSummary !== undefined && !session.goalSummary) session.goalSummary = meta.goalSummary;
+      if (meta.goalSummary !== undefined) session.goalSummary = meta.goalSummary;
       if (meta.contextSummary !== undefined && !session.contextSummary) session.contextSummary = meta.contextSummary;
       if (meta.nextSteps !== undefined && !session.nextSteps) session.nextSteps = meta.nextSteps;
     }

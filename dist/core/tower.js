@@ -86,10 +86,8 @@ export class Tower extends EventEmitter {
         // 3. Scan for active sessions
         const sessions = await this.discovery.scanOnce();
         logger.info('tower: discovered sessions', { count: sessions.length });
-        // 4. For each session: resolve pane, cold start JSONL, register
-        for (const info of sessions) {
-            await this.registerSession(info);
-        }
+        // 4. For each session: resolve pane, cold start JSONL, register (parallel)
+        await Promise.all(sessions.map(info => this.registerSession(info)));
         // 5. Wire up hook events
         this.hookReceiver.on('hook-event', (event) => {
             this.handleHookEvent(event);
@@ -145,8 +143,7 @@ export class Tower extends EventEmitter {
             if (session.status !== 'dead') {
                 const jp = this.jsonlPaths.get(session.sessionId);
                 if (jp) {
-                    if (!session.goalSummary)
-                        void this.refreshGoalSummary(session.sessionId, jp);
+                    void this.refreshGoalSummary(session.sessionId, jp);
                     if (!session.contextSummary)
                         void this.refreshContextSummary(session.sessionId, jp);
                     if (!session.nextSteps && session.status === 'idle')
@@ -173,7 +170,7 @@ export class Tower extends EventEmitter {
             // Start remote discovery
             const remoteHosts = this.config.hosts.map(h => ({
                 name: h.name,
-                config: { sshTarget: h.ssh, sshOptions: h.ssh_options, claudeDir: h.claude_dir },
+                config: { sshTarget: h.ssh, sshOptions: h.ssh_options, claudeDir: h.claude_dir, commandPrefix: h.command_prefix },
             }));
             this.remoteDiscovery = new RemoteDiscovery(remoteHosts);
             this.remoteDiscovery.on('session-found', async (info) => {
@@ -207,7 +204,7 @@ export class Tower extends EventEmitter {
     async refreshGoalSummary(sessionId, jsonlPath) {
         try {
             logger.info('tower: refreshing goal summary', { sessionId, jsonlPath });
-            const earlyMessages = await this.jsonlWatcher.readEarlyContext(jsonlPath, 15);
+            const earlyMessages = await this.jsonlWatcher.readRecentContext(jsonlPath, 15);
             if (!earlyMessages) {
                 logger.info('tower: no early messages found for goal', { sessionId });
                 return;
@@ -277,14 +274,12 @@ export class Tower extends EventEmitter {
     async refreshRemoteGoalSummary(compositeId, config, jsonlPath) {
         try {
             const session = this.store.get(compositeId);
-            if (session?.goalSummary)
-                return; // already have one
             const tail = await remoteReadJsonlTail(config, jsonlPath, 32768);
             if (!tail || tail.length < 20)
                 return;
-            // Extract early messages (first N lines)
+            // Extract recent messages (last N lines)
             const lines = tail.split('\n').filter(l => l.trim());
-            const earlyLines = lines.slice(0, 15);
+            const earlyLines = lines.slice(-15);
             const earlyText = earlyLines.join('\n');
             if (earlyText.length < 20)
                 return;
@@ -353,26 +348,27 @@ export class Tower extends EventEmitter {
         const slug = cwdToSlug(info.cwd);
         const projectDir = path.join(claudeDir, 'projects', slug);
         let jsonlPath = path.join(projectDir, `${info.sessionId}.jsonl`);
-        // Fallback: if exact JSONL doesn't exist, use most recently modified one
-        // (handles --continue/--resume where sessionId differs from JSONL filename)
-        // But only if the fallback file was modified within the last 30 seconds (avoid stale match after /clear)
-        if (!fs.existsSync(jsonlPath)) {
-            try {
-                const now = Date.now();
-                const files = fs.readdirSync(projectDir)
-                    .filter(f => f.endsWith('.jsonl'))
-                    .map(f => ({ name: f, mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
-                    .sort((a, b) => b.mtime - a.mtime);
-                if (files.length > 0 && (now - files[0].mtime) < 30000) {
-                    jsonlPath = path.join(projectDir, files[0].name);
-                    logger.debug('tower: using fallback JSONL', { sessionId: info.sessionId, fallback: files[0].name });
+        // Always prefer the most recently modified JSONL in the project dir.
+        // Claude Code reuses session IDs across conversations (e.g., after /clear, /resume),
+        // so the exact sessionId.jsonl may be stale while a newer conversation JSONL exists.
+        try {
+            const files = fs.readdirSync(projectDir)
+                .filter(f => f.endsWith('.jsonl') && !f.includes('/'))
+                .map(f => ({ name: f, mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
+                .sort((a, b) => b.mtime - a.mtime);
+            if (files.length > 0) {
+                const newest = path.join(projectDir, files[0].name);
+                if (newest !== jsonlPath) {
+                    logger.debug('tower: using newest JSONL over exact match', { sessionId: info.sessionId, exact: path.basename(jsonlPath), newest: files[0].name });
+                    jsonlPath = newest;
                 }
             }
-            catch { }
         }
+        catch { }
         // c. Cold start: determine current state + last task from JSONL
         const initialState = this.jsonlWatcher.coldStartScan(jsonlPath);
         const lastTask = this.jsonlWatcher.coldStartLastTask(jsonlPath);
+        const customTitle = this.jsonlWatcher.coldStartCustomTitle(jsonlPath);
         // d. Determine detection mode
         const detectionMode = 'jsonl';
         // e. Register in store
@@ -395,6 +391,10 @@ export class Tower extends EventEmitter {
             sshTarget: info.sshTarget,
         };
         this.store.register(session);
+        // Apply custom title from JSONL (/rename) if no label set yet
+        if (customTitle && !session.label) {
+            this.store.update(info.sessionId, { label: customTitle });
+        }
         // f. Create state machine
         const fsm = new SessionStateMachine(info.sessionId, initialState);
         fsm.on('state-change', (change) => {
@@ -415,16 +415,26 @@ export class Tower extends EventEmitter {
             // Trigger LLM summary refresh on idle transition
             if (change.to === 'idle') {
                 let jp = this.jsonlPaths.get(info.sessionId);
-                // Re-check: if JSONL path doesn't match sessionId (stale after /clear), correct it
-                if (jp && !jp.includes(info.sessionId)) {
-                    const exactPath = path.join(path.dirname(jp), `${info.sessionId}.jsonl`);
-                    if (fs.existsSync(exactPath)) {
-                        jp = exactPath;
-                        this.jsonlPaths.set(info.sessionId, jp);
-                        this.jsonlWatcher.unwatch(info.sessionId);
-                        this.jsonlWatcher.watch(info.sessionId, jp);
-                        logger.info('tower: JSONL path corrected on idle', { sessionId: info.sessionId, newPath: jp });
+                // Re-check: use most recently modified JSONL (conversation ID may differ from session ID)
+                if (jp) {
+                    try {
+                        const dir = path.dirname(jp);
+                        const files = fs.readdirSync(dir)
+                            .filter(f => f.endsWith('.jsonl') && !f.includes('/'))
+                            .map(f => ({ name: f, mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
+                            .sort((a, b) => b.mtime - a.mtime);
+                        if (files.length > 0) {
+                            const newest = path.join(dir, files[0].name);
+                            if (newest !== jp) {
+                                jp = newest;
+                                this.jsonlPaths.set(info.sessionId, jp);
+                                this.jsonlWatcher.unwatch(info.sessionId);
+                                this.jsonlWatcher.watch(info.sessionId, jp);
+                                logger.info('tower: JSONL path updated on idle', { sessionId: info.sessionId, newPath: jp });
+                            }
+                        }
                     }
+                    catch { }
                 }
                 if (jp) {
                     void this.refreshGoalSummary(info.sessionId, jp);
@@ -458,6 +468,7 @@ export class Tower extends EventEmitter {
             sshTarget: hostConfig.ssh,
             sshOptions: hostConfig.ssh_options,
             claudeDir: hostConfig.claude_dir,
+            commandPrefix: hostConfig.command_prefix,
         };
         // Compute remote JSONL path
         const claudeDir = hostConfig.claude_dir ?? '~/.claude';
@@ -514,7 +525,7 @@ export class Tower extends EventEmitter {
             const panePidSet = new Set(panes.map(p => p.pid));
             // Walk up the process tree from claude PID until we hit a pane PID
             const ancestryCmd = `P=${info.pid}; for i in 1 2 3 4 5; do P=$(ps -o ppid= -p $P 2>/dev/null | tr -d " "); [ -z "$P" ] || [ "$P" = "1" ] && break; echo $P; done`;
-            const ancestryOut = await sshExec(hostConfig.ssh, ancestryCmd, { sshOptions: hostConfig.ssh_options, timeout: 5000 });
+            const ancestryOut = await sshExec(hostConfig.ssh, ancestryCmd, { sshOptions: hostConfig.ssh_options, commandPrefix: hostConfig.command_prefix, timeout: 5000 });
             logger.info('tower: remote pane ancestry', { pid: info.pid, ancestry: ancestryOut.trim(), panePids: Array.from(panePidSet) });
             for (const line of ancestryOut.trim().split('\n')) {
                 const ancestor = parseInt(line);
@@ -542,6 +553,7 @@ export class Tower extends EventEmitter {
             toolCallCount: 0,
             host: info.host,
             sshTarget: info.sshTarget,
+            commandPrefix: hostConfig.command_prefix,
             hostOnline: true,
         };
         this.store.register(session);
@@ -786,6 +798,12 @@ export class Tower extends EventEmitter {
         const session = this.store.get(sessionId);
         if (!session)
             return;
+        // Handle metadata events regardless of detection mode
+        if (parsed.type === 'custom-title' && parsed.customTitle) {
+            this.store.update(sessionId, { label: parsed.customTitle });
+            this.store.persist();
+            return;
+        }
         // Skip JSONL-driven transitions if session is in hook mode
         if (session.detectionMode === 'hook')
             return;

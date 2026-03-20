@@ -41,7 +41,7 @@ export class SessionStore extends EventEmitter {
                 session.favorite = meta.favorite;
                 session.favoritedAt = meta.favoritedAt;
             }
-            if (meta.goalSummary !== undefined && !session.goalSummary)
+            if (meta.goalSummary !== undefined)
                 session.goalSummary = meta.goalSummary;
             if (meta.contextSummary !== undefined && !session.contextSummary)
                 session.contextSummary = meta.contextSummary;

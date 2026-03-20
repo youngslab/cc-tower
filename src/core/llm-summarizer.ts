@@ -82,7 +82,7 @@ export async function generateGoalSummary(
 
   goalInflight.add(sessionId);
   try {
-    const prompt = `Read the dev session conversation below. Summarize the user's overall goal/objective for this session in one line (max 50 words). Use the same language the user is using. Output ONLY the summary.\n\n${earlyMessages.slice(0, 2500)}`;
+    const prompt = `Read the recent dev session conversation below. What is the user currently trying to accomplish right now? Summarize their current intent/goal in one line (max 50 words). Use the same language the user is using. Output ONLY the summary.\n\n${earlyMessages.slice(-2500)}`;
 
     const stdout = await runClaude(prompt);
 

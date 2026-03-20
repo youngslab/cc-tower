@@ -36,7 +36,7 @@ export async function generateContextSummary(sessionId, recentMessages) {
         return cached?.summary;
     inflight.add(sessionId);
     try {
-        const prompt = `Read the recent dev session messages below. Summarize what the user is currently working on RIGHT NOW in one line (max 50 words). Use the same language the user is using. Output ONLY the summary.\n\n${recentMessages.slice(-2500)}`;
+        const prompt = `Read the recent dev session messages below. Summarize what was accomplished (the result/outcome) in one line (max 50 words). Use the same language the user is using. Output ONLY the summary.\n\n${recentMessages.slice(-2500)}`;
         const stdout = await runClaude(prompt);
         if (stdout) {
             const firstLine = stdout.trim().split('\n')[0] ?? '';
@@ -68,7 +68,7 @@ export async function generateGoalSummary(sessionId, earlyMessages) {
         return cached?.summary;
     goalInflight.add(sessionId);
     try {
-        const prompt = `Read the dev session conversation below. Summarize the user's overall goal/objective for this session in one line (max 50 words). Use the same language the user is using. Output ONLY the summary.\n\n${earlyMessages.slice(0, 2500)}`;
+        const prompt = `Read the recent dev session conversation below. What is the user currently trying to accomplish right now? Summarize their current intent/goal in one line (max 50 words). Use the same language the user is using. Output ONLY the summary.\n\n${earlyMessages.slice(-2500)}`;
         const stdout = await runClaude(prompt);
         if (stdout) {
             const firstLine = stdout.trim().split('\n')[0] ?? '';

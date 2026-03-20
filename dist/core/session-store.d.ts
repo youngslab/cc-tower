@@ -42,6 +42,7 @@ export interface Session {
     favoritedAt?: number;
     host: string;
     sshTarget?: string;
+    commandPrefix?: string;
     hostOnline?: boolean;
 }
 export declare class SessionStore extends EventEmitter {
