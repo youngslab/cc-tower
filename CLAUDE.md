@@ -96,6 +96,11 @@ npx tsc && npm publish
 - `bin/cc-tower.js` — Entry point (imports dist/index.js)
 - `hooks/` — Claude Code hook plugin files
 - `test/` — Vitest tests
+- `doc/` — Architecture and algorithm documentation
+
+## Documentation
+
+- [`doc/algorithms.md`](./doc/algorithms.md) — State machine, discovery, JSONL inference, LLM summarization 등 핵심 알고리즘 레퍼런스
 
 ## Key Patterns
 
