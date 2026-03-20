@@ -119,28 +119,36 @@ export class JsonlWatcher extends EventEmitter {
    * Extract the latest custom-title (/rename) from a JSONL file.
    */
   coldStartCustomTitle(jsonlPath: string): string | undefined {
-    let content: string;
     try {
       const stat = fs.statSync(jsonlPath);
-      const readSize = Math.min(stat.size, 65536); // last 64KB is enough
-      if (readSize < stat.size) {
-        const fd = fs.openSync(jsonlPath, 'r');
-        const buf = Buffer.alloc(readSize);
-        fs.readSync(fd, buf, 0, readSize, stat.size - readSize);
-        fs.closeSync(fd);
-        content = buf.toString('utf8');
-      } else {
-        content = fs.readFileSync(jsonlPath, 'utf8');
+      // custom-title is written near the start of the file, so read head + tail
+      const fd = fs.openSync(jsonlPath, 'r');
+      const headSize = Math.min(stat.size, 8192); // first 8KB
+      const headBuf = Buffer.alloc(headSize);
+      fs.readSync(fd, headBuf, 0, headSize, 0);
+
+      let tailContent = '';
+      const tailSize = Math.min(stat.size, 65536);
+      if (tailSize < stat.size) {
+        const tailBuf = Buffer.alloc(tailSize);
+        fs.readSync(fd, tailBuf, 0, tailSize, stat.size - tailSize);
+        tailContent = tailBuf.toString('utf8');
+      }
+      fs.closeSync(fd);
+
+      // Search tail first (latest rename wins), then head
+      for (const content of [tailContent, headBuf.toString('utf8')]) {
+        if (!content) continue;
+        const lines = content.split('\n').filter(l => l.trim());
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const parsed = parseJsonlLine(lines[i]!);
+          if (parsed?.type === 'custom-title' && parsed.customTitle) {
+            return parsed.customTitle;
+          }
+        }
       }
     } catch {
       return undefined;
-    }
-    const lines = content.split('\n').filter(l => l.trim());
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const parsed = parseJsonlLine(lines[i]!);
-      if (parsed?.type === 'custom-title' && parsed.customTitle) {
-        return parsed.customTitle;
-      }
     }
     return undefined;
   }
