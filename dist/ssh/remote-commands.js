@@ -5,7 +5,7 @@ import { sshExec } from './exec.js';
 export async function remoteListPanes(host) {
     try {
         const format = '#{pane_id}|||#{pane_tty}|||#{pane_pid}|||#{session_name}|||#{window_index}';
-        const out = await sshExec(host.sshTarget, `tmux list-panes -a -F '${format}'`, { sshOptions: host.sshOptions });
+        const out = await sshExec(host.sshTarget, `tmux list-panes -a -F '${format}'`, { sshOptions: host.sshOptions, commandPrefix: host.commandPrefix });
         return out.trim().split('\n').filter(Boolean).map(line => {
             const [paneId, tty, pidStr, sessionName, windowIdx] = line.split('|||');
             return {
@@ -26,7 +26,7 @@ export async function remoteListPanes(host) {
  */
 export async function remoteReadSessions(host) {
     const claudeDir = host.claudeDir ?? '~/.claude';
-    return sshExec(host.sshTarget, `cat ${claudeDir}/sessions/*.json 2>/dev/null || true`, { sshOptions: host.sshOptions });
+    return sshExec(host.sshTarget, `cat ${claudeDir}/sessions/*.json 2>/dev/null || true`, { sshOptions: host.sshOptions, commandPrefix: host.commandPrefix });
 }
 /**
  * Read tail of a remote JSONL file.
@@ -34,6 +34,7 @@ export async function remoteReadSessions(host) {
 export async function remoteReadJsonlTail(host, jsonlPath, bytes = 262144) {
     return sshExec(host.sshTarget, `tail -c ${bytes} ${jsonlPath} 2>/dev/null || true`, {
         sshOptions: host.sshOptions,
+        commandPrefix: host.commandPrefix,
         timeout: 15000,
     });
 }
@@ -42,14 +43,14 @@ export async function remoteReadJsonlTail(host, jsonlPath, bytes = 262144) {
  */
 export async function remoteSendKeys(host, paneId, text) {
     const escaped = text.replace(/'/g, "'\\''");
-    await sshExec(host.sshTarget, `tmux send-keys -t ${paneId} '${escaped}' Enter`, { sshOptions: host.sshOptions });
+    await sshExec(host.sshTarget, `tmux send-keys -t ${paneId} '${escaped}' Enter`, { sshOptions: host.sshOptions, commandPrefix: host.commandPrefix });
 }
 /**
  * Check if tmux is available on remote host.
  */
 export async function remoteTmuxAvailable(host) {
     try {
-        await sshExec(host.sshTarget, 'tmux info', { timeout: 5000, sshOptions: host.sshOptions });
+        await sshExec(host.sshTarget, 'tmux info', { timeout: 5000, sshOptions: host.sshOptions, commandPrefix: host.commandPrefix });
         return true;
     }
     catch {

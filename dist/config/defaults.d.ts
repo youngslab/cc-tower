@@ -4,6 +4,7 @@ export interface HostConfig {
     hooks: boolean;
     ssh_options?: string;
     claude_dir?: string;
+    command_prefix?: string;
 }
 export interface Config {
     discovery: {

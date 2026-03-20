@@ -5,6 +5,7 @@
 export declare function sshExec(sshTarget: string, command: string, opts?: {
     timeout?: number;
     sshOptions?: string;
+    commandPrefix?: string;
 }): Promise<string>;
 /**
  * Check if SSH connection to host works.

@@ -2,6 +2,7 @@ export interface RemoteHostConfig {
     sshTarget: string;
     sshOptions?: string;
     claudeDir?: string;
+    commandPrefix?: string;
 }
 /**
  * List all tmux panes on a remote host.

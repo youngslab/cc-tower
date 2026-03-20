@@ -13,8 +13,18 @@ export function sshExec(sshTarget, command, opts) {
         }
         // Common options: no TTY allocation, batch mode (no password prompts)
         sshArgs.push('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5');
+        // When a command prefix is provided, wrap: prefix sh -c 'command'
+        // e.g., docker exec devenv sh -c 'cat ~/.claude/sessions/*.json'
+        let remoteCommand;
+        if (opts?.commandPrefix) {
+            const innerEscaped = command.replace(/'/g, "'\\''");
+            remoteCommand = `${opts.commandPrefix} sh -c '${innerEscaped}'`;
+        }
+        else {
+            remoteCommand = command;
+        }
         // Quote the remote command so globs/redirects run on the remote shell, not locally
-        const escaped = command.replace(/'/g, "'\\''");
+        const escaped = remoteCommand.replace(/'/g, "'\\''");
         sshArgs.push(sshTarget, `'${escaped}'`);
         const child = spawn('sh', ['-c', sshArgs.join(' ')], {
             stdio: ['ignore', 'pipe', 'pipe'],

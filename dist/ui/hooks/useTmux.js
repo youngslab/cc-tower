@@ -12,7 +12,11 @@ export function useTmux(closeKey = 'Escape') {
             const escaped = text.replace(/'/g, "'\\''");
             const { spawn } = await import('node:child_process');
             return new Promise((resolve) => {
-                const cmd = `ssh ${session.sshTarget} "tmux send-keys -t ${session.paneId} '${escaped}' Enter"`;
+                const innerCmd = `tmux send-keys -t ${session.paneId} '${escaped}' Enter`;
+                const remoteCmd = session.commandPrefix
+                    ? `${session.commandPrefix} sh -c '${innerCmd.replace(/'/g, "'\\''")}'`
+                    : innerCmd;
+                const cmd = `ssh ${session.sshTarget} "${remoteCmd.replace(/"/g, '\\"')}"`;
                 const child = spawn('sh', ['-c', cmd], { stdio: 'ignore' });
                 child.on('close', (code) => resolve(code === 0));
                 child.on('error', () => resolve(false));
@@ -39,11 +43,16 @@ export function useTmux(closeKey = 'Escape') {
                 : `tmux bind-key -T cctower-peek ${tmuxKey} detach-client && ` +
                     `tmux attach \\\\; set-option key-table cctower-peek; ` +
                     `tmux unbind-key -T cctower-peek ${tmuxKey}`;
+            // For peek, we need interactive TTY — convert "docker exec X" to "docker exec -it X"
+            const interactivePrefix = session.commandPrefix?.replace(/^docker exec /, 'docker exec -it ');
+            const remoteCmd = interactivePrefix
+                ? `${interactivePrefix} sh -c 'export LANG=C.UTF-8; ${setupCmd.replace(/'/g, "'\\''")}'`
+                : setupCmd;
             await tmux.displayPopup({
                 width: '80%',
                 height: '80%',
                 title: ` ${session.label ?? session.projectName} (${session.host}) | ${tmuxKey} to close `,
-                command: `ssh -t -o LogLevel=ERROR ${session.sshTarget} "${setupCmd}"`,
+                command: `ssh -t -o LogLevel=ERROR ${session.sshTarget} "${remoteCmd}"`,
                 closeOnExit: true,
             });
             return true;
