@@ -70,12 +70,24 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
                 return (_jsxs(React.Fragment, { children: [showFavSep && (_jsxs(Text, { dimColor: true, children: ['─'.repeat(60), " favorites \u2191"] })), showNonTmuxSep && (_jsxs(Text, { dimColor: true, children: ['─'.repeat(60), " (monitor-only)"] })), _jsxs(Box, { children: [_jsx(Text, { color: isCursor ? 'cyan' : undefined, bold: isCursor, children: isCursor ? '▸' : ' ' }), _jsx(Text, { color: isCursor ? 'cyan' : undefined, dimColor: !isCursor, children: pad(`${i + 1}`, 3) }), _jsx(Text, { color: isCursor ? 'cyan' : undefined, dimColor: !isCursor && isDim, children: pad(session.paneId ?? '—', 7) }), _jsx(Text, { color: isCursor ? 'cyan' : undefined, dimColor: !isCursor && isDim, children: pad(session.host, 9) }), _jsx(Text, { color: isCursor ? 'cyan' : undefined, dimColor: !isCursor && isDim, children: pad(labelText, 18) }), _jsx(Text, { color: isCursor ? 'cyan' : (isDim ? 'gray' : color), children: pad(`${icon} ${session.status.toUpperCase()}`, 14) }), session.label && _jsxs(Text, { color: isCursor ? 'cyan' : 'blue', bold: true, children: ["[", session.label, "] "] }), _jsx(Text, { color: isCursor ? 'cyan' : undefined, dimColor: !isCursor && isDim, children: truncate(session.goalSummary ?? session.contextSummary ?? session.currentTask ?? (session.summaryLoading ? '⟳ summarizing...' : ''), maxTaskWidth - (session.label ? session.label.length + 3 : 0)) })] }), session.status === 'idle' && session.nextSteps && (_jsx(Box, { paddingLeft: 52, children: _jsxs(Text, { color: "yellow", children: ["\u21B3 ", truncate(session.nextSteps, maxTaskWidth)] }) }))] }, session.sessionId));
             }), sorted.length === 0 && (_jsx(EmptyState, { inTmux: tmuxCount > 0, hookInstalled: true })), confirmQuit && (_jsxs(Box, { marginTop: 1, borderStyle: "round", borderColor: "yellow", paddingX: 2, paddingY: 0, justifyContent: "center", children: [_jsx(Text, { color: "yellow", children: "Quit cc-tower?  " }), _jsx(Text, { bold: true, color: "green", children: "[y] Yes  " }), _jsx(Text, { bold: true, color: "red", children: "[n] No" })] })), !confirmQuit && (_jsx(Box, { marginTop: 1, children: _jsx(Text, { dimColor: true, children: "[j/k] Navigate  [1-9] Jump  [Enter] Detail  [p] Peek  [/] Send  [f] Fav  [n] New  [q] Quit" }) }))] }));
 }
+import stringWidth from 'string-width';
 function pad(str, len) {
-    return str.slice(0, len).padEnd(len);
+    const truncated = truncate(str, len);
+    const w = stringWidth(truncated);
+    return w < len ? truncated + ' '.repeat(len - w) : truncated;
 }
 function truncate(str, max) {
-    if (str.length <= max)
+    if (stringWidth(str) <= max)
         return str;
-    return str.slice(0, max - 1) + '…';
+    let result = '';
+    let w = 0;
+    for (const ch of str) {
+        const cw = stringWidth(ch);
+        if (w + cw > max - 1)
+            break;
+        result += ch;
+        w += cw;
+    }
+    return result + '…';
 }
 //# sourceMappingURL=Dashboard.js.map

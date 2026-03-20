@@ -1,13 +1,27 @@
 import { useCallback } from 'react';
 import { execa } from 'execa';
+import stringWidth from 'string-width';
 import { tmux } from '../../tmux/commands.js';
 import { Session } from '../../core/session-store.js';
+
+function truncateWidth(str: string, max: number): string {
+  if (stringWidth(str) <= max) return str;
+  let result = '';
+  let w = 0;
+  for (const ch of str) {
+    const cw = stringWidth(ch);
+    if (w + cw > max - 1) break;
+    result += ch;
+    w += cw;
+  }
+  return result + '…';
+}
 
 function peekTitle(session: Session, closeHint: string): string {
   const name = session.label ? `[${session.label}] ${session.projectName}` : session.projectName;
   const loc = session.sshTarget ? session.host : (session.paneId ?? '');
   const goal = session.goalSummary ?? session.contextSummary ?? '';
-  const goalPart = goal ? ` — ${goal.slice(0, 60)}` : '';
+  const goalPart = goal ? ` — ${truncateWidth(goal, 60)}` : '';
   return ` ${name} (${loc})${goalPart} | ${closeHint} to close `;
 }
 

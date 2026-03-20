@@ -144,11 +144,23 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
   );
 }
 
+import stringWidth from 'string-width';
+
 function pad(str: string, len: number): string {
-  return str.slice(0, len).padEnd(len);
+  const truncated = truncate(str, len);
+  const w = stringWidth(truncated);
+  return w < len ? truncated + ' '.repeat(len - w) : truncated;
 }
 
 function truncate(str: string, max: number): string {
-  if (str.length <= max) return str;
-  return str.slice(0, max - 1) + '…';
+  if (stringWidth(str) <= max) return str;
+  let result = '';
+  let w = 0;
+  for (const ch of str) {
+    const cw = stringWidth(ch);
+    if (w + cw > max - 1) break;
+    result += ch;
+    w += cw;
+  }
+  return result + '…';
 }
