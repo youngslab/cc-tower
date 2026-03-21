@@ -79,6 +79,23 @@ export function DetailView({ session, onBack, onSend, onPeek }: Props) {
         </Box>
       )}
 
+      {session.sshTarget && (
+        <Box marginTop={1} paddingX={2} flexDirection="column">
+          <Text bold color="cyan">Remote</Text>
+          <Text>  Host: {session.host}</Text>
+          <Text>  SSH: {session.sshTarget}</Text>
+          {session.paneId && <Text>  Pane: {session.paneId}</Text>}
+          {session.commandPrefix && <Text>  Prefix: {session.commandPrefix}</Text>}
+        </Box>
+      )}
+
+      {!session.sshTarget && session.paneId && (
+        <Box marginTop={1} paddingX={2} flexDirection="column">
+          <Text bold color="cyan">Terminal</Text>
+          <Text>  Pane: {session.paneId}</Text>
+        </Box>
+      )}
+
       <Box marginTop={1}>
         <Text dimColor>[/] Send  [p] Peek  [b] Back</Text>
       </Box>

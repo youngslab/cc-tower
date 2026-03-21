@@ -75,10 +75,8 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
       {/* Header */}
       <Box>
         <Text bold>   </Text>
-        <Text bold dimColor>{pad('PANE', 7)}</Text>
-        <Text bold dimColor>{pad('HOST', 9)}</Text>
-        <Text bold dimColor>{pad('LABEL', 18)}</Text>
-        <Text bold dimColor>{pad('STATUS', 14)}</Text>
+        <Text bold dimColor>{pad('LABEL', 22)}</Text>
+        <Text bold dimColor>{pad('●', 3)}</Text>
         <Text bold dimColor>GOAL</Text>
       </Box>
 
@@ -93,23 +91,21 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
         // Separator between favorites and non-favorites
         const showFavSep = hasFavorites && hasNonFavorites && i === favorites.length;
 
-        const labelText = (session.favorite ? '★ ' : '') + session.projectName;
+        const labelText = (session.favorite ? '★ ' : '') + (session.sshTarget ? '⌁ ' : '') + session.projectName;
 
         return (
           <React.Fragment key={session.sessionId}>
             {showFavSep && (
-              <Text dimColor>{'─'.repeat(60)} favorites ↑</Text>
+              <Text dimColor>{'· · · ·'.repeat(5)} ★ favorites</Text>
             )}
             {showNonTmuxSep && (
-              <Text dimColor>{'─'.repeat(60)} (monitor-only)</Text>
+              <Text dimColor>{'· · · ·'.repeat(5)} (monitor-only)</Text>
             )}
             <Box>
               <Text color={isCursor ? 'cyan' : undefined} bold={isCursor}>{isCursor ? '▸' : ' '}</Text>
               <Text color={isCursor ? 'cyan' : undefined} dimColor={!isCursor}>{pad(`${i + 1}`, 3)}</Text>
-              <Text color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{pad(session.paneId ?? '—', 7)}</Text>
-              <Text color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{pad(session.host, 9)}</Text>
-              <Text color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{pad(labelText, 18)}</Text>
-              <Text color={isCursor ? 'cyan' : (isDim ? 'gray' : color)}>{pad(`${icon} ${session.status.toUpperCase()}`, 14)}</Text>
+              <Text color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{pad(labelText, 22)}</Text>
+              <Text color={isCursor ? 'cyan' : (isDim ? 'gray' : color)}>{pad(icon, 3)}</Text>
               {session.label && <Text color={isCursor ? 'cyan' : 'blue'} bold>[{session.label}] </Text>}<Text color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{truncate(session.goalSummary ?? session.contextSummary ?? session.currentTask ?? (session.summaryLoading ? '⟳ summarizing...' : ''), maxTaskWidth - (session.label ? session.label.length + 3 : 0))}</Text>
             </Box>
             {session.status === 'idle' && session.nextSteps && (
@@ -137,7 +133,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
       {/* Footer */}
       {!confirmQuit && (
         <Box marginTop={1}>
-          <Text dimColor>[j/k] Navigate  [1-9] Jump  [Enter] Detail  [p] Peek  [/] Send  [f] Fav  [n] New  [q] Quit</Text>
+          <Text dimColor>[j/k] Nav  [1-9] Jump  │  [Enter] Detail  [p] Peek  [/] Send  │  [f] Fav  [n] New  [r] Refresh  [q] Quit</Text>
         </Box>
       )}
     </Box>

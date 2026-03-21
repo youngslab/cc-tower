@@ -121,7 +121,7 @@ export function App({ tower }: Props) {
       alignItems="center"
       justifyContent="center"
     >
-      {view === 'dashboard' && (
+      {view === 'dashboard' && termHeight >= 30 && (
         <Box width={boxWidth} justifyContent="flex-start" alignItems="flex-end" marginBottom={0}>
           <Box flexDirection="column">
             <Text color="cyan">{' ██████╗  ██████╗ ████████╗'}</Text>
@@ -133,6 +133,12 @@ export function App({ tower }: Props) {
           <Box flexDirection="column" justifyContent="flex-end" marginLeft={2}>
             <Text dimColor>{sessions.length} sessions</Text>
           </Box>
+        </Box>
+      )}
+      {view === 'dashboard' && termHeight >= 20 && termHeight < 30 && (
+        <Box width={boxWidth} justifyContent="flex-start" alignItems="center" marginBottom={0}>
+          <Text color="cyan" bold>◆ CCT</Text>
+          <Text dimColor> {sessions.length} sessions</Text>
         </Box>
       )}
       <Box
