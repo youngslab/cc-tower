@@ -153,7 +153,7 @@ export function App({ tower }: Props) {
           <Dashboard
             sessions={sessions}
             tmuxCount={tmuxCount}
-            maxTaskWidth={Math.max(10, boxWidth - 59)}
+            maxTaskWidth={Math.max(10, boxWidth - 35)}
             onSelect={handleSelect}
             onSend={handleSend}
             onPeek={handlePeek}

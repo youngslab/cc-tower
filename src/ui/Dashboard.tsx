@@ -74,10 +74,10 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
     <Box flexDirection="column">
       {/* Header */}
       <Box>
-        <Text bold>   </Text>
-        <Text bold dimColor>{pad('LABEL', 22)}</Text>
-        <Text bold dimColor>{pad('●', 3)}</Text>
-        <Text bold dimColor>GOAL</Text>
+        <Text bold dimColor>{centerPad('', 4)}</Text>
+        <Text bold dimColor>{centerPad('LABEL', 22)}</Text>
+        <Text bold dimColor>{centerPad('', 3)}</Text>
+        <Text bold dimColor>{centerPad('GOAL', maxTaskWidth)}</Text>
       </Box>
 
       {/* Session rows */}
@@ -96,23 +96,28 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
         return (
           <React.Fragment key={session.sessionId}>
             {showFavSep && (
-              <Text dimColor>{'· · · ·'.repeat(5)} ★ favorites</Text>
+              <Text dimColor>{'─'.repeat(60)} favorites ↑</Text>
             )}
             {showNonTmuxSep && (
               <Text dimColor>{'· · · ·'.repeat(5)} (monitor-only)</Text>
             )}
             <Box>
-              <Text color={isCursor ? 'cyan' : undefined} bold={isCursor}>{isCursor ? '▸' : ' '}</Text>
-              <Text color={isCursor ? 'cyan' : undefined} dimColor={!isCursor}>{pad(`${i + 1}`, 3)}</Text>
-              <Text color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{pad(labelText, 22)}</Text>
-              <Text color={isCursor ? 'cyan' : (isDim ? 'gray' : color)}>{pad(icon, 3)}</Text>
-              {session.label && <Text color={isCursor ? 'cyan' : 'blue'} bold>[{session.label}] </Text>}<Text color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{truncate(session.goalSummary ?? session.contextSummary ?? session.currentTask ?? (session.summaryLoading ? '⟳ summarizing...' : ''), maxTaskWidth - (session.label ? session.label.length + 3 : 0))}</Text>
+              <Text inverse={isCursor} color={isCursor ? 'cyan' : undefined} bold={isCursor}>{isCursor ? '▸' : ' '}</Text>
+              <Text inverse={isCursor} color={isCursor ? 'cyan' : undefined} dimColor={!isCursor}>{pad(`${i + 1}`, 3)}</Text>
+              <Text inverse={isCursor} color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{pad(labelText, 22)}</Text>
+              <Text inverse={isCursor} color={isCursor ? 'cyan' : (isDim ? 'gray' : color)}>{pad(icon, 3)}</Text>
+              {session.label && <Text inverse={isCursor} color={isCursor ? 'cyan' : 'blue'} bold>[{session.label}] </Text>}<Text inverse={isCursor} color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{truncate(session.goalSummary ?? session.contextSummary ?? session.currentTask ?? (session.summaryLoading ? '⟳ summarizing...' : ''), maxTaskWidth - (session.label ? session.label.length + 3 : 0))}</Text>
             </Box>
             {session.status === 'idle' && session.nextSteps && (
-              <Box paddingLeft={52}>
+              <Box>
+                <Text>{' '}</Text>
+                <Text>{pad('', 3)}</Text>
+                <Text>{pad('', 22)}</Text>
+                <Text>{pad('', 3)}</Text>
                 <Text color="yellow">↳ {truncate(session.nextSteps, maxTaskWidth)}</Text>
               </Box>
             )}
+            <Box height={1} />
           </React.Fragment>
         );
       })}
@@ -141,6 +146,14 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
 }
 
 import stringWidth from 'string-width';
+
+function centerPad(str: string, len: number): string {
+  const w = stringWidth(str);
+  if (w >= len) return str;
+  const left = Math.floor((len - w) / 2);
+  const right = len - w - left;
+  return ' '.repeat(left) + str + ' '.repeat(right);
+}
 
 function pad(str: string, len: number): string {
   const truncated = truncate(str, len);

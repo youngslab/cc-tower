@@ -51,7 +51,25 @@ program
 
     setTuiMode(true);
     const tower = new Tower();
-    await tower.start();
+    try {
+      await tower.start();
+    } catch (err: any) {
+      if (err?.message?.includes('already running')) {
+        // Another instance is running — try to attach to its tmux session
+        console.error('cc-tower is already running.');
+        try {
+          execSync('tmux has-session -t cc-tower 2>/dev/null', { stdio: 'ignore' });
+          console.error('Attaching to existing tmux session...');
+          const child = spawn('tmux', ['attach', '-t', 'cc-tower'], { stdio: 'inherit' });
+          child.on('close', (code) => process.exit(code ?? 0));
+          return;
+        } catch {
+          console.error('No tmux session found. Kill the existing instance first.');
+          process.exit(1);
+        }
+      }
+      throw err;
+    }
 
     // Enter alternate screen (like vim/htop)
     process.stdout.write('\x1b[?1049h'); // enter alt screen
@@ -143,6 +161,110 @@ program
       console.log(`Sent to ${s.label ?? s.projectName} (${s.paneId})`);
     }
     await tower.stop();
+  });
+
+// Inspect — debug session summary vs actual JSONL content (no tower needed)
+program
+  .command('inspect <session>')
+  .option('-n <lines>', 'Number of recent messages to show', '10')
+  .action(async (sessionArg: string, opts: { n: string }) => {
+    const { parseJsonlLine } = await import('./utils/jsonl-parser.js');
+    const { cwdToSlug } = await import('./utils/slug.js');
+
+    // Read state.json directly (no tower startup)
+    const statePath = path.join(os.homedir(), '.local', 'share', 'cc-tower', 'state.json');
+    if (!fs.existsSync(statePath)) {
+      console.log('No state.json found. Run cc-tower first.');
+      process.exit(1);
+    }
+    const rawState = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Record<string, unknown>;
+    const stateData = (rawState.sessions ?? rawState) as Record<string, Record<string, unknown>>;
+
+    // Find matching session by id, label, projectName, or goalSummary
+    const q = sessionArg.toLowerCase();
+    const match = Object.entries(stateData).find(([id, s]) =>
+      id.startsWith(sessionArg) ||
+      ((s.label as string) ?? '').toLowerCase().includes(q) ||
+      ((s.projectName as string) ?? '').toLowerCase().includes(q) ||
+      ((s.goalSummary as string) ?? '').toLowerCase().includes(q)
+    );
+    if (!match) {
+      console.log(`Session not found: ${sessionArg}`);
+      console.log('Available sessions:');
+      for (const [id, s] of Object.entries(stateData)) {
+        const name = (s.label as string) || (s.projectName as string) || (s.goalSummary as string)?.slice(0, 40) || '(no label)';
+        console.log(`  ${id.slice(0, 12)}  ${name}`);
+      }
+      process.exit(1);
+    }
+
+    const [sessionId, s] = match;
+
+    // 1. Show stored summary data
+    console.log('═══ Stored Summary ═══');
+    console.log(`  Label:            ${(s.label as string) ?? '(none)'}`);
+    console.log(`  Goal:             ${(s.goalSummary as string) ?? '(none)'}`);
+    console.log(`  Context:          ${(s.contextSummary as string) ?? '(none)'}`);
+    console.log(`  Next Steps:       ${(s.nextSteps as string) ?? '(none)'}`);
+    console.log(`  Session ID:       ${sessionId}`);
+    console.log(`  CWD:              ${(s.cwd as string) ?? '(none)'}`);
+
+    // 2. Find cwd from session files or state
+    let cwd = s.cwd as string | undefined;
+    if (!cwd) {
+      // Look up in ~/.claude/sessions/*.json
+      const sessDir = path.join(os.homedir(), '.claude', 'sessions');
+      if (fs.existsSync(sessDir)) {
+        for (const f of fs.readdirSync(sessDir)) {
+          try {
+            const d = JSON.parse(fs.readFileSync(path.join(sessDir, f), 'utf8'));
+            if (d.sessionId === sessionId) { cwd = d.cwd; break; }
+          } catch {}
+        }
+      }
+    }
+    if (!cwd) {
+      console.log('\n  (no cwd — cannot locate JSONL)');
+      process.exit(0);
+    }
+    const claudeDir = path.join(os.homedir(), '.claude');
+    const slug = cwdToSlug(cwd);
+    const jsonlPath = path.join(claudeDir, 'projects', slug, `${sessionId}.jsonl`);
+
+    console.log(`\n═══ JSONL: ${jsonlPath} ═══`);
+    if (!fs.existsSync(jsonlPath)) {
+      console.log('  (file not found)');
+      process.exit(0);
+    }
+
+    const content = fs.readFileSync(jsonlPath, 'utf8');
+    const lines = content.split('\n').filter(l => l.trim());
+    const limit = parseInt(opts.n) || 10;
+    const recent = lines.slice(-limit * 5);
+    const messages: { type: string; text: string; ts: string }[] = [];
+    for (const line of recent) {
+      const parsed = parseJsonlLine(line);
+      if (!parsed) continue;
+      if (parsed.type === 'user' && parsed.userContent) {
+        messages.push({ type: 'USER', text: parsed.userContent.slice(0, 200), ts: parsed.timestamp ?? '' });
+      } else if (parsed.type === 'assistant' && parsed.assistantText) {
+        messages.push({ type: 'ASST', text: parsed.assistantText.slice(0, 200), ts: parsed.timestamp ?? '' });
+      } else if (parsed.type === 'assistant' && parsed.toolName) {
+        messages.push({ type: 'TOOL', text: `${parsed.toolName}(${parsed.toolInput ?? ''})`, ts: parsed.timestamp ?? '' });
+      } else if (parsed.type === 'custom-title' && parsed.customTitle) {
+        messages.push({ type: 'TITLE', text: parsed.customTitle, ts: parsed.timestamp ?? '' });
+      }
+    }
+    const shown = messages.slice(-limit);
+    if (shown.length === 0) {
+      console.log('  (no messages found)');
+    } else {
+      for (const m of shown) {
+        const ts = m.ts ? m.ts.slice(11, 19) : '';
+        console.log(`  [${ts}] ${m.type}: ${m.text}`);
+      }
+    }
+    process.exit(0);
   });
 
 // Peek
