@@ -6,7 +6,7 @@ const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
 let tui = false;
 export function setTuiMode(enabled) { tui = enabled; }
 // Log file: always writes info+ regardless of TUI mode
-const LOG_DIR = join(homedir(), '.local', 'share', 'cc-tower');
+const LOG_DIR = join(homedir(), '.cache', 'cc-tower');
 const LOG_FILE = join(LOG_DIR, 'cc-tower.log');
 let logFileReady = false;
 const MAX_LOG_SIZE = 5 * 1024 * 1024; // 5MB

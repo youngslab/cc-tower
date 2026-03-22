@@ -96,7 +96,21 @@ export class Tower extends EventEmitter {
         this.lockFd = null;
     }
     async start() {
-        logger.info('tower: starting cc-tower', { hosts: this.config.hosts.map(h => h.name) });
+        // Read version + git commit for startup log
+        let version = 'unknown';
+        let commit = 'unknown';
+        try {
+            const pkgPath = new URL('../../package.json', import.meta.url);
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+            version = pkg.version ?? 'unknown';
+        }
+        catch { }
+        try {
+            const { execSync } = await import('node:child_process');
+            commit = execSync('git rev-parse --short HEAD', { cwd: path.dirname(new URL(import.meta.url).pathname), timeout: 3000 }).toString().trim();
+        }
+        catch { }
+        logger.info('tower: starting cc-tower', { version, commit, hosts: this.config.hosts.map(h => h.name) });
         // === Single Instance Lock ===
         if (!this.skipHooks && !this.acquireLock()) {
             logger.error('tower: another instance is already running');

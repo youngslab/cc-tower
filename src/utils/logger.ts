@@ -10,7 +10,7 @@ let tui = false;
 export function setTuiMode(enabled: boolean): void { tui = enabled; }
 
 // Log file: always writes info+ regardless of TUI mode
-const LOG_DIR = join(homedir(), '.local', 'share', 'cc-tower');
+const LOG_DIR = join(homedir(), '.cache', 'cc-tower');
 const LOG_FILE = join(LOG_DIR, 'cc-tower.log');
 let logFileReady = false;
 
