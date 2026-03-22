@@ -449,14 +449,15 @@ export class Tower extends EventEmitter {
 
   private async refreshRemoteGoalSummary(compositeId: string, config: RemoteHostConfig, jsonlPath: string): Promise<void> {
     try {
+      this.store.update(compositeId, { summaryLoading: true });
       const session = this.store.get(compositeId);
       const tail = await remoteReadJsonlTail(config, jsonlPath, 32768);
-      if (!tail || tail.length < 20) return;
+      if (!tail || tail.length < 20) { this.store.update(compositeId, { summaryLoading: false }); return; }
       // Extract recent messages (last N lines)
       const lines = tail.split('\n').filter(l => l.trim());
       const earlyLines = lines.slice(-15);
       const earlyText = earlyLines.join('\n');
-      if (earlyText.length < 20) return;
+      if (earlyText.length < 20) { this.store.update(compositeId, { summaryLoading: false }); return; }
       const summary = await generateGoalSummary(compositeId, earlyText);
       if (summary) {
         logger.info('tower: remote goal summary received', { compositeId, summary });
@@ -464,6 +465,7 @@ export class Tower extends EventEmitter {
       }
     } catch (err) {
       logger.debug('tower: remote goal summary error', { compositeId, error: String(err) });
+      this.store.update(compositeId, { summaryLoading: false });
     }
   }
 

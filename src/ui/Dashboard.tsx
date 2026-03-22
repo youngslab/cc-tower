@@ -137,8 +137,18 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
 
       {/* Footer */}
       {!confirmQuit && (
-        <Box marginTop={1}>
-          <Text dimColor>[j/k] Nav  [1-9] Jump  │  [Enter] Detail  [p] Peek  [/] Send  │  [f] Fav  [n] New  [r] Refresh  [q] Quit</Text>
+        <Box marginTop={1} flexDirection="column">
+          <Box>
+            <Text dimColor>  </Text>
+            <Text color="green">●</Text><Text dimColor> Running  </Text>
+            <Text color="yellow">◐</Text><Text dimColor> Thinking  </Text>
+            <Text color="cyan">◑</Text><Text dimColor> Agent  </Text>
+            <Text color="white">○</Text><Text dimColor> Idle  </Text>
+            <Text color="red">✕</Text><Text dimColor> Dead</Text>
+          </Box>
+          <Box>
+            <Text dimColor>  [j/k] Nav  [1-9] Jump  │  [Enter] Detail  [p] Peek  [/] Send  │  [f] Fav  [n] New  [r] Refresh  [q] Quit</Text>
+          </Box>
         </Box>
       )}
     </Box>
