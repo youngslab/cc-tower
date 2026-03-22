@@ -41,7 +41,7 @@ export class Tower extends EventEmitter {
         super();
         this.config = config ?? loadConfig();
         this.skipHooks = opts?.skipHooks ?? false;
-        const persistPath = path.join(os.homedir(), '.local', 'share', 'cc-tower', 'state.json');
+        const persistPath = path.join(os.homedir(), '.config', 'cc-tower', 'state.json');
         const socketPath = `${process.env['XDG_RUNTIME_DIR'] ?? '/tmp'}/cc-tower.sock`;
         this.store = new SessionStore(persistPath);
         this.discovery = new DiscoveryEngine({
@@ -56,7 +56,7 @@ export class Tower extends EventEmitter {
     }
     lockFd = null;
     acquireLock() {
-        const lockPath = path.join(os.homedir(), '.local', 'share', 'cc-tower', 'tower.lock');
+        const lockPath = path.join(os.homedir(), '.config', 'cc-tower', 'tower.lock');
         fs.mkdirSync(path.dirname(lockPath), { recursive: true });
         try {
             this.lockFd = fs.openSync(lockPath, 'wx');
@@ -86,7 +86,7 @@ export class Tower extends EventEmitter {
         }
     }
     releaseLock() {
-        const lockPath = path.join(os.homedir(), '.local', 'share', 'cc-tower', 'tower.lock');
+        const lockPath = path.join(os.homedir(), '.config', 'cc-tower', 'tower.lock');
         try {
             if (this.lockFd !== null)
                 fs.closeSync(this.lockFd);

@@ -172,7 +172,7 @@ program
     const { cwdToSlug } = await import('./utils/slug.js');
 
     // Read state.json directly (no tower startup)
-    const statePath = path.join(os.homedir(), '.local', 'share', 'cc-tower', 'state.json');
+    const statePath = path.join(os.homedir(), '.config', 'cc-tower', 'state.json');
     if (!fs.existsSync(statePath)) {
       console.log('No state.json found. Run cc-tower first.');
       process.exit(1);
