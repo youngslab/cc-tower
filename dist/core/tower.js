@@ -588,10 +588,20 @@ export class Tower extends EventEmitter {
             claudeDir: hostConfig.claude_dir,
             commandPrefix: hostConfig.command_prefix,
         };
-        // Compute remote JSONL path
+        // Compute remote JSONL path (with fallback to latest file)
         const claudeDir = hostConfig.claude_dir ?? '~/.claude';
         const slug = cwdToSlug(info.cwd);
-        const jsonlPath = `${claudeDir}/projects/${slug}/${info.sessionId}.jsonl`;
+        let jsonlPath = `${claudeDir}/projects/${slug}/${info.sessionId}.jsonl`;
+        // Fallback: find the most recently modified JSONL in the remote project dir
+        try {
+            const lsOut = await sshExec(hostConfig.ssh, `ls -t ${claudeDir}/projects/${slug}/*.jsonl 2>/dev/null | head -1`, { sshOptions: hostConfig.ssh_options, commandPrefix: hostConfig.command_prefix, timeout: 5000 });
+            const newest = lsOut.trim();
+            if (newest && newest !== jsonlPath) {
+                logger.debug('tower: remote using newest JSONL', { sessionId: info.sessionId, newest });
+                jsonlPath = newest;
+            }
+        }
+        catch { }
         // Cold start: read remote JSONL tail for initial state
         let initialState = 'idle';
         let lastTask;
