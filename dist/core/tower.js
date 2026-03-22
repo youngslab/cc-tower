@@ -303,8 +303,38 @@ export class Tower extends EventEmitter {
                 void this.refreshNextSteps(match.sessionId, jp);
             }
         }
+        else if (session.sshTarget) {
+            // Remote session — use SSH-based refresh
+            const hostConfig = this.config.hosts.find(h => h.name === session.host);
+            if (hostConfig) {
+                const remoteConfig = {
+                    sshTarget: hostConfig.ssh,
+                    sshOptions: hostConfig.ssh_options,
+                    claudeDir: hostConfig.claude_dir,
+                    commandPrefix: hostConfig.command_prefix,
+                };
+                // Re-check newest remote JSONL
+                let jp = this.jsonlPaths.get(sessionId) ?? '';
+                try {
+                    const claudeDir = hostConfig.claude_dir ?? '~/.claude';
+                    const slug = cwdToSlug(session.cwd);
+                    const lsOut = await sshExec(hostConfig.ssh, `ls -t ${claudeDir}/projects/${slug}/*.jsonl 2>/dev/null | head -1`, { sshOptions: hostConfig.ssh_options, commandPrefix: hostConfig.command_prefix, timeout: 5000 });
+                    const newest = lsOut.trim();
+                    if (newest) {
+                        jp = newest;
+                        this.jsonlPaths.set(sessionId, jp);
+                        logger.info('tower: remote refresh updated JSONL path', { sessionId, newPath: jp });
+                    }
+                }
+                catch { }
+                if (jp) {
+                    void this.refreshRemoteGoalSummary(sessionId, remoteConfig, jp);
+                    void this.refreshRemoteContextSummary(sessionId, remoteConfig, jp);
+                }
+            }
+        }
         else {
-            // Same session — just refresh JSONL path and summaries
+            // Local session — refresh JSONL path and summaries
             const jp = this.jsonlPaths.get(sessionId);
             if (jp) {
                 // Re-check newest JSONL
