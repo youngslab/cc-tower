@@ -65,7 +65,7 @@ export class DiscoveryEngine extends EventEmitter {
                     const lost = this.known.get(info.pid);
                     this.known.delete(info.pid);
                     this.emit('session-lost', lost);
-                    logger.debug('discovery: session-lost (PID dead)', { pid: info.pid });
+                    logger.info('discovery: session-lost (PID dead)', { pid: info.pid, sessionId: info.sessionId, cwd: info.cwd });
                 }
                 continue;
             }
@@ -91,7 +91,7 @@ export class DiscoveryEngine extends EventEmitter {
                 if (!isPidAlive(pid)) {
                     this.known.delete(pid);
                     this.emit('session-lost', session);
-                    logger.debug('discovery: session-lost (no file)', { pid });
+                    logger.info('discovery: session-lost (no file, PID dead)', { pid, sessionId: session.sessionId, cwd: session.cwd });
                 }
             }
         }
@@ -196,7 +196,12 @@ function isPidAlive(pid) {
         process.kill(pid, 0);
         return true;
     }
-    catch {
+    catch (err) {
+        // EPERM means process exists but we lack permission — treat as alive
+        if (err?.code === 'EPERM') {
+            logger.debug('discovery: isPidAlive EPERM (treating as alive)', { pid });
+            return true;
+        }
         return false;
     }
 }

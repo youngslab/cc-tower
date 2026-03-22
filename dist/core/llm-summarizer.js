@@ -20,6 +20,12 @@ const goalInflight = new Set();
 // Next steps cache: sessionId → { summary, hash }
 const nextStepsCache = new Map();
 const nextStepsInflight = new Set();
+/** Clear all cached summaries for a session so next call regenerates. */
+export function clearSummaryCache(sessionId) {
+    cache.delete(sessionId);
+    goalCache.delete(sessionId);
+    nextStepsCache.delete(sessionId);
+}
 export async function startLlmSession() { }
 export async function stopLlmSession() { }
 export function getLlmSessionName() { return '_cctower_llm'; }

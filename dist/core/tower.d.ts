@@ -32,7 +32,7 @@ export declare class Tower extends EventEmitter {
     private acquireLock;
     private releaseLock;
     start(): Promise<void>;
-    /** Refresh all LLM summaries for a specific session. */
+    /** Full refresh: re-scan discovery, re-register session, then regenerate LLM summaries. */
     refreshSession(sessionId: string): Promise<void>;
     private refreshGoalSummary;
     private refreshContextSummary;

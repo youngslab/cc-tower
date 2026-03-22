@@ -11,7 +11,7 @@ import { Summarizer } from './summarizer.js';
 import { Notifier } from './notifier.js';
 import { mapPidToPane } from '../tmux/pane-mapper.js';
 import { cwdToSlug, cleanDisplayText, isInternalMessage } from '../utils/slug.js';
-import { generateContextSummary, generateGoalSummary, generateNextSteps, startLlmSession, stopLlmSession, getLlmSessionName } from './llm-summarizer.js';
+import { generateContextSummary, generateGoalSummary, generateNextSteps, clearSummaryCache, startLlmSession, stopLlmSession, getLlmSessionName } from './llm-summarizer.js';
 import { logger } from '../utils/logger.js';
 import { parseJsonlLine } from '../utils/jsonl-parser.js';
 import { ConnectionManager } from '../ssh/connection-manager.js';
@@ -273,13 +273,71 @@ export class Tower extends EventEmitter {
   }
 
 
-  /** Refresh all LLM summaries for a specific session. */
+  /** Full refresh: re-scan discovery, re-register session, then regenerate LLM summaries. */
   async refreshSession(sessionId: string): Promise<void> {
-    const jp = this.jsonlPaths.get(sessionId);
-    if (!jp) return;
-    void this.refreshGoalSummary(sessionId, jp);
-    void this.refreshContextSummary(sessionId, jp);
-    void this.refreshNextSteps(sessionId, jp);
+    const session = this.store.get(sessionId);
+    if (!session) return;
+
+    // Clear UI immediately
+    clearSummaryCache(sessionId);
+    this.store.update(sessionId, {
+      goalSummary: undefined,
+      contextSummary: undefined,
+      nextSteps: undefined,
+      summaryLoading: true,
+    });
+
+    // Re-scan discovery to pick up any changes (new PID, session file changes)
+    const discovered = await this.discovery.scanOnce();
+    const match = discovered.find(s => s.cwd === session.cwd) ?? discovered.find(s => s.sessionId === sessionId);
+
+    if (match && match.sessionId !== sessionId) {
+      // Session ID changed (e.g., /clear, /resume) — re-register
+      logger.info('tower: refresh detected session change', { old: sessionId, new: match.sessionId });
+      this.cleanupSession(sessionId);
+      await this.registerSession(match);
+      // Migrate metadata
+      this.store.update(match.sessionId, {
+        label: session.label,
+        tags: session.tags,
+        favorite: session.favorite,
+        favoritedAt: session.favoritedAt,
+        summaryLoading: true,
+      });
+      const jp = this.jsonlPaths.get(match.sessionId);
+      if (jp) {
+        void this.refreshGoalSummary(match.sessionId, jp);
+        void this.refreshContextSummary(match.sessionId, jp);
+        void this.refreshNextSteps(match.sessionId, jp);
+      }
+    } else {
+      // Same session — just refresh JSONL path and summaries
+      const jp = this.jsonlPaths.get(sessionId);
+      if (jp) {
+        // Re-check newest JSONL
+        try {
+          const dir = path.dirname(jp);
+          const files = fs.readdirSync(dir)
+            .filter(f => f.endsWith('.jsonl') && !f.includes('/'))
+            .map(f => ({ name: f, mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
+            .sort((a, b) => b.mtime - a.mtime);
+          if (files.length > 0) {
+            const newest = path.join(dir, files[0]!.name);
+            if (newest !== jp) {
+              this.jsonlPaths.set(sessionId, newest);
+              this.jsonlWatcher.unwatch(sessionId);
+              this.jsonlWatcher.watch(sessionId, newest);
+              logger.info('tower: refresh updated JSONL path', { sessionId, newPath: newest });
+            }
+          }
+        } catch {}
+
+        const updatedJp = this.jsonlPaths.get(sessionId)!;
+        void this.refreshGoalSummary(sessionId, updatedJp);
+        void this.refreshContextSummary(sessionId, updatedJp);
+        void this.refreshNextSteps(sessionId, updatedJp);
+      }
+    }
   }
 
   private async refreshGoalSummary(sessionId: string, jsonlPath: string): Promise<void> {
@@ -682,20 +740,31 @@ export class Tower extends EventEmitter {
       try {
         const tail = await remoteReadJsonlTail(config, jsonlPath);
         const lines = tail.split('\n').filter(l => l.trim());
+        const fsm = this.stateMachines.get(compositeId);
+        if (!fsm) return;
+
         // Find the most recent state-determining message
         for (let i = lines.length - 1; i >= 0; i--) {
           const parsed = parseJsonlLine(lines[i]!);
           if (!parsed) continue;
-          const fsm = this.stateMachines.get(compositeId);
-          if (!fsm) break;
 
+          // system turn_duration / stop_hook_summary / local_command → idle
+          if (parsed.type === 'system' && (parsed.systemSubtype === 'turn_duration' || parsed.systemSubtype === 'stop_hook_summary' || parsed.systemSubtype === 'local_command')) {
+            fsm.transition({ type: 'jsonl', stopReason: 'end_turn' } as InputEvent);
+            break;
+          }
+
+          // user message → thinking (Claude is about to respond)
           if (parsed.type === 'user' && parsed.userContent) {
             const text = parsed.userContent.trim();
             if (!isInternalMessage(text)) {
               this.store.update(compositeId, { currentTask: cleanDisplayText(text).slice(0, 80) });
             }
+            fsm.transition({ type: 'jsonl', stopReason: null } as InputEvent);  // thinking
             break;
           }
+
+          // assistant message → determine state from stopReason
           if (parsed.type === 'assistant' && parsed.stopReason !== undefined) {
             fsm.transition({ type: 'jsonl', stopReason: parsed.stopReason } as InputEvent);
             break;
@@ -846,6 +915,13 @@ export class Tower extends EventEmitter {
       }
       return;
     }
+    // Ignore session-end from subagents: if hookSid doesn't directly match the session,
+    // it's likely a subagent ending (same CWD, different session ID).
+    if (event.event === 'session-end' && hookSid !== sessionId && !sessionId.endsWith(`::${hookSid}`)) {
+      logger.info('tower: ignoring session-end from subagent', { hookSid, sessionId });
+      return;
+    }
+
     logger.info('tower: hook event received', { event: event.event, sessionId, hookSid });
 
     const session = this.store.get(sessionId);

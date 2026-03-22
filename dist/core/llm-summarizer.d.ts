@@ -1,3 +1,5 @@
+/** Clear all cached summaries for a session so next call regenerates. */
+export declare function clearSummaryCache(sessionId: string): void;
 export declare function startLlmSession(): Promise<void>;
 export declare function stopLlmSession(): Promise<void>;
 export declare function getLlmSessionName(): string;
