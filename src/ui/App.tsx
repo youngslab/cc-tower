@@ -78,6 +78,32 @@ export function App({ tower }: Props) {
     } catch {}
   }, [tower]);
 
+  const handleGo = useCallback(async (session: Session) => {
+    if (!session.paneId) return;
+    const { execa: ex } = await import('execa');
+    try {
+      // Get cc-tower's current tmux session name to return to
+      const { stdout: currentSession } = await ex('tmux', ['display-message', '-p', '#{session_name}']);
+      const homeSession = currentSession.trim();
+      const tmuxKey = tower.config.keys.close === 'Escape' ? 'Escape' : tower.config.keys.close;
+
+      // Find target session name from paneId
+      const { stdout: targetInfo } = await ex('tmux', ['display-message', '-t', session.paneId, '-p', '#{session_name}:#{window_index}']);
+      const [targetSession, targetWindow] = targetInfo.trim().split(':');
+
+      // Bind close key: switch back to cc-tower + unbind + reset key table
+      await ex('tmux', ['bind-key', '-T', 'cctower-go', tmuxKey,
+        'switch-client', '-t', homeSession, ';',
+        'set-option', 'key-table', 'root', ';',
+        'unbind-key', '-T', 'cctower-go', tmuxKey,
+      ]);
+      // Switch to target session + window with key table set in one command
+      await ex('tmux', ['switch-client', '-t', `${targetSession}:${targetWindow}`, ';',
+        'set-option', 'key-table', 'cctower-go',
+      ]);
+    } catch {}
+  }, [tower]);
+
   const handleOpenNewSession = useCallback(() => {
     const activePaths = new Set(sessions.map(s => s.cwd).filter(Boolean));
     const projects = getRecentProjects(15).filter(p => !activePaths.has(p.path));
@@ -213,6 +239,7 @@ export function App({ tower }: Props) {
             onToggleFavorite={handleToggleFavorite}
             onRefresh={handleRefresh}
             onKill={handleKill}
+            onGo={handleGo}
             onNewSession={handleOpenNewSession}
             onQuit={handleQuit}
           />
