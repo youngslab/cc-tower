@@ -60,6 +60,23 @@ export function App({ tower }: Props) {
     void tower.refreshSession(session.sessionId);
   }, [tower]);
 
+  const handleKill = useCallback(async (session: Session) => {
+    if (!session.pid) return;
+    try {
+      if (session.sshTarget) {
+        const hostConfig = tower.config.hosts.find(h => h.ssh === session.sshTarget);
+        const killCmd = `kill ${session.pid}`;
+        const cmd = hostConfig?.command_prefix
+          ? `${hostConfig.command_prefix} sh -c '${killCmd}'`
+          : killCmd;
+        const { spawn: sp } = await import('node:child_process');
+        sp('ssh', [session.sshTarget, cmd], { stdio: 'ignore', detached: true });
+      } else {
+        process.kill(session.pid, 'SIGTERM');
+      }
+    } catch {}
+  }, [tower]);
+
   const handleOpenNewSession = useCallback(() => {
     const activePaths = new Set(sessions.map(s => s.cwd).filter(Boolean));
     const projects = getRecentProjects(15).filter(p => !activePaths.has(p.path));
@@ -159,6 +176,7 @@ export function App({ tower }: Props) {
             onPeek={handlePeek}
             onToggleFavorite={handleToggleFavorite}
             onRefresh={handleRefresh}
+            onKill={handleKill}
             onNewSession={handleOpenNewSession}
             onQuit={handleQuit}
           />

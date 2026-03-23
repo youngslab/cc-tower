@@ -9,14 +9,25 @@ const STATUS_ICONS = {
     idle: { icon: '○', color: 'white' },
     dead: { icon: '✕', color: 'red' },
 };
-export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend, onPeek, onToggleFavorite, onNewSession, onRefresh, onQuit }) {
+export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend, onPeek, onToggleFavorite, onNewSession, onRefresh, onKill, onQuit }) {
     const [cursor, setCursor] = useState(0);
     const [confirmQuit, setConfirmQuit] = useState(false);
+    const [confirmKill, setConfirmKill] = useState(false);
     // Sort: favorites (stable order) → tmux sessions (by status) → non-tmux sessions (by status)
     const favorites = sessions.filter(s => s.favorite).sort((a, b) => (a.favoritedAt ?? 0) - (b.favoritedAt ?? 0));
     const nonFavorites = sessions.filter(s => !s.favorite);
     const sorted = [...favorites, ...nonFavorites];
     useInput((input, key) => {
+        // Kill confirmation mode
+        if (confirmKill) {
+            if (input === 'y' && sorted[cursor]) {
+                onKill(sorted[cursor]);
+                setConfirmKill(false);
+            }
+            if (input === 'n' || key.escape)
+                setConfirmKill(false);
+            return;
+        }
         // Quit confirmation mode
         if (confirmQuit) {
             if (input === 'y')
@@ -47,6 +58,8 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
             onToggleFavorite(sorted[cursor]);
         if (input === 'r' && sorted[cursor])
             onRefresh(sorted[cursor]);
+        if (input === 'x' && sorted[cursor])
+            setConfirmKill(true);
         // Quit with confirmation
         if (input === 'n')
             onNewSession();
@@ -68,7 +81,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
                 const showFavSep = hasFavorites && hasNonFavorites && i === favorites.length;
                 const labelText = (session.favorite ? '★ ' : '') + (session.sshTarget ? '⌁ ' : '') + session.projectName;
                 return (_jsxs(React.Fragment, { children: [showFavSep && (_jsxs(Text, { dimColor: true, children: ['─'.repeat(60), " favorites \u2191"] })), showNonTmuxSep && (_jsxs(Text, { dimColor: true, children: ['· · · ·'.repeat(5), " (monitor-only)"] })), _jsxs(Box, { children: [_jsx(Text, { inverse: isCursor, color: isCursor ? 'cyan' : undefined, bold: isCursor, children: isCursor ? '▸' : ' ' }), _jsx(Text, { inverse: isCursor, color: isCursor ? 'cyan' : undefined, dimColor: !isCursor, children: pad(`${i + 1}`, 3) }), _jsx(Text, { inverse: isCursor, color: isCursor ? 'cyan' : undefined, dimColor: !isCursor && isDim, children: pad(labelText, 22) }), _jsx(Text, { inverse: isCursor, color: isCursor ? 'cyan' : (isDim ? 'gray' : color), children: pad(icon, 3) }), session.label && _jsxs(Text, { inverse: isCursor, color: isCursor ? 'cyan' : 'blue', bold: true, children: ["[", session.label, "] "] }), _jsx(Text, { inverse: isCursor, color: isCursor ? 'cyan' : undefined, dimColor: !isCursor && isDim, children: truncate(session.goalSummary ?? session.contextSummary ?? session.currentTask ?? (session.summaryLoading ? '⟳ summarizing...' : 'New session'), maxTaskWidth - (session.label ? session.label.length + 3 : 0)) })] }), session.status === 'idle' && session.nextSteps && (_jsxs(Box, { children: [_jsx(Text, { children: ' ' }), _jsx(Text, { children: pad('', 3) }), _jsx(Text, { children: pad('', 22) }), _jsx(Text, { children: pad('', 3) }), _jsxs(Text, { color: "yellow", children: ["\u21B3 ", truncate(session.nextSteps, maxTaskWidth)] })] })), _jsx(Box, { height: 1 })] }, session.sessionId));
-            }), sorted.length === 0 && (_jsx(EmptyState, { inTmux: tmuxCount > 0, hookInstalled: true })), confirmQuit && (_jsxs(Box, { marginTop: 1, borderStyle: "round", borderColor: "yellow", paddingX: 2, paddingY: 0, justifyContent: "center", children: [_jsx(Text, { color: "yellow", children: "Quit cc-tower?  " }), _jsx(Text, { bold: true, color: "green", children: "[y] Yes  " }), _jsx(Text, { bold: true, color: "red", children: "[n] No" })] })), !confirmQuit && (_jsxs(Box, { marginTop: 1, flexDirection: "column", children: [_jsxs(Box, { children: [_jsx(Text, { dimColor: true, children: "  " }), _jsx(Text, { color: "green", children: "\u25CF" }), _jsx(Text, { dimColor: true, children: " Running  " }), _jsx(Text, { color: "yellow", children: "\u25D0" }), _jsx(Text, { dimColor: true, children: " Thinking  " }), _jsx(Text, { color: "cyan", children: "\u25D1" }), _jsx(Text, { dimColor: true, children: " Agent  " }), _jsx(Text, { color: "white", children: "\u25CB" }), _jsx(Text, { dimColor: true, children: " Idle  " }), _jsx(Text, { color: "red", children: "\u2715" }), _jsx(Text, { dimColor: true, children: " Dead" })] }), _jsx(Box, { children: _jsx(Text, { dimColor: true, children: "  [j/k] Nav  [1-9] Jump  \u2502  [Enter] Detail  [p] Peek  [/] Send  \u2502  [f] Fav  [n] New  [r] Refresh  [q] Quit" }) })] }))] }));
+            }), sorted.length === 0 && (_jsx(EmptyState, { inTmux: tmuxCount > 0, hookInstalled: true })), confirmKill && sorted[cursor] && (_jsxs(Box, { marginTop: 1, borderStyle: "round", borderColor: "red", paddingX: 2, paddingY: 0, justifyContent: "center", children: [_jsxs(Text, { color: "red", children: ["Kill ", sorted[cursor].label ?? sorted[cursor].projectName, " (PID ", sorted[cursor].pid, ")?  "] }), _jsx(Text, { bold: true, color: "green", children: "[y] Yes  " }), _jsx(Text, { bold: true, color: "red", children: "[n] No" })] })), confirmQuit && (_jsxs(Box, { marginTop: 1, borderStyle: "round", borderColor: "yellow", paddingX: 2, paddingY: 0, justifyContent: "center", children: [_jsx(Text, { color: "yellow", children: "Quit cc-tower?  " }), _jsx(Text, { bold: true, color: "green", children: "[y] Yes  " }), _jsx(Text, { bold: true, color: "red", children: "[n] No" })] })), !confirmQuit && (_jsxs(Box, { marginTop: 1, flexDirection: "column", children: [_jsxs(Box, { children: [_jsx(Text, { dimColor: true, children: "  " }), _jsx(Text, { color: "green", children: "\u25CF" }), _jsx(Text, { dimColor: true, children: " Running  " }), _jsx(Text, { color: "yellow", children: "\u25D0" }), _jsx(Text, { dimColor: true, children: " Thinking  " }), _jsx(Text, { color: "cyan", children: "\u25D1" }), _jsx(Text, { dimColor: true, children: " Agent  " }), _jsx(Text, { color: "white", children: "\u25CB" }), _jsx(Text, { dimColor: true, children: " Idle  " }), _jsx(Text, { color: "red", children: "\u2715" }), _jsx(Text, { dimColor: true, children: " Dead" })] }), _jsx(Box, { children: _jsx(Text, { dimColor: true, children: "  [j/k] Nav  [1-9] Jump  \u2502  [Enter] Detail  [p] Peek  [/] Send  \u2502  [f] Fav  [n] New  [r] Refresh  [x] Kill  [q] Quit" }) })] }))] }));
 }
 import stringWidth from 'string-width';
 function centerPad(str, len) {

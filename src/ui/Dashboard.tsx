@@ -13,6 +13,7 @@ interface Props {
   onToggleFavorite: (session: Session) => void;
   onNewSession: () => void;
   onRefresh: (session: Session) => void;
+  onKill: (session: Session) => void;
   onQuit: () => void;
 }
 
@@ -24,9 +25,10 @@ const STATUS_ICONS: Record<string, { icon: string; color: string }> = {
   dead: { icon: '✕', color: 'red' },
 };
 
-export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend, onPeek, onToggleFavorite, onNewSession, onRefresh, onQuit }: Props) {
+export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend, onPeek, onToggleFavorite, onNewSession, onRefresh, onKill, onQuit }: Props) {
   const [cursor, setCursor] = useState(0);
   const [confirmQuit, setConfirmQuit] = useState(false);
+  const [confirmKill, setConfirmKill] = useState(false);
 
   // Sort: favorites (stable order) → tmux sessions (by status) → non-tmux sessions (by status)
   const favorites = sessions.filter(s => s.favorite).sort((a, b) => (a.favoritedAt ?? 0) - (b.favoritedAt ?? 0));
@@ -34,6 +36,13 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
   const sorted = [...favorites, ...nonFavorites];
 
   useInput((input, key) => {
+    // Kill confirmation mode
+    if (confirmKill) {
+      if (input === 'y' && sorted[cursor]) { onKill(sorted[cursor]!); setConfirmKill(false); }
+      if (input === 'n' || key.escape) setConfirmKill(false);
+      return;
+    }
+
     // Quit confirmation mode
     if (confirmQuit) {
       if (input === 'y') onQuit();
@@ -57,6 +66,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
     if (input === 'p' && sorted[cursor]) onPeek(sorted[cursor]!);
     if (input === 'f' && sorted[cursor]) onToggleFavorite(sorted[cursor]!);
     if (input === 'r' && sorted[cursor]) onRefresh(sorted[cursor]!);
+    if (input === 'x' && sorted[cursor]) setConfirmKill(true);
 
     // Quit with confirmation
     if (input === 'n') onNewSession();
@@ -126,6 +136,15 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
         <EmptyState inTmux={tmuxCount > 0} hookInstalled={true} />
       )}
 
+      {/* Kill confirmation popup */}
+      {confirmKill && sorted[cursor] && (
+        <Box marginTop={1} borderStyle="round" borderColor="red" paddingX={2} paddingY={0} justifyContent="center">
+          <Text color="red">Kill {sorted[cursor]!.label ?? sorted[cursor]!.projectName} (PID {sorted[cursor]!.pid})?  </Text>
+          <Text bold color="green">[y] Yes  </Text>
+          <Text bold color="red">[n] No</Text>
+        </Box>
+      )}
+
       {/* Quit confirmation popup */}
       {confirmQuit && (
         <Box marginTop={1} borderStyle="round" borderColor="yellow" paddingX={2} paddingY={0} justifyContent="center">
@@ -147,7 +166,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, onSelect, onSend,
             <Text color="red">✕</Text><Text dimColor> Dead</Text>
           </Box>
           <Box>
-            <Text dimColor>  [j/k] Nav  [1-9] Jump  │  [Enter] Detail  [p] Peek  [/] Send  │  [f] Fav  [n] New  [r] Refresh  [q] Quit</Text>
+            <Text dimColor>  [j/k] Nav  [1-9] Jump  │  [Enter] Detail  [p] Peek  [/] Send  │  [f] Fav  [n] New  [r] Refresh  [x] Kill  [q] Quit</Text>
           </Box>
         </Box>
       )}
