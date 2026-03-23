@@ -699,6 +699,9 @@ export class Tower extends EventEmitter {
   private async registerRemoteSession(info: RemoteSessionInfo): Promise<void> {
     const compositeId = `${info.host}::${info.sessionId}`;
 
+    // Skip if already registered
+    if (this.store.get(compositeId)) return;
+
     // Find host config
     const hostConfig = this.config.hosts.find(h => h.name === info.host);
     if (!hostConfig) return;
