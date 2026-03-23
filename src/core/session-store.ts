@@ -125,8 +125,9 @@ export class SessionStore extends EventEmitter {
     this.emit('session-updated', session);
     logger.debug('session-store: updated session', { sessionId, patch: Object.keys(patch) });
 
-    // If user metadata changed, schedule persist
-    if ('label' in patch || 'tags' in patch || 'favorite' in patch) {
+    // If metadata or summaries changed, schedule persist
+    if ('label' in patch || 'tags' in patch || 'favorite' in patch ||
+        'goalSummary' in patch || 'contextSummary' in patch || 'nextSteps' in patch) {
       this.persist();
     }
   }
