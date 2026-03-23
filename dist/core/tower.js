@@ -1002,6 +1002,12 @@ export class Tower extends EventEmitter {
             if (current) {
                 this.store.update(sessionId, { messageCount: current.messageCount + 1 });
             }
+            // Refresh summaries on user input — captures new task context immediately
+            const jp = this.jsonlPaths.get(sessionId);
+            if (jp) {
+                void this.refreshGoalSummary(sessionId, jp);
+                void this.refreshContextSummary(sessionId, jp);
+            }
         }
         if (event.event === 'pre-tool') {
             const current = this.store.get(sessionId);
