@@ -61,11 +61,17 @@ function listCompletions(input) {
     catch { }
     return [];
 }
-export function NewSession({ projects, onSelect, onCancel }) {
+export function NewSession({ projects, hosts, onSelect, onCancel }) {
     const [cursor, setCursor] = useState(0);
     const [filter, setFilter] = useState('');
     const [customPath, setCustomPath] = useState('');
-    const [mode, setMode] = useState('list');
+    const [mode, setMode] = useState(hosts.length > 0 ? 'host' : 'list');
+    const [selectedHost, setSelectedHost] = useState(undefined);
+    // Host options: "local" + configured remote hosts
+    const hostOptions = [
+        { label: 'local' },
+        ...hosts.map(h => ({ label: `⌁ ${h.name} (${h.ssh})`, host: h })),
+    ];
     const filtered = useMemo(() => {
         if (!filter)
             return projects;
@@ -83,12 +89,29 @@ export function NewSession({ projects, onSelect, onCancel }) {
                 setCustomPath('');
                 return;
             }
-            if (filter) {
+            if (mode === 'list' && filter) {
                 setFilter('');
                 setCursor(0);
                 return;
             }
+            if (mode === 'list' && hosts.length > 0) {
+                setMode('host');
+                setCursor(0);
+                return;
+            }
             onCancel();
+            return;
+        }
+        if (mode === 'host') {
+            if (key.upArrow || input === 'k')
+                setCursor(c => Math.max(0, c - 1));
+            if (key.downArrow || input === 'j')
+                setCursor(c => Math.min(hostOptions.length - 1, c + 1));
+            if (key.return) {
+                setSelectedHost(hostOptions[cursor]?.host);
+                setMode(hostOptions[cursor]?.host ? 'custom' : 'list');
+                setCursor(0);
+            }
             return;
         }
         if (mode === 'list') {
@@ -101,7 +124,7 @@ export function NewSession({ projects, onSelect, onCancel }) {
                     setMode('custom');
                 }
                 else if (filtered[cursor]) {
-                    onSelect(filtered[cursor].path);
+                    onSelect(filtered[cursor].path, selectedHost);
                 }
             }
             if (key.backspace || key.delete) {
@@ -120,7 +143,7 @@ export function NewSession({ projects, onSelect, onCancel }) {
             }
             if (key.return && customPath.trim()) {
                 const expanded = customPath.startsWith('~') ? customPath.replace('~', process.env['HOME'] ?? '') : customPath;
-                onSelect(expanded.replace(/\/$/, ''));
+                onSelect(expanded.replace(/\/$/, ''), selectedHost);
             }
             if (key.backspace || key.delete) {
                 setCustomPath(p => p.slice(0, -1));
@@ -130,6 +153,6 @@ export function NewSession({ projects, onSelect, onCancel }) {
             }
         }
     });
-    return (_jsxs(Box, { flexDirection: "column", children: [_jsx(Text, { bold: true, color: "cyan", children: "New Claude Session" }), mode === 'list' ? (_jsxs(_Fragment, { children: [_jsxs(Box, { children: [_jsx(Text, { dimColor: true, children: "Filter: " }), _jsx(Text, { color: "cyan", children: filter || '' }), filter ? _jsx(Text, { color: "gray", children: "\u258B" }) : _jsx(Text, { dimColor: true, children: " (type to filter)" })] }), _jsx(Text, { children: " " }), filtered.map((p, i) => (_jsxs(Box, { children: [_jsxs(Text, { color: i === cursor ? 'cyan' : undefined, bold: i === cursor, children: [i === cursor ? '▸ ' : '  ', p.name] }), _jsxs(Text, { dimColor: true, children: [" ", p.path] })] }, p.path))), _jsx(Box, { children: _jsxs(Text, { color: cursor === filtered.length ? 'cyan' : undefined, bold: cursor === filtered.length, children: [cursor === filtered.length ? '▸ ' : '  ', "Enter custom path..."] }) }), filtered.length === 0 && projects.length > 0 && (_jsxs(Text, { dimColor: true, children: ["  No matches for \"", filter, "\""] })), _jsx(Text, { children: " " }), _jsx(Text, { dimColor: true, children: "\u2191\u2193 navigate \u00B7 type to filter \u00B7 Enter select \u00B7 Esc cancel" })] })) : (_jsxs(_Fragment, { children: [_jsxs(Box, { children: [_jsx(Text, { children: "Path: " }), _jsx(Text, { color: "cyan", children: customPath }), _jsx(Text, { color: "gray", children: "\u258B" })] }), completions.length > 1 && (_jsx(Box, { marginTop: 1, flexDirection: "column", children: completions.map(c => (_jsxs(Text, { dimColor: true, children: ["  ", c, "/"] }, c))) })), _jsx(Text, { children: " " }), _jsx(Text, { dimColor: true, children: "Tab complete \u00B7 Enter confirm \u00B7 Esc back" })] }))] }));
+    return (_jsxs(Box, { flexDirection: "column", children: [_jsx(Text, { bold: true, color: "cyan", children: "New Claude Session" }), mode === 'host' ? (_jsxs(_Fragment, { children: [_jsx(Text, { dimColor: true, children: "Select target host" }), _jsx(Text, { children: " " }), hostOptions.map((h, i) => (_jsx(Box, { children: _jsxs(Text, { color: i === cursor ? 'cyan' : undefined, bold: i === cursor, children: [i === cursor ? '▸ ' : '  ', h.label] }) }, h.label))), _jsx(Text, { children: " " }), _jsx(Text, { dimColor: true, children: "\u2191\u2193 navigate \u00B7 Enter select \u00B7 Esc cancel" })] })) : mode === 'list' ? (_jsxs(_Fragment, { children: [_jsxs(Box, { children: [_jsx(Text, { dimColor: true, children: "Filter: " }), _jsx(Text, { color: "cyan", children: filter || '' }), filter ? _jsx(Text, { color: "gray", children: "\u258B" }) : _jsx(Text, { dimColor: true, children: " (type to filter)" })] }), _jsx(Text, { children: " " }), filtered.map((p, i) => (_jsxs(Box, { children: [_jsxs(Text, { color: i === cursor ? 'cyan' : undefined, bold: i === cursor, children: [i === cursor ? '▸ ' : '  ', p.name] }), _jsxs(Text, { dimColor: true, children: [" ", p.path] })] }, p.path))), _jsx(Box, { children: _jsxs(Text, { color: cursor === filtered.length ? 'cyan' : undefined, bold: cursor === filtered.length, children: [cursor === filtered.length ? '▸ ' : '  ', "Enter custom path..."] }) }), filtered.length === 0 && projects.length > 0 && (_jsxs(Text, { dimColor: true, children: ["  No matches for \"", filter, "\""] })), _jsx(Text, { children: " " }), _jsx(Text, { dimColor: true, children: "\u2191\u2193 navigate \u00B7 type to filter \u00B7 Enter select \u00B7 Esc cancel" })] })) : (_jsxs(_Fragment, { children: [_jsxs(Box, { children: [_jsx(Text, { children: "Path: " }), _jsx(Text, { color: "cyan", children: customPath }), _jsx(Text, { color: "gray", children: "\u258B" })] }), completions.length > 1 && (_jsx(Box, { marginTop: 1, flexDirection: "column", children: completions.map(c => (_jsxs(Text, { dimColor: true, children: ["  ", c, "/"] }, c))) })), _jsx(Text, { children: " " }), _jsx(Text, { dimColor: true, children: "Tab complete \u00B7 Enter confirm \u00B7 Esc back" })] }))] }));
 }
 //# sourceMappingURL=NewSession.js.map

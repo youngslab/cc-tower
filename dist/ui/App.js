@@ -71,23 +71,46 @@ export function App({ tower }) {
         setRecentProjects(projects);
         setView('new-session');
     }, [sessions]);
-    const handleNewSession = useCallback(async (projectPath) => {
-        const { execa } = await import('execa');
-        // Create window in background (-d) and capture its pane ID
-        const { stdout } = await execa('tmux', ['new-window', '-d', '-c', projectPath, '-PF', '#{pane_id}', 'claude']);
-        const paneId = stdout.trim();
+    const handleNewSession = useCallback(async (projectPath, host) => {
+        const closeKey = tower.config.keys.close === 'Escape' ? 'Escape' : tower.config.keys.close;
+        const name = projectPath.split('/').pop() ?? projectPath;
         setView('dashboard');
-        // Open peek popup for the new session
-        if (paneId) {
-            const name = projectPath.split('/').pop() ?? projectPath;
-            const closeKey = tower.config.keys.close === 'Escape' ? 'Escape' : tower.config.keys.close;
-            await tmux.displayPopup({
-                width: '80%',
-                height: '80%',
-                title: ` ${name} (new) | ${closeKey} to close `,
-                command: `TMUX= tmux attach -t ${paneId}`,
-                closeOnExit: true,
-            });
+        if (host) {
+            // Remote: SSH + tmux new-window + peek via popup
+            const claudeCmd = host.commandPrefix
+                ? `${host.commandPrefix} sh -c 'cd ${projectPath} && claude'`
+                : `cd ${projectPath} && claude`;
+            const sshCmd = `ssh -t ${host.ssh} "tmux new-window -d -PF '#{pane_id}' '${claudeCmd.replace(/'/g, "'\\''")}'"`;
+            try {
+                const { execa: ex } = await import('execa');
+                const { stdout } = await ex('sh', ['-c', sshCmd], { timeout: 10000 });
+                const paneId = stdout.trim();
+                if (paneId) {
+                    await tmux.displayPopup({
+                        width: '80%',
+                        height: '80%',
+                        title: ` ⌁ ${host.name}:${name} (new) | ${closeKey} to close `,
+                        command: `ssh -t ${host.ssh} "tmux attach -t ${paneId}"`,
+                        closeOnExit: true,
+                    });
+                }
+            }
+            catch { }
+        }
+        else {
+            // Local: tmux new-window + peek
+            const { execa: ex } = await import('execa');
+            const { stdout } = await ex('tmux', ['new-window', '-d', '-c', projectPath, '-PF', '#{pane_id}', 'claude']);
+            const paneId = stdout.trim();
+            if (paneId) {
+                await tmux.displayPopup({
+                    width: '80%',
+                    height: '80%',
+                    title: ` ${name} (new) | ${closeKey} to close `,
+                    command: `TMUX= tmux attach -t ${paneId}`,
+                    closeOnExit: true,
+                });
+            }
         }
     }, [tower]);
     const handleQuit = useCallback(async () => {
@@ -119,6 +142,6 @@ export function App({ tower }) {
     }
     // Dynamic sizing: use 70% of terminal width
     const boxWidth = Math.max(MIN_WIDTH, Math.min(termWidth - 4, Math.floor(termWidth * 0.7)));
-    return (_jsxs(Box, { width: termWidth, height: termHeight, flexDirection: "column", alignItems: "center", justifyContent: "center", children: [view === 'dashboard' && termHeight >= 30 && (_jsxs(Box, { width: boxWidth, justifyContent: "flex-start", alignItems: "flex-end", marginBottom: 0, children: [_jsxs(Box, { flexDirection: "column", children: [_jsx(Text, { color: "cyan", children: ' ██████╗  ██████╗ ████████╗' }), _jsx(Text, { color: "cyan", children: '██╔════╝ ██╔════╝ ╚══██╔══╝' }), _jsx(Text, { color: "cyan", children: '██║      ██║         ██║' }), _jsx(Text, { color: "cyan", children: '╚██████╗ ╚██████╗    ██║' }), _jsx(Text, { color: "cyan", children: ' ╚═════╝  ╚═════╝    ╚═╝' })] }), _jsx(Box, { flexDirection: "column", justifyContent: "flex-end", marginLeft: 2, children: _jsxs(Text, { dimColor: true, children: [sessions.length, " sessions"] }) })] })), view === 'dashboard' && termHeight >= 20 && termHeight < 30 && (_jsxs(Box, { width: boxWidth, justifyContent: "flex-start", alignItems: "center", marginBottom: 0, children: [_jsx(Text, { color: "cyan", bold: true, children: "\u25C6 CCT" }), _jsxs(Text, { dimColor: true, children: [" ", sessions.length, " sessions"] })] })), _jsxs(Box, { flexDirection: "column", borderStyle: "round", borderColor: "cyan", paddingX: 2, paddingY: 1, width: boxWidth, children: [view === 'dashboard' && (_jsx(Dashboard, { sessions: sessions, tmuxCount: tmuxCount, maxTaskWidth: Math.max(10, boxWidth - 35), onSelect: handleSelect, onSend: handleSend, onPeek: handlePeek, onToggleFavorite: handleToggleFavorite, onRefresh: handleRefresh, onKill: handleKill, onNewSession: handleOpenNewSession, onQuit: handleQuit })), view === 'new-session' && (_jsx(NewSession, { projects: recentProjects, onSelect: handleNewSession, onCancel: () => setView('dashboard') })), view === 'detail' && selectedSession && (_jsx(DetailView, { session: selectedSession, onBack: handleBack, onSend: handleSend, onPeek: handlePeek })), view === 'send' && selectedSession && (_jsx(SendInput, { session: selectedSession, confirmWhenBusy: tower.config.commands.confirm_when_busy, onSend: handleSendText, onCancel: () => setView('dashboard') }))] })] }));
+    return (_jsxs(Box, { width: termWidth, height: termHeight, flexDirection: "column", alignItems: "center", justifyContent: "center", children: [view === 'dashboard' && termHeight >= 30 && (_jsxs(Box, { width: boxWidth, justifyContent: "flex-start", alignItems: "flex-end", marginBottom: 0, children: [_jsxs(Box, { flexDirection: "column", children: [_jsx(Text, { color: "cyan", children: ' ██████╗  ██████╗ ████████╗' }), _jsx(Text, { color: "cyan", children: '██╔════╝ ██╔════╝ ╚══██╔══╝' }), _jsx(Text, { color: "cyan", children: '██║      ██║         ██║' }), _jsx(Text, { color: "cyan", children: '╚██████╗ ╚██████╗    ██║' }), _jsx(Text, { color: "cyan", children: ' ╚═════╝  ╚═════╝    ╚═╝' })] }), _jsx(Box, { flexDirection: "column", justifyContent: "flex-end", marginLeft: 2, children: _jsxs(Text, { dimColor: true, children: [sessions.length, " sessions"] }) })] })), view === 'dashboard' && termHeight >= 20 && termHeight < 30 && (_jsxs(Box, { width: boxWidth, justifyContent: "flex-start", alignItems: "center", marginBottom: 0, children: [_jsx(Text, { color: "cyan", bold: true, children: "\u25C6 CCT" }), _jsxs(Text, { dimColor: true, children: [" ", sessions.length, " sessions"] })] })), _jsxs(Box, { flexDirection: "column", borderStyle: "round", borderColor: "cyan", paddingX: 2, paddingY: 1, width: boxWidth, children: [view === 'dashboard' && (_jsx(Dashboard, { sessions: sessions, tmuxCount: tmuxCount, maxTaskWidth: Math.max(10, boxWidth - 35), onSelect: handleSelect, onSend: handleSend, onPeek: handlePeek, onToggleFavorite: handleToggleFavorite, onRefresh: handleRefresh, onKill: handleKill, onNewSession: handleOpenNewSession, onQuit: handleQuit })), view === 'new-session' && (_jsx(NewSession, { projects: recentProjects, hosts: tower.config.hosts.map(h => ({ name: h.name, ssh: h.ssh, commandPrefix: h.command_prefix })), onSelect: handleNewSession, onCancel: () => setView('dashboard') })), view === 'detail' && selectedSession && (_jsx(DetailView, { session: selectedSession, onBack: handleBack, onSend: handleSend, onPeek: handlePeek })), view === 'send' && selectedSession && (_jsx(SendInput, { session: selectedSession, confirmWhenBusy: tower.config.commands.confirm_when_busy, onSend: handleSendText, onCancel: () => setView('dashboard') }))] })] }));
 }
 //# sourceMappingURL=App.js.map
