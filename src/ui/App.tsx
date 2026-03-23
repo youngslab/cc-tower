@@ -93,8 +93,9 @@ export function App({ tower }: Props) {
         `GO=_cctower_go_\\$\\$; tmux kill-session -t \\$GO 2>/dev/null; ` +
         `tmux new-session -d -s \\$GO -t \\$SESS && ` +
         `tmux set-option -t \\$GO window-size largest 2>/dev/null; ` +
+        `tmux bind-key -T root ${tmuxKey} detach-client && ` +
         `TMUX= tmux attach -t \\$GO \\\\; select-window -t :\\$WIDX; ` +
-        `tmux kill-session -t \\$GO 2>/dev/null`;
+        `tmux unbind-key -T root ${tmuxKey}; tmux kill-session -t \\$GO 2>/dev/null`;
       const remoteCmd = interactivePrefix
         ? `${interactivePrefix} sh -c 'export LANG=C.UTF-8; ${setupCmd.replace(/'/g, "'\\''")}'`
         : setupCmd;
@@ -102,7 +103,7 @@ export function App({ tower }: Props) {
         width: '100%',
         height: '100%',
         title: ` ⌁ ${session.host}:${session.projectName} | ${tmuxKey} to close `,
-        command: `tmux bind-key -T root ${tmuxKey} detach-client && ssh -t -o LogLevel=ERROR ${session.sshTarget} "${remoteCmd}" ; tmux unbind-key -T root ${tmuxKey}`,
+        command: `ssh -t -o LogLevel=ERROR ${session.sshTarget} "${remoteCmd}"`,
         closeOnExit: true,
       });
     } else {
