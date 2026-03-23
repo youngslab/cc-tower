@@ -91,15 +91,14 @@ export function App({ tower }: Props) {
       const { stdout: targetInfo } = await ex('tmux', ['display-message', '-t', session.paneId, '-p', '#{session_name}:#{window_index}']);
       const [targetSession, targetWindow] = targetInfo.trim().split(':');
 
-      // Bind close key: switch back to cc-tower + unbind + reset key table
-      await ex('tmux', ['bind-key', '-T', 'cctower-go', tmuxKey,
-        'switch-client', '-t', homeSession, ';',
-        'set-option', 'key-table', 'root', ';',
-        'unbind-key', '-T', 'cctower-go', tmuxKey,
+      // Bind close key: switch back to cc-tower + reset key table
+      // Must use sh -c for tmux command chaining with \;
+      await ex('sh', ['-c',
+        `tmux bind-key -T cctower-go ${tmuxKey} switch-client -t ${homeSession} \\; set-option key-table root \\; unbind-key -T cctower-go ${tmuxKey}`
       ]);
-      // Switch to target session + window with key table set in one command
-      await ex('tmux', ['switch-client', '-t', `${targetSession}:${targetWindow}`, ';',
-        'set-option', 'key-table', 'cctower-go',
+      // Switch to target and set key table
+      await ex('sh', ['-c',
+        `tmux switch-client -t '${targetSession}:${targetWindow}' \\; set-option key-table cctower-go`
       ]);
     } catch {}
   }, [tower]);
@@ -132,7 +131,7 @@ export function App({ tower }: Props) {
           width: '80%',
           height: '80%',
           title: ` ⌁ ${host.name}:${name} (new) | ${closeKey} to close `,
-          command: `ssh -t ${host.ssh} "tmux attach -t ${sessionName}"`,
+          command: `tmux bind-key -T cctower-peek ${closeKey} detach-client && ssh -t ${host.ssh} "tmux attach -t ${sessionName}" ; tmux unbind-key -T cctower-peek ${closeKey}`,
           closeOnExit: true,
         });
       } catch {}
@@ -145,7 +144,7 @@ export function App({ tower }: Props) {
           width: '80%',
           height: '80%',
           title: ` ${name} (new) | ${closeKey} to close `,
-          command: `TMUX= tmux attach -t ${sessionName}`,
+          command: `tmux bind-key -T cctower-peek ${closeKey} detach-client && TMUX= tmux attach -t ${sessionName} \\; set-option key-table cctower-peek ; tmux unbind-key -T cctower-peek ${closeKey}`,
           closeOnExit: true,
         });
       } catch {}
