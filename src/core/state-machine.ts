@@ -114,7 +114,7 @@ export class SessionStateMachine extends EventEmitter {
       case 'user-prompt':
         return this.state === 'idle' ? 'thinking' : null;
       case 'pre-tool':
-        return this.state === 'thinking' ? 'executing' : null;
+        return (this.state === 'thinking' || this.state === 'idle') ? 'executing' : null;
       case 'post-tool':
         return this.state === 'executing' ? 'thinking' : null;
       case 'stop':
