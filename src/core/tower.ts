@@ -394,6 +394,7 @@ export class Tower extends EventEmitter {
       const earlyMessages = await this.jsonlWatcher.readRecentContext(jsonlPath, 15);
       if (!earlyMessages) {
         logger.info('tower: no early messages found for goal', { sessionId });
+        this.store.update(sessionId, { summaryLoading: false });
         return;
       }
       if (earlyMessages.length < 20) {
@@ -419,6 +420,7 @@ export class Tower extends EventEmitter {
       const recentMessages = await this.jsonlWatcher.readRecentContext(jsonlPath, 15);
       if (!recentMessages) {
         logger.info('tower: no recent messages found', { sessionId });
+        this.store.update(sessionId, { summaryLoading: false });
         return;
       }
       // Skip if messages are too short to summarize meaningfully
