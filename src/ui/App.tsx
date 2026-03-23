@@ -90,15 +90,12 @@ export function App({ tower }: Props) {
       const paneSelect = `tmux list-panes -a -F '#{pane_id} #{session_name} #{window_index}' | grep '^${session.paneId} ' | head -1`;
       const setupCmd =
         `PINFO=\\$(${paneSelect}); SESS=\\$(echo \\$PINFO | awk '{print \\$2}'); WIDX=\\$(echo \\$PINFO | awk '{print \\$3}'); ` +
-        `PEEK=_cctower_go_\\$\\$; tmux kill-session -t \\$PEEK 2>/dev/null; ` +
-        `DEFWIN=\\$(tmux new-session -d -s \\$PEEK -PF '#{window_id}') && ` +
-        `tmux link-window -s \\$SESS:\\$WIDX -t \\$PEEK:99 && ` +
-        `tmux kill-window -t \\$DEFWIN && ` +
-        `tmux set-option -t \\$PEEK aggressive-resize on 2>/dev/null; ` +
-        `tmux set-option -t \\$PEEK status off && ` +
+        `GO=_cctower_go_\\$\\$; tmux kill-session -t \\$GO 2>/dev/null; ` +
+        `tmux new-session -d -s \\$GO -t \\$SESS && ` +
+        `tmux set-option -t \\$GO window-size largest 2>/dev/null; ` +
         `tmux bind-key -T cctower-peek ${tmuxKey} detach-client && ` +
-        `TMUX= tmux attach -t \\$PEEK \\\\; set-option key-table cctower-peek; ` +
-        `tmux unbind-key -T cctower-peek ${tmuxKey}; tmux kill-session -t \\$PEEK 2>/dev/null`;
+        `TMUX= tmux attach -t \\$GO \\\\; select-window -t :\\$WIDX \\\\; set-option key-table cctower-peek; ` +
+        `tmux unbind-key -T cctower-peek ${tmuxKey}; tmux kill-session -t \\$GO 2>/dev/null`;
       const remoteCmd = interactivePrefix
         ? `${interactivePrefix} sh -c 'export LANG=C.UTF-8; ${setupCmd.replace(/'/g, "'\\''")}'`
         : setupCmd;
