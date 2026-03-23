@@ -225,7 +225,22 @@ program
     }
     const claudeDir = path.join(os.homedir(), '.claude');
     const slug = cwdToSlug(cwd);
-    const jsonlPath = path.join(claudeDir, 'projects', slug, `${sessionId}.jsonl`);
+    const projectDir = path.join(claudeDir, 'projects', slug);
+    let jsonlPath = path.join(projectDir, `${sessionId}.jsonl`);
+    // Fallback to most recently modified JSONL if exact match doesn't exist
+    if (!fs.existsSync(jsonlPath)) {
+        try {
+            const files = fs.readdirSync(projectDir)
+                .filter(f => f.endsWith('.jsonl'))
+                .map(f => ({ name: f, mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
+                .sort((a, b) => b.mtime - a.mtime);
+            if (files.length > 0) {
+                jsonlPath = path.join(projectDir, files[0].name);
+                console.log(`  (exact JSONL not found, using latest: ${files[0].name})`);
+            }
+        }
+        catch { }
+    }
     console.log(`\n═══ JSONL: ${jsonlPath} ═══`);
     if (!fs.existsSync(jsonlPath)) {
         console.log('  (file not found)');

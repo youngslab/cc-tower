@@ -966,8 +966,8 @@ export class Tower extends EventEmitter {
           favoritedAt: dyingSession.favoritedAt,
         } : undefined;
 
-        // Clean up the old session immediately if it was dead
-        if (dyingSession?.status === 'dead') {
+        // Clean up the old session immediately (/clear creates a new session)
+        if (dyingSession) {
           this.cleanupSession(dyingSession.sessionId);
         }
 
@@ -1040,9 +1040,6 @@ export class Tower extends EventEmitter {
     if (parsed.type === 'custom-title' && parsed.customTitle) {
       this.store.update(sessionId, { label: parsed.customTitle });
       this.store.persist();
-      // Trigger full refresh — rename often means new conversation context
-      logger.info('tower: rename detected, triggering refresh', { sessionId, label: parsed.customTitle });
-      void this.refreshSession(sessionId);
       return;
     }
 
