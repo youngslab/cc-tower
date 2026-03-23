@@ -1,41 +1,135 @@
 import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "react/jsx-runtime";
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
+import fs from 'node:fs';
+import path from 'node:path';
+function fuzzyMatch(query, target) {
+    const q = query.toLowerCase();
+    const t = target.toLowerCase();
+    let qi = 0;
+    for (let ti = 0; ti < t.length && qi < q.length; ti++) {
+        if (t[ti] === q[qi])
+            qi++;
+    }
+    return qi === q.length;
+}
+function tabComplete(input) {
+    if (!input)
+        return input;
+    const expanded = input.startsWith('~') ? input.replace('~', process.env['HOME'] ?? '') : input;
+    const dir = expanded.endsWith('/') ? expanded : path.dirname(expanded);
+    const prefix = expanded.endsWith('/') ? '' : path.basename(expanded);
+    try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true })
+            .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+            .filter(e => e.name.toLowerCase().startsWith(prefix.toLowerCase()))
+            .sort();
+        if (entries.length === 1) {
+            return path.join(dir, entries[0].name) + '/';
+        }
+        else if (entries.length > 1) {
+            // Find common prefix
+            let common = entries[0].name;
+            for (const e of entries) {
+                let i = 0;
+                while (i < common.length && i < e.name.length && common[i].toLowerCase() === e.name[i].toLowerCase())
+                    i++;
+                common = common.slice(0, i);
+            }
+            if (common.length > prefix.length) {
+                return path.join(dir, common);
+            }
+        }
+    }
+    catch { }
+    return input;
+}
+function listCompletions(input) {
+    if (!input)
+        return [];
+    const expanded = input.startsWith('~') ? input.replace('~', process.env['HOME'] ?? '') : input;
+    const dir = expanded.endsWith('/') ? expanded : path.dirname(expanded);
+    const prefix = expanded.endsWith('/') ? '' : path.basename(expanded);
+    try {
+        return fs.readdirSync(dir, { withFileTypes: true })
+            .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+            .filter(e => e.name.toLowerCase().startsWith(prefix.toLowerCase()))
+            .map(e => e.name)
+            .sort()
+            .slice(0, 8);
+    }
+    catch { }
+    return [];
+}
 export function NewSession({ projects, onSelect, onCancel }) {
     const [cursor, setCursor] = useState(0);
+    const [filter, setFilter] = useState('');
     const [customPath, setCustomPath] = useState('');
     const [mode, setMode] = useState('list');
+    const filtered = useMemo(() => {
+        if (!filter)
+            return projects;
+        return projects.filter(p => fuzzyMatch(filter, p.name) || fuzzyMatch(filter, p.path));
+    }, [projects, filter]);
+    const completions = useMemo(() => {
+        if (mode !== 'custom')
+            return [];
+        return listCompletions(customPath);
+    }, [mode, customPath]);
     useInput((input, key) => {
         if (key.escape) {
+            if (mode === 'custom') {
+                setMode('list');
+                setCustomPath('');
+                return;
+            }
+            if (filter) {
+                setFilter('');
+                setCursor(0);
+                return;
+            }
             onCancel();
             return;
         }
         if (mode === 'list') {
-            if (key.upArrow || input === 'k')
+            if (key.upArrow || (input === 'k' && !filter))
                 setCursor(c => Math.max(0, c - 1));
-            if (key.downArrow || input === 'j')
-                setCursor(c => Math.min(projects.length, c + 1));
+            if (key.downArrow || (input === 'j' && !filter))
+                setCursor(c => Math.min(filtered.length, c + 1));
             if (key.return) {
-                if (cursor === projects.length) {
+                if (cursor === filtered.length) {
                     setMode('custom');
                 }
-                else if (projects[cursor]) {
-                    onSelect(projects[cursor].path);
+                else if (filtered[cursor]) {
+                    onSelect(filtered[cursor].path);
                 }
+            }
+            if (key.backspace || key.delete) {
+                setFilter(f => f.slice(0, -1));
+                setCursor(0);
+            }
+            else if (input && !key.ctrl && !key.meta && !key.return && !(input === 'j' && !filter) && !(input === 'k' && !filter)) {
+                setFilter(f => f + input);
+                setCursor(0);
             }
         }
         else {
+            if (key.tab) {
+                setCustomPath(tabComplete(customPath));
+                return;
+            }
             if (key.return && customPath.trim()) {
-                onSelect(customPath.trim());
+                const expanded = customPath.startsWith('~') ? customPath.replace('~', process.env['HOME'] ?? '') : customPath;
+                onSelect(expanded.replace(/\/$/, ''));
             }
             if (key.backspace || key.delete) {
                 setCustomPath(p => p.slice(0, -1));
             }
-            else if (input && !key.ctrl && !key.meta) {
+            else if (input && !key.ctrl && !key.meta && !key.tab) {
                 setCustomPath(p => p + input);
             }
         }
     });
-    return (_jsxs(Box, { flexDirection: "column", children: [_jsx(Text, { bold: true, color: "cyan", children: "New Claude Session" }), _jsx(Text, { dimColor: true, children: "Select a recent project or enter a custom path" }), _jsx(Text, { children: " " }), mode === 'list' ? (_jsxs(_Fragment, { children: [projects.map((p, i) => (_jsxs(Box, { children: [_jsxs(Text, { color: i === cursor ? 'cyan' : undefined, bold: i === cursor, children: [i === cursor ? '▸ ' : '  ', p.name] }), _jsxs(Text, { dimColor: true, children: [" ", p.path] })] }, p.path))), _jsx(Box, { children: _jsxs(Text, { color: cursor === projects.length ? 'cyan' : undefined, bold: cursor === projects.length, children: [cursor === projects.length ? '▸ ' : '  ', "Enter custom path..."] }) }), _jsx(Text, { children: " " }), _jsx(Text, { dimColor: true, children: "\u2191\u2193 navigate \u00B7 Enter select \u00B7 Esc cancel" })] })) : (_jsxs(_Fragment, { children: [_jsxs(Box, { children: [_jsx(Text, { children: "Path: " }), _jsx(Text, { color: "cyan", children: customPath }), _jsx(Text, { color: "gray", children: "\u258B" })] }), _jsx(Text, { children: " " }), _jsx(Text, { dimColor: true, children: "Enter confirm \u00B7 Esc cancel" })] }))] }));
+    return (_jsxs(Box, { flexDirection: "column", children: [_jsx(Text, { bold: true, color: "cyan", children: "New Claude Session" }), mode === 'list' ? (_jsxs(_Fragment, { children: [_jsxs(Box, { children: [_jsx(Text, { dimColor: true, children: "Filter: " }), _jsx(Text, { color: "cyan", children: filter || '' }), filter ? _jsx(Text, { color: "gray", children: "\u258B" }) : _jsx(Text, { dimColor: true, children: " (type to filter)" })] }), _jsx(Text, { children: " " }), filtered.map((p, i) => (_jsxs(Box, { children: [_jsxs(Text, { color: i === cursor ? 'cyan' : undefined, bold: i === cursor, children: [i === cursor ? '▸ ' : '  ', p.name] }), _jsxs(Text, { dimColor: true, children: [" ", p.path] })] }, p.path))), _jsx(Box, { children: _jsxs(Text, { color: cursor === filtered.length ? 'cyan' : undefined, bold: cursor === filtered.length, children: [cursor === filtered.length ? '▸ ' : '  ', "Enter custom path..."] }) }), filtered.length === 0 && projects.length > 0 && (_jsxs(Text, { dimColor: true, children: ["  No matches for \"", filter, "\""] })), _jsx(Text, { children: " " }), _jsx(Text, { dimColor: true, children: "\u2191\u2193 navigate \u00B7 type to filter \u00B7 Enter select \u00B7 Esc cancel" })] })) : (_jsxs(_Fragment, { children: [_jsxs(Box, { children: [_jsx(Text, { children: "Path: " }), _jsx(Text, { color: "cyan", children: customPath }), _jsx(Text, { color: "gray", children: "\u258B" })] }), completions.length > 1 && (_jsx(Box, { marginTop: 1, flexDirection: "column", children: completions.map(c => (_jsxs(Text, { dimColor: true, children: ["  ", c, "/"] }, c))) })), _jsx(Text, { children: " " }), _jsx(Text, { dimColor: true, children: "Tab complete \u00B7 Enter confirm \u00B7 Esc back" })] }))] }));
 }
 //# sourceMappingURL=NewSession.js.map
