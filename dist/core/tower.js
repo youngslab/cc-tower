@@ -941,30 +941,37 @@ export class Tower extends EventEmitter {
                 if (dyingSession) {
                     this.cleanupSession(dyingSession.sessionId);
                 }
-                logger.info('tower: triggering re-scan for new session', { hookSid, cwd: event.cwd, migrateFrom: dyingSession?.sessionId });
-                void this.discovery.scanOnce().then(async (sessions) => {
-                    for (const info of sessions) {
-                        if (!this.store.get(info.sessionId)) {
-                            await this.registerSession(info);
-                            // Apply migrated metadata
-                            if (migratedMeta && info.cwd === event.cwd) {
-                                const patch = {};
-                                if (migratedMeta.label)
-                                    patch['label'] = migratedMeta.label;
-                                if (migratedMeta.tags)
-                                    patch['tags'] = migratedMeta.tags;
-                                if (migratedMeta.favorite) {
-                                    patch['favorite'] = migratedMeta.favorite;
-                                    patch['favoritedAt'] = migratedMeta.favoritedAt;
-                                }
-                                if (Object.keys(patch).length > 0) {
-                                    this.store.update(info.sessionId, patch);
-                                    logger.info('tower: migrated metadata via hook', { from: dyingSession?.sessionId, to: info.sessionId, keys: Object.keys(patch) });
-                                }
+                logger.info('tower: new session via hook (likely /clear)', { hookSid, cwd: event.cwd, migrateFrom: dyingSession?.sessionId });
+                // Register directly using hookSid — sessions/{pid}.json is stale after /clear
+                if (event.cwd && hookSid !== 'unknown') {
+                    void (async () => {
+                        const info = {
+                            pid: dyingSession?.pid ?? 0,
+                            sessionId: hookSid,
+                            cwd: event.cwd,
+                            startedAt: Date.now(),
+                        };
+                        await this.registerSession(info);
+                        // Migrate metadata (label, favorite) but NOT summaries
+                        if (migratedMeta) {
+                            const patch = {};
+                            if (migratedMeta.label)
+                                patch['label'] = migratedMeta.label;
+                            if (migratedMeta.tags)
+                                patch['tags'] = migratedMeta.tags;
+                            if (migratedMeta.favorite) {
+                                patch['favorite'] = migratedMeta.favorite;
+                                patch['favoritedAt'] = migratedMeta.favoritedAt;
+                            }
+                            if (Object.keys(patch).length > 0) {
+                                this.store.update(hookSid, patch);
+                                logger.info('tower: migrated metadata to new session', { from: dyingSession?.sessionId, to: hookSid, keys: Object.keys(patch) });
                             }
                         }
-                    }
-                });
+                        // Map hookSid to new sessionId for future hook events
+                        this.hookSidToSessionId.set(hookSid, hookSid);
+                    })();
+                }
             }
             return;
         }
