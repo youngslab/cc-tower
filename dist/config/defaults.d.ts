@@ -50,6 +50,7 @@ export interface Config {
         confirm_before_send: boolean;
         confirm_when_busy: boolean;
     };
+    claude_args: string;
     hosts: HostConfig[];
 }
 export declare const defaults: Config;

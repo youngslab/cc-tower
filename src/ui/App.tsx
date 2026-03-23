@@ -88,6 +88,7 @@ export function App({ tower }: Props) {
   const handleNewSession = useCallback(async (projectPath: string, host?: { name: string; ssh: string; commandPrefix?: string }) => {
     const closeKey = tower.config.keys.close === 'Escape' ? 'Escape' : tower.config.keys.close;
     const name = projectPath.split('/').pop() ?? projectPath;
+    const claudeArgs = tower.config.claude_args ? ` ${tower.config.claude_args}` : '';
     setView('dashboard');
 
     const { execa: ex } = await import('execa');
@@ -96,8 +97,8 @@ export function App({ tower }: Props) {
       // Remote: SSH + tmux new-session in separate session + peek
       const sessionName = `claude-${name}`.replace(/[^a-zA-Z0-9_-]/g, '-');
       const claudeCmd = host.commandPrefix
-        ? `${host.commandPrefix} sh -c 'cd ${projectPath} && claude --dangerously-skip-permissions'`
-        : `cd ${projectPath} && claude --dangerously-skip-permissions`;
+        ? `${host.commandPrefix} sh -c 'cd ${projectPath} && claude${claudeArgs}'`
+        : `cd ${projectPath} && claude${claudeArgs}`;
       const sshCmd = `ssh -t ${host.ssh} "tmux new-session -d -s ${sessionName} -c ${projectPath} '${claudeCmd.replace(/'/g, "'\\''")}'"`;
       try {
         await ex('sh', ['-c', sshCmd], { timeout: 10000 });
@@ -113,7 +114,7 @@ export function App({ tower }: Props) {
       // Local: create separate tmux session + peek
       const sessionName = `claude-${name}`.replace(/[^a-zA-Z0-9_-]/g, '-');
       try {
-        await ex('tmux', ['new-session', '-d', '-s', sessionName, '-c', projectPath, 'claude --dangerously-skip-permissions']);
+        await ex('tmux', ['new-session', '-d', '-s', sessionName, '-c', projectPath, `claude${claudeArgs}`]);
         await tmux.displayPopup({
           width: '80%',
           height: '80%',

@@ -42,6 +42,7 @@ export const defaults = {
         confirm_before_send: true,
         confirm_when_busy: true,
     },
+    claude_args: '',
     hosts: [],
 };
 //# sourceMappingURL=defaults.js.map
