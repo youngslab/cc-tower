@@ -4,6 +4,7 @@ import { Tower } from '../core/tower.js';
 import { Session } from '../core/session-store.js';
 import { useSessionStore } from './hooks/useSessionStore.js';
 import { useTmux } from './hooks/useTmux.js';
+import { tmux } from '../tmux/commands.js';
 import { Dashboard } from './Dashboard.js';
 import { DetailView } from './DetailView.js';
 import { SendInput } from './SendInput.js';
@@ -85,10 +86,24 @@ export function App({ tower }: Props) {
   }, [sessions]);
 
   const handleNewSession = useCallback(async (projectPath: string) => {
-    const { spawn } = await import('node:child_process');
-    spawn('tmux', ['new-window', '-c', projectPath, 'claude'], { detached: true, stdio: 'ignore' });
+    const { execa } = await import('execa');
+    // Create window in background (-d) and capture its pane ID
+    const { stdout } = await execa('tmux', ['new-window', '-d', '-c', projectPath, '-PF', '#{pane_id}', 'claude']);
+    const paneId = stdout.trim();
     setView('dashboard');
-  }, []);
+    // Open peek popup for the new session
+    if (paneId) {
+      const name = projectPath.split('/').pop() ?? projectPath;
+      const closeKey = tower.config.keys.close === 'Escape' ? 'Escape' : tower.config.keys.close;
+      await tmux.displayPopup({
+        width: '80%',
+        height: '80%',
+        title: ` ${name} (new) | ${closeKey} to close `,
+        command: `TMUX= tmux attach -t ${paneId}`,
+        closeOnExit: true,
+      });
+    }
+  }, [tower]);
 
   const handleQuit = useCallback(async () => {
     await tower.stop();
