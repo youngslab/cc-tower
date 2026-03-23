@@ -940,7 +940,8 @@ export class Tower extends EventEmitter {
     if (!sessionId) {
       logger.info('tower: hook event for unknown session', { hookSid, event: event.event, cwd: event.cwd });
       // session-start from unknown session = likely /clear or new session — trigger immediate re-scan
-      if (event.event === 'session-start') {
+      // Ignore /tmp sessions (LLM summarizer spawns claude --print there)
+      if (event.event === 'session-start' && event.cwd && !event.cwd.startsWith('/tmp')) {
         // Find the dead/dying session with same CWD for metadata migration
         const dyingSession = event.cwd
           ? this.store.getAll().find(s => s.cwd === event.cwd && (s.status === 'dead' || s.status === 'idle'))
