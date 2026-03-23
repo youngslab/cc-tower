@@ -1,7 +1,8 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import { Box, Text, useInput } from 'ink';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 export interface HostOption {
   name: string;
@@ -24,6 +25,48 @@ function fuzzyMatch(query: string, target: string): boolean {
     if (t[ti] === q[qi]) qi++;
   }
   return qi === q.length;
+}
+
+function remoteListDirs(host: HostOption, dir: string): string[] {
+  try {
+    const cmd = `ls -1 -d ${dir}/*/ 2>/dev/null | xargs -I{} basename {}`;
+    const fullCmd = host.commandPrefix
+      ? `${host.commandPrefix} sh -c '${cmd.replace(/'/g, "'\\''")}'`
+      : cmd;
+    const out = execFileSync('ssh', [host.ssh, fullCmd], { timeout: 5000 }).toString();
+    return out.trim().split('\n').filter(Boolean).filter(n => !n.startsWith('.'));
+  } catch {}
+  return [];
+}
+
+function tabCompleteRemote(input: string, host: HostOption): string {
+  if (!input) return input;
+  const dir = input.endsWith('/') ? input.replace(/\/$/, '') : path.posix.dirname(input);
+  const prefix = input.endsWith('/') ? '' : path.posix.basename(input);
+  const entries = remoteListDirs(host, dir).filter(n => n.toLowerCase().startsWith(prefix.toLowerCase())).sort();
+
+  if (entries.length === 1) {
+    return `${dir}/${entries[0]!}/`;
+  } else if (entries.length > 1) {
+    let common = entries[0]!;
+    for (const e of entries) {
+      let i = 0;
+      while (i < common.length && i < e.length && common[i]!.toLowerCase() === e[i]!.toLowerCase()) i++;
+      common = common.slice(0, i);
+    }
+    if (common.length > prefix.length) return `${dir}/${common}`;
+  }
+  return input;
+}
+
+function listCompletionsRemote(input: string, host: HostOption): string[] {
+  if (!input) return [];
+  const dir = input.endsWith('/') ? input.replace(/\/$/, '') : path.posix.dirname(input);
+  const prefix = input.endsWith('/') ? '' : path.posix.basename(input);
+  return remoteListDirs(host, dir)
+    .filter(n => n.toLowerCase().startsWith(prefix.toLowerCase()))
+    .sort()
+    .slice(0, 8);
 }
 
 function tabComplete(input: string): string {
@@ -93,8 +136,8 @@ export function NewSession({ projects, hosts, onSelect, onCancel }: Props) {
 
   const completions = useMemo(() => {
     if (mode !== 'custom') return [];
-    return listCompletions(customPath);
-  }, [mode, customPath]);
+    return selectedHost ? listCompletionsRemote(customPath, selectedHost) : listCompletions(customPath);
+  }, [mode, customPath, selectedHost]);
 
   useInput((input, key) => {
     if (key.escape) {
@@ -135,7 +178,7 @@ export function NewSession({ projects, hosts, onSelect, onCancel }: Props) {
       }
     } else {
       if (key.tab) {
-        setCustomPath(tabComplete(customPath));
+        setCustomPath(selectedHost ? tabCompleteRemote(customPath, selectedHost) : tabComplete(customPath));
         return;
       }
       if (key.return && customPath.trim()) {
