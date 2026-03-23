@@ -102,7 +102,7 @@ export function App({ tower }: Props) {
         width: '100%',
         height: '100%',
         title: ` ⌁ ${session.host}:${session.projectName} | ${tmuxKey} to close `,
-        command: `tmux bind-key ${tmuxKey} detach-client && ssh -t -o LogLevel=ERROR ${session.sshTarget} "${remoteCmd}" ; tmux unbind-key ${tmuxKey}`,
+        command: `tmux bind-key -T root ${tmuxKey} detach-client && ssh -t -o LogLevel=ERROR ${session.sshTarget} "${remoteCmd}" ; tmux unbind-key -T root ${tmuxKey}`,
         closeOnExit: true,
       });
     } else {
