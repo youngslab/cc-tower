@@ -1025,6 +1025,9 @@ export class Tower extends EventEmitter {
         if (parsed.type === 'custom-title' && parsed.customTitle) {
             this.store.update(sessionId, { label: parsed.customTitle });
             this.store.persist();
+            // Trigger full refresh — rename often means new conversation context
+            logger.info('tower: rename detected, triggering refresh', { sessionId, label: parsed.customTitle });
+            void this.refreshSession(sessionId);
             return;
         }
         // Skip JSONL-driven transitions if session is in hook mode
