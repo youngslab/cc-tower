@@ -82,24 +82,20 @@ export function App({ tower }: Props) {
     if (!session.paneId) return;
     const { execa: ex } = await import('execa');
     try {
-      // Get cc-tower's current tmux session name to return to
       const { stdout: currentSession } = await ex('tmux', ['display-message', '-p', '#{session_name}']);
       const homeSession = currentSession.trim();
       const tmuxKey = tower.config.keys.close === 'Escape' ? 'Escape' : tower.config.keys.close;
 
-      // Find target session name from paneId
       const { stdout: targetInfo } = await ex('tmux', ['display-message', '-t', session.paneId, '-p', '#{session_name}:#{window_index}']);
       const [targetSession, targetWindow] = targetInfo.trim().split(':');
 
-      // Bind close key: switch back to cc-tower + reset key table
-      // Must use sh -c for tmux command chaining with \;
-      await ex('sh', ['-c',
-        `tmux bind-key -T cctower-go ${tmuxKey} switch-client -t ${homeSession} \\; set-option key-table root \\; unbind-key -T cctower-go ${tmuxKey}`
+      // Bind close key: switch back + reset key table via run-shell
+      await ex('tmux', ['bind-key', '-T', 'cctower-go', tmuxKey,
+        'run-shell', `tmux switch-client -t ${homeSession} && tmux set-option key-table root`,
       ]);
-      // Switch to target and set key table
-      await ex('sh', ['-c',
-        `tmux switch-client -t '${targetSession}:${targetWindow}' \\; set-option key-table cctower-go`
-      ]);
+      // Switch to target + set key table via run-shell
+      await ex('tmux', ['switch-client', '-t', `${targetSession}:${targetWindow}`]);
+      await ex('tmux', ['set-option', 'key-table', 'cctower-go']);
     } catch {}
   }, [tower]);
 
