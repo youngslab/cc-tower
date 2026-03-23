@@ -81,23 +81,42 @@ export function App({ tower }: Props) {
   const handleGo = useCallback(async (session: Session) => {
     if (!session.paneId) return;
     const { execa: ex } = await import('execa');
-    try {
-      const { stdout: homeInfo } = await ex('tmux', ['display-message', '-p', '#{session_name}:#{window_index}']);
-      const [homeSession, homeWindow] = homeInfo.trim().split(':');
-      const tmuxKey = tower.config.keys.close === 'Escape' ? 'Escape' : tower.config.keys.close;
+    const tmuxKey = tower.config.keys.close === 'Escape' ? 'Escape' : tower.config.keys.close;
 
-      const { stdout: targetInfo } = await ex('tmux', ['display-message', '-t', session.paneId, '-p', '#{session_name}:#{window_index}']);
-      const [targetSession, targetWindow] = targetInfo.trim().split(':');
+    if (session.sshTarget) {
+      // Remote: full-screen popup with SSH attach to remote pane
+      const hostConfig = tower.config.hosts.find(h => h.ssh === session.sshTarget);
+      const interactivePrefix = hostConfig?.command_prefix?.replace(/^docker exec /, 'docker exec -it ');
+      const attachCmd = `tmux attach -t ${session.paneId}`;
+      const remoteCmd = interactivePrefix
+        ? `${interactivePrefix} sh -c '${attachCmd}'`
+        : attachCmd;
+      await tmux.displayPopup({
+        width: '100%',
+        height: '100%',
+        title: ` ⌁ ${session.host}:${session.projectName} | ${tmuxKey} to close `,
+        command: `tmux bind-key -T cctower-peek ${tmuxKey} detach-client && ssh -t -o LogLevel=ERROR ${session.sshTarget} "${remoteCmd}" ; tmux unbind-key -T cctower-peek ${tmuxKey}`,
+        closeOnExit: true,
+      });
+    } else {
+      // Local: switch-client to target session/window
+      try {
+        const { stdout: homeInfo } = await ex('tmux', ['display-message', '-p', '#{session_name}:#{window_index}']);
+        const [homeSession, homeWindow] = homeInfo.trim().split(':');
 
-      // Bind close key on TARGET session: switch back to exact tower window + reset key table
-      await ex('tmux', ['bind-key', '-T', 'cctower-go', tmuxKey,
-        'run-shell', `tmux switch-client -t '${homeSession}:${homeWindow}' && tmux set-option -t ${targetSession} key-table root`,
-      ]);
-      // Switch to target
-      await ex('tmux', ['switch-client', '-t', `${targetSession}:${targetWindow}`]);
-      // Set key table on target session (not current)
-      await ex('tmux', ['set-option', '-t', `${targetSession}`, 'key-table', 'cctower-go']);
-    } catch {}
+        const { stdout: targetInfo } = await ex('tmux', ['display-message', '-t', session.paneId, '-p', '#{session_name}:#{window_index}']);
+        const [targetSession, targetWindow] = targetInfo.trim().split(':');
+
+        // Bind close key on TARGET session: switch back to exact tower window + reset key table
+        await ex('tmux', ['bind-key', '-T', 'cctower-go', tmuxKey,
+          'run-shell', `tmux switch-client -t '${homeSession}:${homeWindow}' && tmux set-option -t ${targetSession} key-table root`,
+        ]);
+        // Switch to target
+        await ex('tmux', ['switch-client', '-t', `${targetSession}:${targetWindow}`]);
+        // Set key table on target session
+        await ex('tmux', ['set-option', '-t', `${targetSession}`, 'key-table', 'cctower-go']);
+      } catch {}
+    }
   }, [tower]);
 
   const handleOpenNewSession = useCallback(() => {
