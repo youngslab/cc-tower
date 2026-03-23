@@ -349,6 +349,7 @@ export class Tower extends EventEmitter {
         if (jp) {
           void this.refreshRemoteGoalSummary(sessionId, remoteConfig, jp);
           void this.refreshRemoteContextSummary(sessionId, remoteConfig, jp);
+          void this.refreshRemoteNextSteps(sessionId, remoteConfig, jp);
         } else {
           this.store.update(sessionId, { summaryLoading: false });
           logger.info('tower: remote refresh skipped, no JSONL', { sessionId });
@@ -454,6 +455,30 @@ export class Tower extends EventEmitter {
       }
     } catch (err) {
       logger.info('tower: next steps error', { sessionId, error: String(err) });
+    }
+  }
+
+  private async refreshRemoteNextSteps(compositeId: string, config: RemoteHostConfig, jsonlPath: string): Promise<void> {
+    try {
+      const tail = await remoteReadJsonlTail(config, jsonlPath, 65536);
+      if (!tail || tail.length < 20) return;
+      const lines = tail.split('\n').filter(l => l.trim());
+      const meaningful: string[] = [];
+      for (let i = lines.length - 1; i >= 0 && meaningful.length < 15; i--) {
+        const parsed = parseJsonlLine(lines[i]!);
+        if (parsed && (parsed.type === 'user' || parsed.type === 'assistant')) {
+          meaningful.unshift(lines[i]!);
+        }
+      }
+      const recentText = meaningful.join('\n');
+      if (recentText.length < 20) return;
+      const suggestion = await generateNextSteps(compositeId, recentText);
+      if (suggestion) {
+        logger.info('tower: remote next steps received', { compositeId, suggestion });
+        this.store.update(compositeId, { nextSteps: suggestion });
+      }
+    } catch (err) {
+      logger.debug('tower: remote next steps error', { compositeId, error: String(err) });
     }
   }
 
@@ -787,6 +812,7 @@ export class Tower extends EventEmitter {
       if (change.to === 'idle') {
         void this.refreshRemoteGoalSummary(compositeId, remoteConfig, jsonlPath);
         void this.refreshRemoteContextSummary(compositeId, remoteConfig, jsonlPath);
+        void this.refreshRemoteNextSteps(compositeId, remoteConfig, jsonlPath);
       }
     });
     this.stateMachines.set(compositeId, fsm);
@@ -795,6 +821,7 @@ export class Tower extends EventEmitter {
     if (initialState === 'idle') {
       void this.refreshRemoteGoalSummary(compositeId, remoteConfig, jsonlPath);
       void this.refreshRemoteContextSummary(compositeId, remoteConfig, jsonlPath);
+      void this.refreshRemoteNextSteps(compositeId, remoteConfig, jsonlPath);
     }
 
     // Store JSONL path for remote polling
