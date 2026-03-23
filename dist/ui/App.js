@@ -75,13 +75,14 @@ export function App({ tower }) {
             const tmuxKey = tower.config.keys.close === 'Escape' ? 'Escape' : tower.config.keys.close;
             const { stdout: targetInfo } = await ex('tmux', ['display-message', '-t', session.paneId, '-p', '#{session_name}:#{window_index}']);
             const [targetSession, targetWindow] = targetInfo.trim().split(':');
-            // Bind close key: switch back + reset key table via run-shell
+            // Bind close key on TARGET session: switch back + reset key table
             await ex('tmux', ['bind-key', '-T', 'cctower-go', tmuxKey,
-                'run-shell', `tmux switch-client -t ${homeSession} && tmux set-option key-table root`,
+                'run-shell', `tmux switch-client -t ${homeSession} && tmux set-option -t ${targetSession} key-table root`,
             ]);
-            // Switch to target + set key table via run-shell
+            // Switch to target
             await ex('tmux', ['switch-client', '-t', `${targetSession}:${targetWindow}`]);
-            await ex('tmux', ['set-option', 'key-table', 'cctower-go']);
+            // Set key table on target session (not current)
+            await ex('tmux', ['set-option', '-t', `${targetSession}`, 'key-table', 'cctower-go']);
         }
         catch { }
     }, [tower]);
