@@ -96,8 +96,8 @@ export function App({ tower }: Props) {
       // Remote: SSH + tmux new-session in separate session + peek
       const sessionName = `claude-${name}`.replace(/[^a-zA-Z0-9_-]/g, '-');
       const claudeCmd = host.commandPrefix
-        ? `${host.commandPrefix} sh -c 'cd ${projectPath} && claude'`
-        : `cd ${projectPath} && claude`;
+        ? `${host.commandPrefix} sh -c 'cd ${projectPath} && claude --dangerously-skip-permissions'`
+        : `cd ${projectPath} && claude --dangerously-skip-permissions`;
       const sshCmd = `ssh -t ${host.ssh} "tmux new-session -d -s ${sessionName} -c ${projectPath} '${claudeCmd.replace(/'/g, "'\\''")}'"`;
       try {
         await ex('sh', ['-c', sshCmd], { timeout: 10000 });
@@ -113,7 +113,7 @@ export function App({ tower }: Props) {
       // Local: create separate tmux session + peek
       const sessionName = `claude-${name}`.replace(/[^a-zA-Z0-9_-]/g, '-');
       try {
-        await ex('tmux', ['new-session', '-d', '-s', sessionName, '-c', projectPath, 'claude']);
+        await ex('tmux', ['new-session', '-d', '-s', sessionName, '-c', projectPath, 'claude --dangerously-skip-permissions']);
         await tmux.displayPopup({
           width: '80%',
           height: '80%',
