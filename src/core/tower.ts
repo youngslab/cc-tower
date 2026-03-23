@@ -348,6 +348,9 @@ export class Tower extends EventEmitter {
         if (jp) {
           void this.refreshRemoteGoalSummary(sessionId, remoteConfig, jp);
           void this.refreshRemoteContextSummary(sessionId, remoteConfig, jp);
+        } else {
+          this.store.update(sessionId, { summaryLoading: false });
+          logger.info('tower: remote refresh skipped, no JSONL', { sessionId });
         }
       }
     } else {
@@ -376,6 +379,10 @@ export class Tower extends EventEmitter {
         void this.refreshGoalSummary(sessionId, updatedJp);
         void this.refreshContextSummary(sessionId, updatedJp);
         void this.refreshNextSteps(sessionId, updatedJp);
+      } else {
+        // No JSONL available — clear loading state
+        this.store.update(sessionId, { summaryLoading: false });
+        logger.info('tower: refresh skipped, no JSONL', { sessionId });
       }
     }
   }
