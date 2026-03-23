@@ -529,41 +529,27 @@ export class Tower extends EventEmitter {
     const projectDir = path.join(claudeDir, 'projects', slug);
     let jsonlPath = path.join(projectDir, `${info.sessionId}.jsonl`);
 
-    // If exact sessionId.jsonl doesn't exist, check sessions-index.json for a mapping,
-    // then fall back to the most recently modified JSONL only if there's exactly one active session in this cwd.
-    if (!fs.existsSync(jsonlPath)) {
-      try {
-        const indexPath = path.join(projectDir, 'sessions-index.json');
-        if (fs.existsSync(indexPath)) {
-          const idx = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
-          const match = (idx.entries as Array<{ sessionId: string; fullPath: string }>)
-            .find(e => e.sessionId === info.sessionId);
-          if (match) {
-            jsonlPath = match.fullPath;
-            logger.debug('tower: JSONL from sessions-index', { sessionId: info.sessionId, path: jsonlPath });
-          }
-        }
-      } catch {}
-
-      // Final fallback: use newest JSONL only if no other active session shares this cwd
-      if (!fs.existsSync(jsonlPath)) {
-        const otherSessionsInCwd = this.store.getAll().filter(s => s.cwd === info.cwd && s.sessionId !== info.sessionId);
-        if (otherSessionsInCwd.length === 0) {
-          try {
-            const files = fs.readdirSync(projectDir)
-              .filter(f => f.endsWith('.jsonl') && !f.includes('/'))
-              .map(f => ({ name: f, mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
-              .sort((a, b) => b.mtime - a.mtime);
-            if (files.length > 0) {
-              jsonlPath = path.join(projectDir, files[0]!.name);
-              logger.debug('tower: using newest JSONL (sole session)', { sessionId: info.sessionId, newest: files[0]!.name });
-            }
-          } catch {}
-        } else {
-          logger.info('tower: no JSONL for session, skipping (other sessions share cwd)', { sessionId: info.sessionId });
+    // Always check for a newer JSONL in the project dir.
+    // After /clear, Claude Code creates a new JSONL with a different sessionId
+    // while keeping the same sessionId in sessions/*.json.
+    try {
+      const files = fs.readdirSync(projectDir)
+        .filter(f => f.endsWith('.jsonl') && !f.includes('/'))
+        .map(f => ({ name: f, mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime);
+      if (files.length > 0) {
+        const newest = path.join(projectDir, files[0]!.name);
+        const exactMtime = fs.existsSync(jsonlPath) ? fs.statSync(jsonlPath).mtimeMs : 0;
+        if (files[0]!.mtime > exactMtime && newest !== jsonlPath) {
+          logger.debug('tower: using newer JSONL over exact match', {
+            sessionId: info.sessionId,
+            exact: path.basename(jsonlPath),
+            newest: files[0]!.name,
+          });
+          jsonlPath = newest;
         }
       }
-    }
+    } catch {}
 
     // c. Cold start: determine current state + last task from JSONL
     const initialState = this.jsonlWatcher.coldStartScan(jsonlPath);
