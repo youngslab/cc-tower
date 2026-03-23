@@ -1,18 +1,32 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { SessionStore, Session } from '../../core/session-store.js';
 
 export function useSessionStore(store: SessionStore) {
   const [sessions, setSessions] = useState<Session[]>(store.getAll());
+  const pendingRef = useRef(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    const update = () => setSessions([...store.getAll()]);
-    store.on('session-added', update);
-    store.on('session-removed', update);
-    store.on('session-updated', update);
+    const flush = () => {
+      pendingRef.current = false;
+      setSessions([...store.getAll()]);
+    };
+    const throttledUpdate = () => {
+      if (timerRef.current) { pendingRef.current = true; return; }
+      flush();
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+        if (pendingRef.current) flush();
+      }, 500);
+    };
+    store.on('session-added', throttledUpdate);
+    store.on('session-removed', throttledUpdate);
+    store.on('session-updated', throttledUpdate);
     return () => {
-      store.off('session-added', update);
-      store.off('session-removed', update);
-      store.off('session-updated', update);
+      store.off('session-added', throttledUpdate);
+      store.off('session-removed', throttledUpdate);
+      store.off('session-updated', throttledUpdate);
+      if (timerRef.current) clearTimeout(timerRef.current);
     };
   }, [store]);
 
