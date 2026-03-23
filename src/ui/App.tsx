@@ -82,16 +82,16 @@ export function App({ tower }: Props) {
     if (!session.paneId) return;
     const { execa: ex } = await import('execa');
     try {
-      const { stdout: currentSession } = await ex('tmux', ['display-message', '-p', '#{session_name}']);
-      const homeSession = currentSession.trim();
+      const { stdout: homeInfo } = await ex('tmux', ['display-message', '-p', '#{session_name}:#{window_index}']);
+      const [homeSession, homeWindow] = homeInfo.trim().split(':');
       const tmuxKey = tower.config.keys.close === 'Escape' ? 'Escape' : tower.config.keys.close;
 
       const { stdout: targetInfo } = await ex('tmux', ['display-message', '-t', session.paneId, '-p', '#{session_name}:#{window_index}']);
       const [targetSession, targetWindow] = targetInfo.trim().split(':');
 
-      // Bind close key on TARGET session: switch back + reset key table
+      // Bind close key on TARGET session: switch back to exact tower window + reset key table
       await ex('tmux', ['bind-key', '-T', 'cctower-go', tmuxKey,
-        'run-shell', `tmux switch-client -t ${homeSession} && tmux set-option -t ${targetSession} key-table root`,
+        'run-shell', `tmux switch-client -t '${homeSession}:${homeWindow}' && tmux set-option -t ${targetSession} key-table root`,
       ]);
       // Switch to target
       await ex('tmux', ['switch-client', '-t', `${targetSession}:${targetWindow}`]);
