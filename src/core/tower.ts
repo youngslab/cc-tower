@@ -289,6 +289,7 @@ export class Tower extends EventEmitter {
   async refreshSession(sessionId: string): Promise<void> {
     const session = this.store.get(sessionId);
     if (!session) return;
+    logger.info('tower: refreshSession called', { sessionId, host: session.host, sshTarget: session.sshTarget });
 
     // Clear UI immediately
     clearSummaryCache(sessionId);

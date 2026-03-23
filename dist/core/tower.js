@@ -272,6 +272,7 @@ export class Tower extends EventEmitter {
         const session = this.store.get(sessionId);
         if (!session)
             return;
+        logger.info('tower: refreshSession called', { sessionId, host: session.host, sshTarget: session.sshTarget });
         // Clear UI immediately
         clearSummaryCache(sessionId);
         this.store.update(sessionId, {
