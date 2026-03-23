@@ -75,42 +75,40 @@ export function App({ tower }) {
         const closeKey = tower.config.keys.close === 'Escape' ? 'Escape' : tower.config.keys.close;
         const name = projectPath.split('/').pop() ?? projectPath;
         setView('dashboard');
+        const { execa: ex } = await import('execa');
         if (host) {
-            // Remote: SSH + tmux new-window + peek via popup
+            // Remote: SSH + tmux new-session in separate session + peek
+            const sessionName = `claude-${name}`.replace(/[^a-zA-Z0-9_-]/g, '-');
             const claudeCmd = host.commandPrefix
                 ? `${host.commandPrefix} sh -c 'cd ${projectPath} && claude'`
                 : `cd ${projectPath} && claude`;
-            const sshCmd = `ssh -t ${host.ssh} "tmux new-window -d -PF '#{pane_id}' '${claudeCmd.replace(/'/g, "'\\''")}'"`;
+            const sshCmd = `ssh -t ${host.ssh} "tmux new-session -d -s ${sessionName} -c ${projectPath} '${claudeCmd.replace(/'/g, "'\\''")}'"`;
             try {
-                const { execa: ex } = await import('execa');
-                const { stdout } = await ex('sh', ['-c', sshCmd], { timeout: 10000 });
-                const paneId = stdout.trim();
-                if (paneId) {
-                    await tmux.displayPopup({
-                        width: '80%',
-                        height: '80%',
-                        title: ` ⌁ ${host.name}:${name} (new) | ${closeKey} to close `,
-                        command: `ssh -t ${host.ssh} "tmux attach -t ${paneId}"`,
-                        closeOnExit: true,
-                    });
-                }
+                await ex('sh', ['-c', sshCmd], { timeout: 10000 });
+                await tmux.displayPopup({
+                    width: '80%',
+                    height: '80%',
+                    title: ` ⌁ ${host.name}:${name} (new) | ${closeKey} to close `,
+                    command: `ssh -t ${host.ssh} "tmux attach -t ${sessionName}"`,
+                    closeOnExit: true,
+                });
             }
             catch { }
         }
         else {
-            // Local: tmux new-window + peek
-            const { execa: ex } = await import('execa');
-            const { stdout } = await ex('tmux', ['new-window', '-d', '-c', projectPath, '-PF', '#{pane_id}', 'claude']);
-            const paneId = stdout.trim();
-            if (paneId) {
+            // Local: create separate tmux session + peek
+            const sessionName = `claude-${name}`.replace(/[^a-zA-Z0-9_-]/g, '-');
+            try {
+                await ex('tmux', ['new-session', '-d', '-s', sessionName, '-c', projectPath, 'claude']);
                 await tmux.displayPopup({
                     width: '80%',
                     height: '80%',
                     title: ` ${name} (new) | ${closeKey} to close `,
-                    command: `TMUX= tmux attach -t ${paneId}`,
+                    command: `TMUX= tmux attach -t ${sessionName}`,
                     closeOnExit: true,
                 });
             }
+            catch { }
         }
     }, [tower]);
     const handleQuit = useCallback(async () => {
