@@ -445,15 +445,21 @@ export class Tower extends EventEmitter {
         try {
             this.store.update(compositeId, { summaryLoading: true });
             const session = this.store.get(compositeId);
-            const tail = await remoteReadJsonlTail(config, jsonlPath, 32768);
+            const tail = await remoteReadJsonlTail(config, jsonlPath, 65536);
             if (!tail || tail.length < 20) {
                 this.store.update(compositeId, { summaryLoading: false });
                 return;
             }
-            // Extract recent messages (last N lines)
+            // Filter to user/assistant messages only (skip system/progress noise)
             const lines = tail.split('\n').filter(l => l.trim());
-            const earlyLines = lines.slice(-15);
-            const earlyText = earlyLines.join('\n');
+            const meaningful = [];
+            for (let i = lines.length - 1; i >= 0 && meaningful.length < 15; i--) {
+                const parsed = parseJsonlLine(lines[i]);
+                if (parsed && (parsed.type === 'user' || parsed.type === 'assistant')) {
+                    meaningful.unshift(lines[i]);
+                }
+            }
+            const earlyText = meaningful.join('\n');
             if (earlyText.length < 20) {
                 this.store.update(compositeId, { summaryLoading: false });
                 return;
@@ -474,10 +480,16 @@ export class Tower extends EventEmitter {
             const tail = await remoteReadJsonlTail(config, jsonlPath, 65536);
             if (!tail || tail.length < 20)
                 return;
-            // Extract recent messages (last N lines)
+            // Filter to user/assistant messages only (skip system/progress noise)
             const lines = tail.split('\n').filter(l => l.trim());
-            const recentLines = lines.slice(-15);
-            const recentText = recentLines.join('\n');
+            const meaningful = [];
+            for (let i = lines.length - 1; i >= 0 && meaningful.length < 15; i--) {
+                const parsed = parseJsonlLine(lines[i]);
+                if (parsed && (parsed.type === 'user' || parsed.type === 'assistant')) {
+                    meaningful.unshift(lines[i]);
+                }
+            }
+            const recentText = meaningful.join('\n');
             if (recentText.length < 20)
                 return;
             this.store.update(compositeId, { summaryLoading: true });
