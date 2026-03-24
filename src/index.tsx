@@ -25,13 +25,13 @@ program
       // Check if session already exists
       let sessionExists = false;
       try {
-        execSync('tmux has-session -t cc-tower 2>/dev/null', { stdio: 'ignore' });
+        execSync('tmux has-session -t claude-cc-tower 2>/dev/null', { stdio: 'ignore' });
         sessionExists = true;
       } catch {
         sessionExists = false;
       }
       if (sessionExists) {
-        const child = spawn('tmux', ['attach', '-t', 'cc-tower'], { stdio: 'inherit' });
+        const child = spawn('tmux', ['attach', '-t', 'claude-cc-tower'], { stdio: 'inherit' });
         child.on('close', (code) => process.exit(code ?? 0));
         child.on('error', () => process.exit(1));
       } else {
@@ -40,8 +40,8 @@ program
         const entryScript = path.resolve(import.meta.dirname, '..', 'src', 'index.tsx');
         const usesTsx = fs.existsSync(entryScript);
         const args = usesTsx
-          ? ['new-session', '-s', 'cc-tower', '-c', cwd, '--', 'npx', 'tsx', entryScript]
-          : ['new-session', '-s', 'cc-tower', '-c', cwd, '--', ...process.argv];
+          ? ['new-session', '-s', 'claude-cc-tower', '-c', cwd, '--', 'npx', 'tsx', entryScript]
+          : ['new-session', '-s', 'claude-cc-tower', '-c', cwd, '--', ...process.argv];
         const child = spawn('tmux', args, { stdio: 'inherit' });
         child.on('close', (code) => process.exit(code ?? 0));
         child.on('error', () => process.exit(1));
@@ -58,9 +58,18 @@ program
         // Another instance is running — try to attach to its tmux session
         console.error('cc-tower is already running.');
         try {
-          execSync('tmux has-session -t cc-tower 2>/dev/null', { stdio: 'ignore' });
-          console.error('Attaching to existing tmux session...');
-          const child = spawn('tmux', ['attach', '-t', 'cc-tower'], { stdio: 'inherit' });
+          // Find the tmux session of the running tower instance via lock file PID
+          const lockPath = path.join(os.homedir(), '.config', 'cc-tower', 'tower.lock');
+          const towerPid = fs.readFileSync(lockPath, 'utf8').trim();
+          const sessionName = execSync(
+            `tmux list-panes -a -F '#{pane_pid} #{session_name}' 2>/dev/null | awk '$1 == "${towerPid}" { print $2; exit }'`,
+            { encoding: 'utf8' }
+          ).trim();
+          if (!sessionName) throw new Error('session not found');
+          console.error(`Switching to ${sessionName}...`);
+          const child = process.env['TMUX']
+            ? spawn('tmux', ['switch-client', '-t', sessionName], { stdio: 'inherit' })
+            : spawn('tmux', ['attach', '-t', sessionName], { stdio: 'inherit' });
           child.on('close', (code) => process.exit(code ?? 0));
           return;
         } catch {
@@ -229,7 +238,22 @@ program
     }
     const claudeDir = path.join(os.homedir(), '.claude');
     const slug = cwdToSlug(cwd);
-    const jsonlPath = path.join(claudeDir, 'projects', slug, `${sessionId}.jsonl`);
+    const projectDir = path.join(claudeDir, 'projects', slug);
+    let jsonlPath = path.join(projectDir, `${sessionId}.jsonl`);
+
+    // Fallback to most recently modified JSONL if exact match doesn't exist
+    if (!fs.existsSync(jsonlPath)) {
+      try {
+        const files = fs.readdirSync(projectDir)
+          .filter(f => f.endsWith('.jsonl'))
+          .map(f => ({ name: f, mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
+          .sort((a, b) => b.mtime - a.mtime);
+        if (files.length > 0) {
+          jsonlPath = path.join(projectDir, files[0]!.name);
+          console.log(`  (exact JSONL not found, using latest: ${files[0]!.name})`);
+        }
+      } catch {}
+    }
 
     console.log(`\n═══ JSONL: ${jsonlPath} ═══`);
     if (!fs.existsSync(jsonlPath)) {
