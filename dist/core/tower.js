@@ -184,14 +184,10 @@ export class Tower extends EventEmitter {
             } : undefined;
             // Deregister old session immediately (no 30s dead delay for migrations)
             this.cleanupSession(prev.sessionId);
-            // Register new session, then apply migrated metadata
+            // Register new session — only migrate favorite status (label/tags belong to previous conversation)
             await this.registerSession(next);
             if (migratedMeta) {
                 const patch = {};
-                if (migratedMeta.label)
-                    patch['label'] = migratedMeta.label;
-                if (migratedMeta.tags)
-                    patch['tags'] = migratedMeta.tags;
                 if (migratedMeta.favorite) {
                     patch['favorite'] = migratedMeta.favorite;
                     patch['favoritedAt'] = migratedMeta.favoritedAt;
@@ -1000,13 +996,9 @@ export class Tower extends EventEmitter {
                             startedAt: Date.now(),
                         };
                         await this.registerSession(info);
-                        // Migrate metadata (label, favorite) but NOT summaries
+                        // Migrate only favorite status — label/tags belong to previous conversation
                         if (migratedMeta) {
                             const patch = {};
-                            if (migratedMeta.label)
-                                patch['label'] = migratedMeta.label;
-                            if (migratedMeta.tags)
-                                patch['tags'] = migratedMeta.tags;
                             if (migratedMeta.favorite) {
                                 patch['favorite'] = migratedMeta.favorite;
                                 patch['favoritedAt'] = migratedMeta.favoritedAt;
