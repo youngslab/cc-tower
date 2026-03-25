@@ -2,6 +2,7 @@ import { useCallback } from 'react';
 import { execa } from 'execa';
 import stringWidth from 'string-width';
 import { tmux } from '../../tmux/commands.js';
+import { mapPidToPane } from '../../tmux/pane-mapper.js';
 import { Session } from '../../core/session-store.js';
 
 function truncateWidth(str: string, max: number): string {
@@ -29,7 +30,11 @@ export function useTmux(closeKey: string = 'Escape') {
   // Map config key name to tmux key name
   const tmuxKey = closeKey === 'Escape' ? 'Escape' : closeKey;
   const send = useCallback(async (session: Session, text: string) => {
-    if (!session.paneId && !session.sshTarget) return false;
+    if (!session.paneId && !session.sshTarget) {
+      const mapping = await mapPidToPane(session.pid);
+      if (!mapping.paneId) return false;
+      session = { ...session, paneId: mapping.paneId };
+    }
     if (session.sshTarget) {
       // Remote send via SSH
       const escaped = text.replace(/'/g, "'\\''");
@@ -86,8 +91,14 @@ export function useTmux(closeKey: string = 'Escape') {
     }
 
     // Local peek: use session group to avoid syncing windows with the original session
+    // Resolve paneId on-demand if it wasn't set at registration time
+    let resolvedPaneId = session.paneId;
+    if (!resolvedPaneId) {
+      const mapping = await mapPidToPane(session.pid);
+      resolvedPaneId = mapping.paneId;
+    }
     const panes = await tmux.listPanes();
-    const targetPane = panes.find(p => p.paneId === session.paneId);
+    const targetPane = panes.find(p => p.paneId === resolvedPaneId);
     if (!targetPane) return false;
 
     const peekName = `_cctower_peek_${process.pid}`;

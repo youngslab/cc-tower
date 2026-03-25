@@ -42,22 +42,31 @@ export function getTty(pid: number): string | null {
 }
 
 /**
- * Walk the ppid chain from `pid` upward until a TTY matches one of the
- * provided tmux pane TTYs. Returns null if no match is found (e.g. a
- * Monitor-only session with no tmux pane).
+ * Walk the ppid chain from `pid` upward until either:
+ * 1. The ancestor PID matches a tmux pane PID directly (primary), or
+ * 2. The ancestor TTY matches a tmux pane TTY (fallback).
+ * Returns null if no match is found.
  */
 export async function resolvePaneForPid(
   pid: number,
-  paneList: Array<{ paneId: string; tty: string }>,
+  paneList: Array<{ paneId: string; tty: string; pid: number }>,
 ): Promise<PaneMatch | null> {
+  const panePidMap = new Map(paneList.map((p) => [p.pid, p]));
   let current = pid;
 
   while (current > 1) {
+    // Primary: match by PID directly
+    const pidMatch = panePidMap.get(current);
+    if (pidMatch) {
+      return { paneId: pidMatch.paneId, tty: pidMatch.tty, ancestorPid: current };
+    }
+
+    // Fallback: match by TTY
     const tty = getTty(current);
     if (tty !== null) {
-      const match = paneList.find((p) => p.tty === tty);
-      if (match) {
-        return { paneId: match.paneId, tty: match.tty, ancestorPid: current };
+      const ttyMatch = paneList.find((p) => p.tty === tty);
+      if (ttyMatch) {
+        return { paneId: ttyMatch.paneId, tty: ttyMatch.tty, ancestorPid: current };
       }
     }
 

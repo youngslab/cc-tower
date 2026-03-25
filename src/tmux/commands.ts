@@ -44,8 +44,8 @@ function parsePaneLine(line: string): PaneInfo | null {
 export const tmux = {
   async isAvailable(): Promise<boolean> {
     try {
-      await execa('tmux', ['info'], { reject: false });
-      return process.env['TMUX'] !== undefined && process.env['TMUX'] !== '';
+      const result = await execa('tmux', ['info'], { reject: false });
+      return result.exitCode === 0;
     } catch {
       return false;
     }
