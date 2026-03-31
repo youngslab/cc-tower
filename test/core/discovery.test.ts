@@ -141,6 +141,66 @@ describe('DiscoveryEngine', () => {
     expect(sessions).toHaveLength(0);
   });
 
+  it('scanOnce skips sessions with /tmp cwd', async () => {
+    const pid = process.pid;
+    const info: SessionInfo = {
+      pid,
+      sessionId: 'tmp-session',
+      cwd: '/tmp/claude-abc123/some-project',
+      startedAt: Date.now(),
+    };
+    await writeFile(join(sessionsDir, `${pid}.json`), JSON.stringify(info));
+
+    const engine = new DiscoveryEngine({ scan_interval: 1000, claude_dir: tmpDir });
+    const found: SessionInfo[] = [];
+    engine.on('session-found', (s: SessionInfo) => found.push(s));
+
+    const sessions = await engine.scanOnce();
+
+    expect(sessions).toHaveLength(0);
+    expect(found).toHaveLength(0);
+  });
+
+  it('scanOnce skips /tmp/cc-tower-llm session specifically', async () => {
+    const pid = process.pid;
+    const info: SessionInfo = {
+      pid,
+      sessionId: 'llm-session',
+      cwd: '/tmp/cc-tower-llm',
+      startedAt: Date.now(),
+    };
+    await writeFile(join(sessionsDir, `${pid}.json`), JSON.stringify(info));
+
+    const engine = new DiscoveryEngine({ scan_interval: 1000, claude_dir: tmpDir });
+    const found: SessionInfo[] = [];
+    engine.on('session-found', (s: SessionInfo) => found.push(s));
+
+    const sessions = await engine.scanOnce();
+
+    expect(sessions).toHaveLength(0);
+    expect(found).toHaveLength(0);
+  });
+
+  it('scanOnce does not skip non-/tmp sessions', async () => {
+    const pid = process.pid;
+    const info: SessionInfo = {
+      pid,
+      sessionId: 'real-session',
+      cwd: '/home/user/workspace/myproject',
+      startedAt: Date.now(),
+    };
+    await writeFile(join(sessionsDir, `${pid}.json`), JSON.stringify(info));
+
+    const engine = new DiscoveryEngine({ scan_interval: 1000, claude_dir: tmpDir });
+    const found: SessionInfo[] = [];
+    engine.on('session-found', (s: SessionInfo) => found.push(s));
+
+    const sessions = await engine.scanOnce();
+
+    expect(sessions).toHaveLength(1);
+    expect(found).toHaveLength(1);
+  });
+
   it('scanOnce handles missing sessions directory gracefully', async () => {
     const engine = new DiscoveryEngine({
       scan_interval: 1000,

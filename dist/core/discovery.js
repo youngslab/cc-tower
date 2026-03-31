@@ -59,6 +59,11 @@ export class DiscoveryEngine extends EventEmitter {
                 logger.debug('discovery: failed to read/parse session file', { filePath, err: String(err) });
                 continue;
             }
+            // Skip /tmp sessions (ephemeral subprocesses, LLM summarizer, etc.)
+            if (info.cwd.startsWith('/tmp')) {
+                logger.debug('discovery: skipping /tmp session', { filePath, cwd: info.cwd });
+                continue;
+            }
             const alive = isPidAlive(info.pid);
             if (!alive) {
                 if (this.known.has(info.pid)) {

@@ -27,9 +27,11 @@ function parsePaneLine(line) {
 }
 export const tmux = {
     async isAvailable() {
+        if (!process.env['TMUX'])
+            return false;
         try {
-            await execa('tmux', ['info'], { reject: false });
-            return process.env['TMUX'] !== undefined && process.env['TMUX'] !== '';
+            const result = await execa('tmux', ['info'], { reject: false });
+            return result.exitCode === 0;
         }
         catch {
             return false;
@@ -97,6 +99,14 @@ export const tmux = {
         }
         catch (err) {
             throw new Error(`tmux new-session (group) ${name} failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    },
+    async renameSession(target, newName) {
+        try {
+            await execa('tmux', ['rename-session', '-t', target, newName]);
+        }
+        catch (err) {
+            throw new Error(`tmux rename-session ${target} → ${newName} failed: ${err instanceof Error ? err.message : String(err)}`);
         }
     },
     async killSession(name) {

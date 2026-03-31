@@ -43,6 +43,7 @@ function parsePaneLine(line: string): PaneInfo | null {
 
 export const tmux = {
   async isAvailable(): Promise<boolean> {
+    if (!process.env['TMUX']) return false;
     try {
       const result = await execa('tmux', ['info'], { reject: false });
       return result.exitCode === 0;
@@ -110,6 +111,14 @@ export const tmux = {
       await execa('tmux', ['new-session', '-d', '-s', name, '-t', targetSession]);
     } catch (err) {
       throw new Error(`tmux new-session (group) ${name} failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  async renameSession(target: string, newName: string): Promise<void> {
+    try {
+      await execa('tmux', ['rename-session', '-t', target, newName]);
+    } catch (err) {
+      throw new Error(`tmux rename-session ${target} → ${newName} failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   },
 

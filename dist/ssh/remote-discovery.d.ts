@@ -19,6 +19,11 @@ export declare class RemoteDiscovery extends EventEmitter {
         name: string;
         config: RemoteHostConfig;
     }>);
+    /**
+     * Pre-populate known sessions (e.g. from restored state.json) so the first scan
+     * correctly emits session-lost for sessions whose PIDs died (e.g. server reboot).
+     */
+    addKnown(session: RemoteSessionInfo): void;
     start(pollInterval?: number): void;
     stop(): void;
     private scanAll;

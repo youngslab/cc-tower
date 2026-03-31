@@ -2,6 +2,8 @@ import { EventEmitter } from 'node:events';
 type SessionState = 'idle' | 'thinking' | 'executing';
 export declare class JsonlWatcher extends EventEmitter {
     private watchers;
+    /** Sessions waiting for their JSONL file to be created */
+    private pendingWatchers;
     /**
      * Scan a JSONL file to determine the current session state at cold start.
      * Reads the last meaningful message to infer state.

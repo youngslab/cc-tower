@@ -30,13 +30,30 @@ export declare class Tower extends EventEmitter {
     });
     private lockFd;
     private acquireLock;
+    private getTmuxSessionName;
     private releaseLock;
     start(): Promise<void>;
     /** Full refresh: re-scan discovery, re-register session, then regenerate LLM summaries. */
     refreshSession(sessionId: string): Promise<void>;
+    /**
+     * Renames the tmux session containing the given pane to `claude-{projectName}`.
+     * Skips if: session already has the correct name, is the Tower's own session,
+     * or already belongs to a different project (starts with "claude-" but differs).
+     */
+    private ensureTmuxSessionName;
+    /**
+     * Called when session-start hook fires for an already-idle session (e.g. /resume).
+     * Claude Code does not update sessions/{pid}.json on /resume, so discovery never emits
+     * session-changed and the FSM stays idle→idle (no state-change). This method detects
+     * whether a newer JSONL exists (= new conversation was resumed) and refreshes summaries.
+     */
+    private refreshSessionAfterResume;
     private refreshGoalSummary;
     private refreshContextSummary;
     private refreshNextSteps;
+    private refreshRemoteNextSteps;
+    /** Run all three remote summary refreshes concurrently, managing summaryLoading as a unit. */
+    private refreshAllRemoteSummaries;
     private refreshRemoteGoalSummary;
     private refreshRemoteContextSummary;
     stop(): Promise<void>;

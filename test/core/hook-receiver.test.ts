@@ -93,6 +93,55 @@ describe('HookReceiver', () => {
     expect(fs.existsSync(socketPath)).toBe(true);
   });
 
+  it('emits query event (not hook-event) for query messages', async () => {
+    receiver = new HookReceiver(socketPath);
+    await receiver.start();
+
+    const hookEvents: any[] = [];
+    receiver.on('hook-event', (e) => hookEvents.push(e));
+
+    const queryConn = await new Promise<net.Socket>((resolve) => {
+      receiver.once('query', (conn: net.Socket) => resolve(conn));
+
+      const client = net.createConnection(socketPath, () => {
+        client.write(JSON.stringify({ event: 'query' }) + '\n');
+        client.end();
+      });
+    });
+
+    // query event provides the connection socket
+    expect(queryConn).toBeDefined();
+    // hook-event must NOT have been emitted
+    expect(hookEvents).toHaveLength(0);
+  });
+
+  it('responds to query via the connection socket', async () => {
+    receiver = new HookReceiver(socketPath);
+    await receiver.start();
+
+    // Simulate Tower responding with session data
+    receiver.once('query', (conn: net.Socket) => {
+      conn.write(JSON.stringify([{ sessionId: 'abc', status: 'idle' }]) + '\n');
+      conn.end();
+    });
+
+    const response = await new Promise<string>((resolve) => {
+      let data = '';
+      const client = net.createConnection(socketPath, () => {
+        client.write(JSON.stringify({ event: 'query' }) + '\n');
+        client.end();
+      });
+      client.on('data', (chunk) => { data += chunk.toString(); });
+      client.on('end', () => resolve(data.trim()));
+      client.on('error', () => resolve(''));
+    });
+
+    const parsed = JSON.parse(response);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].sessionId).toBe('abc');
+    expect(parsed[0].status).toBe('idle');
+  });
+
   it('removes socket file on stop', async () => {
     receiver = new HookReceiver(socketPath);
     await receiver.start();

@@ -1,7 +1,9 @@
 import { spawn } from 'node:child_process';
+import { tmpdir } from 'node:os';
 /**
  * Execute a command on a remote host via SSH.
- * All SSH operations go through this helper for future ControlMaster support.
+ * Uses ControlMaster multiplexing to reuse connections and avoid spawning
+ * a new cloudflared ProxyCommand process on every call.
  */
 export function sshExec(sshTarget, command, opts) {
     return new Promise((resolve, reject) => {
@@ -11,6 +13,10 @@ export function sshExec(sshTarget, command, opts) {
         if (opts?.sshOptions) {
             sshArgs.push(...opts.sshOptions.split(/\s+/));
         }
+        // ControlMaster: reuse existing connection so ProxyCommand (cloudflared) is
+        // only spawned once per host instead of on every call.
+        const controlPath = `${tmpdir()}/cc-tower-cm-%r@%h:%p`;
+        sshArgs.push('-o', 'ControlMaster=auto', '-o', `ControlPath=${controlPath}`, '-o', 'ControlPersist=120');
         // Common options: no TTY allocation, batch mode (no password prompts)
         sshArgs.push('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5');
         // When a command prefix is provided, wrap: prefix sh -c 'command'
@@ -23,9 +29,14 @@ export function sshExec(sshTarget, command, opts) {
         else {
             remoteCommand = command;
         }
-        // Quote the remote command so globs/redirects run on the remote shell, not locally
-        const escaped = remoteCommand.replace(/'/g, "'\\''");
-        sshArgs.push(sshTarget, `'${escaped}'`);
+        // Quote the remote command so globs/redirects run on the remote shell, not locally.
+        // When commandPrefix is used, remoteCommand already contains sh -c '...' with inner escaping —
+        // re-escaping the single quotes here would corrupt the command. Only escape when no prefix.
+        const finalCommand = opts?.commandPrefix
+            ? remoteCommand
+            : remoteCommand.replace(/'/g, "'\\''");
+        const quotedCommand = opts?.commandPrefix ? finalCommand : `'${finalCommand}'`;
+        sshArgs.push(sshTarget, quotedCommand);
         const child = spawn('sh', ['-c', sshArgs.join(' ')], {
             stdio: ['ignore', 'pipe', 'pipe'],
         });

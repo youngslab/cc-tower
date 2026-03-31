@@ -101,6 +101,7 @@ npx tsc && npm publish
 ## Documentation
 
 - [`doc/algorithms.md`](./doc/algorithms.md) — State machine, discovery, JSONL inference, LLM summarization 등 핵심 알고리즘 레퍼런스
+  - **Summary & Next Action Update Workflow** — `goalSummary` / `contextSummary` / `nextSteps` 세 필드의 트리거 조건, LLM 캐시, local vs remote 차이, /clear 동작 상세 정리
 
 ## Key Patterns
 

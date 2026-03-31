@@ -58,13 +58,10 @@ program
         // Another instance is running — try to attach to its tmux session
         console.error('cc-tower is already running.');
         try {
-          // Find the tmux session of the running tower instance via lock file PID
+          // Read tmux session name from lock file (line 2)
           const lockPath = path.join(os.homedir(), '.config', 'cc-tower', 'tower.lock');
-          const towerPid = fs.readFileSync(lockPath, 'utf8').trim();
-          const sessionName = execSync(
-            `tmux list-panes -a -F '#{pane_pid} #{session_name}' 2>/dev/null | awk '$1 == "${towerPid}" { print $2; exit }'`,
-            { encoding: 'utf8' }
-          ).trim();
+          const lockLines = fs.readFileSync(lockPath, 'utf8').trim().split('\n');
+          const sessionName = lockLines[1]?.trim() || '';
           if (!sessionName) throw new Error('session not found');
           console.error(`Switching to ${sessionName}...`);
           const child = process.env['TMUX']
@@ -421,6 +418,82 @@ program
       fs.writeFileSync(configPath, '# cc-tower configuration\n# See PRD for available options\n');
     }
     execSync(`${JSON.stringify(editor)} ${JSON.stringify(configPath)}`, { stdio: 'inherit' });
+  });
+
+// ps — snapshot of current state from running instance (or state.json fallback)
+program
+  .command('ps')
+  .option('--json', 'Output as JSON')
+  .description('Show current session state from the running Tower instance')
+  .action(async (opts) => {
+    const net = await import('node:net');
+    const socketPath = `${process.env['XDG_RUNTIME_DIR'] ?? '/tmp'}/cc-tower.sock`;
+
+    const queryRunning = (): Promise<any[] | null> =>
+      new Promise((resolve) => {
+        const client = net.createConnection(socketPath, () => {
+          client.write(JSON.stringify({ event: 'query' }) + '\n');
+          client.end();
+        });
+        let data = '';
+        client.on('data', (chunk) => { data += chunk.toString(); });
+        client.on('end', () => {
+          try { resolve(JSON.parse(data.trim())); }
+          catch { resolve(null); }
+        });
+        client.on('error', () => resolve(null));
+        setTimeout(() => { client.destroy(); resolve(null); }, 2000);
+      });
+
+    let sessions = await queryRunning();
+    let source = 'live';
+
+    if (!sessions) {
+      // Fallback: read state.json directly
+      const statePath = path.join(os.homedir(), '.local', 'share', 'cc-tower', 'state.json');
+      const altStatePath = path.join(os.homedir(), '.config', 'cc-tower', 'state.json');
+      const stateFile = fs.existsSync(statePath) ? statePath : fs.existsSync(altStatePath) ? altStatePath : null;
+      if (stateFile) {
+        try {
+          const raw = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+          const data = (raw.sessions ?? raw) as Record<string, Record<string, unknown>>;
+          sessions = Object.entries(data).map(([id, s]) => ({ sessionId: id, ...s }));
+          source = 'state.json (Tower not running)';
+        } catch { sessions = []; }
+      } else {
+        sessions = [];
+        source = 'no data';
+      }
+    }
+
+    if (opts.json) {
+      console.log(JSON.stringify({ source, sessions }, null, 2));
+      return;
+    }
+
+    console.log(`source: ${source}  (${sessions.length} sessions)`);
+    if (sessions.length === 0) {
+      console.log('No sessions');
+      return;
+    }
+    console.log('');
+    const cols = [
+      { h: 'SID',    w: 8  },
+      { h: 'LABEL',  w: 18 },
+      { h: 'STATUS', w: 11 },
+      { h: 'CWD',    w: 30 },
+      { h: 'GOAL',   w: 0  },
+    ];
+    console.log(cols.map((c, i) => c.w ? c.h.padEnd(c.w) : c.h).join(''));
+    console.log('─'.repeat(80));
+    for (const s of sessions as any[]) {
+      const sid   = (s.sessionId ?? '').slice(0, 8).padEnd(8);
+      const label = ((s.label ?? s.projectName ?? '')).slice(0, 16).padEnd(18);
+      const status = (s.status ?? '?').padEnd(11);
+      const cwd   = (s.cwd ?? '').replace(os.homedir(), '~').slice(0, 28).padEnd(30);
+      const goal  = (s.goalSummary ?? s.currentTask ?? '').slice(0, 60);
+      console.log(`${sid}${label}${status}${cwd}${goal}`);
+    }
   });
 
 // Internal: hook CLI fallback

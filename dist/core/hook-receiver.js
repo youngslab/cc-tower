@@ -26,7 +26,13 @@ export class HookReceiver extends EventEmitter {
                             continue;
                         try {
                             const event = JSON.parse(line);
-                            this.emit('hook-event', event);
+                            if (event.event === 'query') {
+                                // Query request: emit with conn so Tower can write the response back
+                                this.emit('query', conn);
+                            }
+                            else {
+                                this.emit('hook-event', event);
+                            }
                         }
                         catch {
                             logger.warn('hook-receiver: invalid JSON', { line: line.slice(0, 100) });
@@ -42,7 +48,12 @@ export class HookReceiver extends EventEmitter {
                     if (buffer.trim()) {
                         try {
                             const event = JSON.parse(buffer.trim());
-                            this.emit('hook-event', event);
+                            if (event.event === 'query') {
+                                this.emit('query', conn);
+                            }
+                            else {
+                                this.emit('hook-event', event);
+                            }
                         }
                         catch {
                             logger.warn('hook-receiver: invalid JSON', { line: buffer.trim().slice(0, 100) });

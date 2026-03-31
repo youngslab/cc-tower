@@ -8,7 +8,7 @@ import { tmux } from '../tmux/commands.js';
 import { Dashboard } from './Dashboard.js';
 import { DetailView } from './DetailView.js';
 import { SendInput } from './SendInput.js';
-import { NewSession } from './NewSession.js';
+import { NewSession, PastSession, PastSessionByCwd } from './NewSession.js';
 import { getRecentProjects, RecentProject } from '../utils/recent-projects.js';
 
 type View = 'dashboard' | 'detail' | 'send' | 'new-session';
@@ -84,9 +84,7 @@ export function App({ tower }: Props) {
     const tmuxKey = tower.config.keys.close === 'Escape' ? 'Escape' : tower.config.keys.close;
 
     if (session.sshTarget) {
-      // Remote: full-screen popup — reuse peek's remote pattern (LANG, docker -it, key-table)
-      const hostConfig = tower.config.hosts.find(h => h.ssh === session.sshTarget);
-      const interactivePrefix = hostConfig?.command_prefix?.replace(/^docker exec /, 'docker exec -it ');
+      // Remote: full-screen popup — tmux commands run on SSH host, NOT inside commandPrefix container
       const paneSelect = `tmux list-panes -a -F '#{pane_id} #{session_name} #{window_index}' | grep '^${session.paneId} ' | head -1`;
       const setupCmd =
         `PINFO=\\$(${paneSelect}); SESS=\\$(echo \\$PINFO | awk '{print \\$2}'); WIDX=\\$(echo \\$PINFO | awk '{print \\$3}'); ` +
@@ -96,9 +94,7 @@ export function App({ tower }: Props) {
         `tmux bind-key -T root ${tmuxKey} detach-client && ` +
         `TMUX= tmux attach -t \\$GO \\\\; select-window -t :\\$WIDX; ` +
         `tmux unbind-key -T root ${tmuxKey}; tmux kill-session -t \\$GO 2>/dev/null`;
-      const remoteCmd = interactivePrefix
-        ? `${interactivePrefix} sh -c 'export LANG=C.UTF-8; ${setupCmd.replace(/'/g, "'\\''")}'`
-        : setupCmd;
+      const remoteCmd = setupCmd;
       await tmux.displayPopup({
         width: '100%',
         height: '100%',
@@ -134,10 +130,19 @@ export function App({ tower }: Props) {
     setView('new-session');
   }, [sessions]);
 
-  const handleNewSession = useCallback(async (projectPath: string, host?: { name: string; ssh: string; commandPrefix?: string }) => {
+  const getPastSessions = useCallback((cwd: string): PastSession[] => {
+    return tower.store.getPastSessionsByCwd(cwd);
+  }, [tower]);
+
+  const getPastSessionsByTarget = useCallback((sshTarget?: string): PastSessionByCwd[] => {
+    return tower.store.getPastSessionsByTarget(sshTarget);
+  }, [tower]);
+
+  const handleNewSession = useCallback(async (projectPath: string, host?: { name: string; ssh: string; commandPrefix?: string }, resumeSessionId?: string) => {
     const closeKey = tower.config.keys.close === 'Escape' ? 'Escape' : tower.config.keys.close;
     const name = projectPath.split('/').pop() ?? projectPath;
-    const claudeArgs = tower.config.claude_args ? ` ${tower.config.claude_args}` : '';
+    const resumeArg = resumeSessionId ? ` --resume ${resumeSessionId}` : '';
+    const claudeArgs = (tower.config.claude_args ? ` ${tower.config.claude_args}` : '') + resumeArg;
     setView('dashboard');
 
     const { execa: ex } = await import('execa');
@@ -160,15 +165,33 @@ export function App({ tower }: Props) {
         });
       } catch {}
     } else {
-      // Local: create separate tmux session + peek
-      const sessionName = `claude-${name}`.replace(/[^a-zA-Z0-9_-]/g, '-');
+      // Local: add a window to the hive session (create hive if needed)
+      const hiveSession = 'cc-tower-hive';
+      const windowName = name.replace(/[^a-zA-Z0-9_-]/g, '-');
       try {
-        await ex('tmux', ['new-session', '-d', '-s', sessionName, '-c', projectPath, `claude${claudeArgs}`]);
+        let sessionExists = false;
+        try { await ex('tmux', ['has-session', '-t', hiveSession]); sessionExists = true; } catch {}
+
+        let windowIndex: string;
+        if (!sessionExists) {
+          const { stdout } = await ex('tmux', [
+            'new-session', '-d', '-s', hiveSession, '-n', windowName, '-c', projectPath,
+            '-P', '-F', '#{window_index}', `claude${claudeArgs}`,
+          ]);
+          windowIndex = stdout.trim();
+        } else {
+          const { stdout } = await ex('tmux', [
+            'new-window', '-t', hiveSession, '-n', windowName, '-c', projectPath,
+            '-P', '-F', '#{window_index}', `claude${claudeArgs}`,
+          ]);
+          windowIndex = stdout.trim();
+        }
+
         await tmux.displayPopup({
           width: '80%',
           height: '80%',
           title: ` ${name} (new) | ${closeKey} to close `,
-          command: `tmux bind-key -T cctower-peek ${closeKey} detach-client && TMUX= tmux attach -t ${sessionName} \\; set-option key-table cctower-peek ; tmux unbind-key -T cctower-peek ${closeKey}`,
+          command: `tmux bind-key -T cctower-peek ${closeKey} detach-client && TMUX= tmux attach -t ${hiveSession}:${windowIndex} \\; set-option key-table cctower-peek ; tmux unbind-key -T cctower-peek ${closeKey}`,
           closeOnExit: true,
         });
       } catch {}
@@ -274,6 +297,9 @@ export function App({ tower }: Props) {
             hosts={tower.config.hosts.map(h => ({ name: h.name, ssh: h.ssh, commandPrefix: h.command_prefix }))}
             onSelect={handleNewSession}
             onCancel={() => setView('dashboard')}
+            getPastSessions={getPastSessions}
+            getPastSessionsByTarget={getPastSessionsByTarget}
+            onDeleteSession={(id) => tower.store.deletePersistedSession(id)}
           />
         )}
 

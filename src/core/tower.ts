@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { Config } from '../config/defaults.js';
 import { loadConfig } from '../config/loader.js';
@@ -10,6 +11,8 @@ import { SessionStateMachine, InputEvent } from './state-machine.js';
 import { Summarizer } from './summarizer.js';
 import { Notifier } from './notifier.js';
 import { mapPidToPane } from '../tmux/pane-mapper.js';
+import { isHeadlessProcess } from '../utils/pid-resolver.js';
+import { tmux } from '../tmux/commands.js';
 import { cwdToSlug, cleanDisplayText, isInternalMessage } from '../utils/slug.js';
 import { generateContextSummary, generateGoalSummary, generateNextSteps, clearSummaryCache, startLlmSession, stopLlmSession, getLlmSessionName } from './llm-summarizer.js';
 import { logger } from '../utils/logger.js';
@@ -69,24 +72,32 @@ export class Tower extends EventEmitter {
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
     try {
       this.lockFd = fs.openSync(lockPath, 'wx');
-      fs.writeFileSync(lockPath, `${process.pid}\n`);
+      const tmuxSession = process.env['TMUX'] ? this.getTmuxSessionName() : '';
+      fs.writeFileSync(lockPath, `${process.pid}\n${tmuxSession}\n`);
       return true;
     } catch {
       // File exists — check if PID is still alive
       try {
-        const pid = parseInt(fs.readFileSync(lockPath, 'utf8').trim());
+        const pid = parseInt(fs.readFileSync(lockPath, 'utf8').trim().split('\n')[0]);
         if (!isNaN(pid)) {
           try { process.kill(pid, 0); return false; } catch { /* stale lock */ }
         }
         // Stale lock — reclaim
         fs.unlinkSync(lockPath);
         this.lockFd = fs.openSync(lockPath, 'wx');
-        fs.writeFileSync(lockPath, `${process.pid}\n`);
+        const tmuxSession = process.env['TMUX'] ? this.getTmuxSessionName() : '';
+        fs.writeFileSync(lockPath, `${process.pid}\n${tmuxSession}\n`);
         return true;
       } catch {
         return false;
       }
     }
+  }
+
+  private getTmuxSessionName(): string {
+    try {
+      return execSync('tmux display-message -p "#{session_name}"', { encoding: 'utf8', timeout: 3000 }).trim();
+    } catch { return ''; }
   }
 
   private releaseLock(): void {
@@ -162,6 +173,15 @@ export class Tower extends EventEmitter {
       this.handleHookEvent(event);
     });
 
+    // Wire up query events — respond with live session state (used by `cc-tower ps`)
+    this.hookReceiver.on('query', (conn: import('node:net').Socket) => {
+      try {
+        const sessions = this.store.getAll();
+        conn.write(JSON.stringify(sessions) + '\n');
+      } catch {}
+      conn.end();
+    });
+
     // 6. Wire up JSONL events
     this.jsonlWatcher.on('jsonl-event', ({ sessionId, parsed }) => {
       this.handleJsonlEvent(sessionId, parsed);
@@ -179,30 +199,37 @@ export class Tower extends EventEmitter {
     });
 
     this.discovery.on('session-changed', async ({ prev, next }: { prev: SessionInfo; next: SessionInfo }) => {
-      logger.info('tower: session changed (resume/clear)', { pid: next.pid, old: prev.sessionId, new: next.sessionId });
-      // Migrate metadata from old session before deregistering
+      // Detect /resume vs /clear:
+      // - /resume  → next.sessionId is an old UUID with existing JSONL content
+      // - /clear   → next.sessionId is a new UUID with no JSONL yet
+      const claudeDir = this.config.discovery.claude_dir.replace('~', os.homedir());
+      const slug = cwdToSlug(next.cwd);
+      const nextJsonl = path.join(claudeDir, 'projects', slug, `${next.sessionId}.jsonl`);
+      const isResume = (() => {
+        try { return fs.statSync(nextJsonl).size > 0; } catch { return false; }
+      })();
+
+      logger.info(`tower: session changed (${isResume ? 'resume' : 'clear'})`, { pid: next.pid, old: prev.sessionId, new: next.sessionId });
+
       const oldSession = this.store.get(prev.sessionId);
-      // Migrate only identity metadata (not summaries — new session needs fresh context)
-      const migratedMeta = oldSession ? {
-        label: oldSession.label,
-        tags: oldSession.tags,
-        favorite: oldSession.favorite,
-        favoritedAt: oldSession.favoritedAt,
-      } : undefined;
 
       // Deregister old session immediately (no 30s dead delay for migrations)
       this.cleanupSession(prev.sessionId);
 
-      // Register new session — only migrate favorite status (label/tags belong to previous conversation)
-      await this.registerSession(next);
-      if (migratedMeta) {
+      // Register new/resumed session — persistedMeta restores its own label/tags/summaries
+      // For /clear: skip JSONL fallback so new session doesn't inherit old session's label/summary
+      await this.registerSession(next, { skipJsonlFallback: !isResume });
+
+      if (!isResume && oldSession) {
+        // /clear: carry over only favorite status from the cleared session
         const patch: Record<string, unknown> = {};
-        if (migratedMeta.favorite) { patch['favorite'] = migratedMeta.favorite; patch['favoritedAt'] = migratedMeta.favoritedAt; }
+        if (oldSession.favorite) { patch['favorite'] = oldSession.favorite; patch['favoritedAt'] = oldSession.favoritedAt; }
         if (Object.keys(patch).length > 0) {
           this.store.update(next.sessionId, patch);
-          logger.info('tower: session migrated (clear/resume)', { from: prev.sessionId, to: next.sessionId, keys: Object.keys(patch) });
+          logger.info('tower: session migrated (clear)', { from: prev.sessionId, to: next.sessionId, keys: Object.keys(patch) });
         }
       }
+      // /resume: persistedMeta already restored label/tags/summaries inside registerSession
     });
 
     // 8. Start periodic discovery
@@ -276,6 +303,43 @@ export class Tower extends EventEmitter {
         }
       });
 
+      // Pre-populate known so first scan emits session-lost for dead sessions
+      // (e.g. after server reboot — PIDs gone but session files persist on disk)
+      // Handles both new format (sshTarget persisted) and old format (key prefix only).
+      const restoredByKey = new Set<string>();
+      for (const session of this.store.getRestoredRemoteSessions()) {
+        const rawSessionId = session.sessionId.includes('::')
+          ? session.sessionId.split('::').slice(1).join('::')
+          : session.sessionId;
+        this.remoteDiscovery.addKnown({
+          pid: session.pid,
+          sessionId: rawSessionId,
+          cwd: session.cwd,
+          startedAt: session.startedAt,
+          host: session.host,
+          sshTarget: session.sshTarget,
+        });
+        restoredByKey.add(session.sessionId);
+      }
+      // Fallback for old-format state.json: detect remote sessions by "hostName::" key prefix
+      const hostConfigMap = new Map(remoteHosts.map(h => [h.name, h.config]));
+      for (const key of this.store.getPersistedKeys()) {
+        if (restoredByKey.has(key)) continue;
+        const sep = key.indexOf('::');
+        if (sep === -1) continue;
+        const hostName = key.slice(0, sep);
+        const rawSessionId = key.slice(sep + 2);
+        const hostConfig = hostConfigMap.get(hostName);
+        if (!hostConfig) continue;
+        this.remoteDiscovery.addKnown({
+          pid: 0,
+          sessionId: rawSessionId,
+          cwd: '',
+          startedAt: 0,
+          host: hostName,
+          sshTarget: hostConfig.sshTarget,
+        });
+      }
       this.remoteDiscovery.start(5000);
     }
 
@@ -345,9 +409,7 @@ export class Tower extends EventEmitter {
           }
         } catch {}
         if (jp) {
-          void this.refreshRemoteGoalSummary(sessionId, remoteConfig, jp);
-          void this.refreshRemoteContextSummary(sessionId, remoteConfig, jp);
-          void this.refreshRemoteNextSteps(sessionId, remoteConfig, jp);
+          void this.refreshAllRemoteSummaries(sessionId, remoteConfig, jp);
         } else {
           this.store.update(sessionId, { summaryLoading: false });
           logger.info('tower: remote refresh skipped, no JSONL', { sessionId });
@@ -385,6 +447,63 @@ export class Tower extends EventEmitter {
         logger.info('tower: refresh skipped, no JSONL', { sessionId });
       }
     }
+  }
+
+  /**
+   * Renames the tmux session containing the given pane to `claude-{projectName}`.
+   * Skips if: session already has the correct name, is the Tower's own session,
+   * or already belongs to a different project (starts with "claude-" but differs).
+   */
+  private async ensureTmuxSessionName(paneId: string, projectName: string): Promise<void> {
+    const targetName = `claude-${projectName}`;
+    try {
+      const panes = await tmux.listPanes();
+      const pane = panes.find(p => p.paneId === paneId);
+      if (!pane) return;
+      if (pane.sessionName === targetName) return;
+      // Don't rename Tower's own session or sessions already dedicated to another project
+      if (pane.sessionName === 'claude-cc-tower') return;
+      if (pane.sessionName.startsWith('claude-') && pane.sessionName !== targetName) return;
+      await tmux.renameSession(pane.sessionName, targetName);
+      logger.info('tower: renamed tmux session', { from: pane.sessionName, to: targetName, paneId });
+    } catch (err) {
+      logger.debug('tower: could not rename tmux session', { paneId, projectName, error: String(err) });
+    }
+  }
+
+  /**
+   * Called when session-start hook fires for an already-idle session (e.g. /resume).
+   * Claude Code does not update sessions/{pid}.json on /resume, so discovery never emits
+   * session-changed and the FSM stays idle→idle (no state-change). This method detects
+   * whether a newer JSONL exists (= new conversation was resumed) and refreshes summaries.
+   */
+  private async refreshSessionAfterResume(sessionId: string): Promise<void> {
+    const jp = this.jsonlPaths.get(sessionId);
+    if (!jp) return;
+
+    try {
+      const dir = path.dirname(jp);
+      const files = fs.readdirSync(dir)
+        .filter(f => f.endsWith('.jsonl') && !f.includes('/'))
+        .map(f => ({ name: f, mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime);
+
+      if (files.length > 0) {
+        const newest = path.join(dir, files[0]!.name);
+        if (newest !== jp) {
+          logger.info('tower: resume detected — switching to newer JSONL', { sessionId, old: path.basename(jp), new: files[0]!.name });
+          this.jsonlPaths.set(sessionId, newest);
+          this.jsonlWatcher.unwatch(sessionId);
+          this.jsonlWatcher.watch(sessionId, newest);
+          // Clear stale summaries so they are regenerated from the resumed conversation
+          this.store.update(sessionId, { goalSummary: undefined, contextSummary: undefined, nextSteps: undefined });
+        }
+      }
+    } catch {}
+
+    const updatedJp = this.jsonlPaths.get(sessionId)!;
+    void this.refreshGoalSummary(sessionId, updatedJp);
+    void this.refreshContextSummary(sessionId, updatedJp);
   }
 
   private async refreshGoalSummary(sessionId: string, jsonlPath: string): Promise<void> {
@@ -480,13 +599,24 @@ export class Tower extends EventEmitter {
     }
   }
 
+  /** Run all three remote summary refreshes concurrently, managing summaryLoading as a unit. */
+  private async refreshAllRemoteSummaries(compositeId: string, config: RemoteHostConfig, jsonlPath: string): Promise<void> {
+    this.store.update(compositeId, { summaryLoading: true });
+    try {
+      await Promise.all([
+        this.refreshRemoteGoalSummary(compositeId, config, jsonlPath),
+        this.refreshRemoteContextSummary(compositeId, config, jsonlPath),
+        this.refreshRemoteNextSteps(compositeId, config, jsonlPath),
+      ]);
+    } finally {
+      this.store.update(compositeId, { summaryLoading: false });
+    }
+  }
+
   private async refreshRemoteGoalSummary(compositeId: string, config: RemoteHostConfig, jsonlPath: string): Promise<void> {
     try {
-      this.store.update(compositeId, { summaryLoading: true });
-      const session = this.store.get(compositeId);
       const tail = await remoteReadJsonlTail(config, jsonlPath, 65536);
-      if (!tail || tail.length < 20) { this.store.update(compositeId, { summaryLoading: false }); return; }
-      // Filter to user/assistant messages only (skip system/progress noise)
+      if (!tail || tail.length < 20) return;
       const lines = tail.split('\n').filter(l => l.trim());
       const meaningful: string[] = [];
       for (let i = lines.length - 1; i >= 0 && meaningful.length < 15; i--) {
@@ -496,7 +626,7 @@ export class Tower extends EventEmitter {
         }
       }
       const earlyText = meaningful.join('\n');
-      if (earlyText.length < 20) { this.store.update(compositeId, { summaryLoading: false }); return; }
+      if (earlyText.length < 20) return;
       const summary = await generateGoalSummary(compositeId, earlyText);
       if (summary) {
         logger.info('tower: remote goal summary received', { compositeId, summary });
@@ -504,7 +634,6 @@ export class Tower extends EventEmitter {
       }
     } catch (err) {
       logger.debug('tower: remote goal summary error', { compositeId, error: String(err) });
-      this.store.update(compositeId, { summaryLoading: false });
     }
   }
 
@@ -512,7 +641,6 @@ export class Tower extends EventEmitter {
     try {
       const tail = await remoteReadJsonlTail(config, jsonlPath, 65536);
       if (!tail || tail.length < 20) return;
-      // Filter to user/assistant messages only (skip system/progress noise)
       const lines = tail.split('\n').filter(l => l.trim());
       const meaningful: string[] = [];
       for (let i = lines.length - 1; i >= 0 && meaningful.length < 15; i--) {
@@ -523,17 +651,13 @@ export class Tower extends EventEmitter {
       }
       const recentText = meaningful.join('\n');
       if (recentText.length < 20) return;
-      this.store.update(compositeId, { summaryLoading: true });
       const summary = await generateContextSummary(compositeId, recentText);
       if (summary) {
         logger.info('tower: remote context summary received', { compositeId, summary });
-        this.store.update(compositeId, { contextSummary: summary, summaryLoading: false });
-      } else {
-        this.store.update(compositeId, { summaryLoading: false });
+        this.store.update(compositeId, { contextSummary: summary });
       }
     } catch (err) {
       logger.debug('tower: remote context summary error', { compositeId, error: String(err) });
-      this.store.update(compositeId, { summaryLoading: false });
     }
   }
 
@@ -554,12 +678,28 @@ export class Tower extends EventEmitter {
     this.remotePollers.clear();
   }
 
-  private async registerSession(info: SessionInfo): Promise<void> {
-    // Skip the hidden LLM session
-    if (info.cwd === '/tmp/cc-tower-llm') return;
+  private async registerSession(info: SessionInfo, opts: { skipJsonlFallback?: boolean } = {}): Promise<void> {
+    // Skip /tmp sessions (LLM summarizer, ephemeral subprocesses, etc.)
+    if (info.cwd.startsWith('/tmp')) return;
+
+    // Skip headless sessions (claude --print) — non-interactive, should not appear in dashboard
+    if (info.pid && isHeadlessProcess(info.pid)) {
+      logger.debug('tower: skipping headless session', { pid: info.pid, cwd: info.cwd });
+      return;
+    }
 
     // a. Resolve tmux pane
     const mapping = await mapPidToPane(info.pid);
+
+    // Cleanup any existing session occupying the same pane (new session started in same pane)
+    if (mapping.paneId) {
+      for (const existing of this.store.getAll()) {
+        if (existing.paneId === mapping.paneId && existing.sessionId !== info.sessionId && existing.status !== 'dead') {
+          logger.info('tower: evicting session — same pane taken by new session', { evicted: existing.sessionId, new: info.sessionId, paneId: mapping.paneId });
+          this.cleanupSession(existing.sessionId);
+        }
+      }
+    }
 
     // b. Compute JSONL path (with fallback to latest file if sessionId doesn't match)
     const claudeDir = this.config.discovery.claude_dir.replace('~', os.homedir());
@@ -567,25 +707,38 @@ export class Tower extends EventEmitter {
     const projectDir = path.join(claudeDir, 'projects', slug);
     let jsonlPath = path.join(projectDir, `${info.sessionId}.jsonl`);
 
-    // Always check for a newer JSONL in the project dir.
-    // After /clear, Claude Code creates a new JSONL with a different sessionId
-    // while keeping the same sessionId in sessions/*.json.
+    // Check for a newer JSONL only when the exact sessionId file does not exist.
+    // After /clear, Claude Code immediately creates the new JSONL as an empty file,
+    // so exactExists===true but size===0 → do NOT fallback (it's a fresh session).
+    // After stale discovery (sessions/{pid}.json has old sessionId), the exact file
+    // is missing entirely → use newest JSONL in the directory.
+    // skipJsonlFallback: additional override for runtime /clear detection.
     try {
-      const files = fs.readdirSync(projectDir)
-        .filter(f => f.endsWith('.jsonl') && !f.includes('/'))
-        .map(f => ({ name: f, mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
-        .sort((a, b) => b.mtime - a.mtime);
-      if (files.length > 0) {
-        const newest = path.join(projectDir, files[0]!.name);
-        const exactMtime = fs.existsSync(jsonlPath) ? fs.statSync(jsonlPath).mtimeMs : 0;
-        if (files[0]!.mtime > exactMtime && newest !== jsonlPath) {
-          logger.debug('tower: using newer JSONL over exact match', {
-            sessionId: info.sessionId,
-            exact: path.basename(jsonlPath),
-            newest: files[0]!.name,
-          });
-          jsonlPath = newest;
+      const exactExists = fs.existsSync(jsonlPath);
+      const exactSize = exactExists ? fs.statSync(jsonlPath).size : 0;
+      if (!exactExists && !opts.skipJsonlFallback) {
+        const files = fs.readdirSync(projectDir)
+          .filter(f => f.endsWith('.jsonl') && !f.includes('/'))
+          .map(f => ({ name: f, mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
+          .sort((a, b) => b.mtime - a.mtime);
+        if (files.length > 0) {
+          const newest = path.join(projectDir, files[0]!.name);
+          if (newest !== jsonlPath) {
+            logger.debug('tower: using newer JSONL (exact missing — stale discovery)', {
+              sessionId: info.sessionId,
+              exact: path.basename(jsonlPath),
+              newest: files[0]!.name,
+            });
+            jsonlPath = newest;
+          }
         }
+      } else {
+        logger.debug('tower: using exact JSONL', {
+          sessionId: info.sessionId,
+          file: path.basename(jsonlPath),
+          exists: exactExists,
+          size: exactSize,
+        });
       }
     } catch {}
 
@@ -621,6 +774,11 @@ export class Tower extends EventEmitter {
     // Apply custom title from JSONL (/rename) — always overwrite persisted label
     if (customTitle) {
       this.store.update(info.sessionId, { label: customTitle });
+    }
+
+    // f. Rename tmux session to claude-{projectName} for local sessions with a pane
+    if (mapping.paneId && !info.host) {
+      void this.ensureTmuxSessionName(mapping.paneId, projectName);
     }
 
     // f. Create state machine
@@ -782,7 +940,7 @@ export class Tower extends EventEmitter {
       pid: info.pid,
       sessionId: compositeId,
       paneId,
-      hasTmux: !!paneId,
+      hasTmux: true, // remote sessions are always in tmux; paneId may be undefined if detection failed
       detectionMode: hostConfig.hooks ? 'hook' : 'jsonl',
       cwd: info.cwd,
       projectName,
@@ -811,18 +969,17 @@ export class Tower extends EventEmitter {
 
       // Trigger LLM summary refresh on idle transition
       if (change.to === 'idle') {
-        void this.refreshRemoteGoalSummary(compositeId, remoteConfig, jsonlPath);
-        void this.refreshRemoteContextSummary(compositeId, remoteConfig, jsonlPath);
-        void this.refreshRemoteNextSteps(compositeId, remoteConfig, jsonlPath);
+        void this.refreshAllRemoteSummaries(compositeId, remoteConfig, jsonlPath);
       }
     });
     this.stateMachines.set(compositeId, fsm);
 
-    // Initial summary for idle sessions
+    // Initial summary for idle sessions — skip if already summarized (Tower restart)
     if (initialState === 'idle') {
-      void this.refreshRemoteGoalSummary(compositeId, remoteConfig, jsonlPath);
-      void this.refreshRemoteContextSummary(compositeId, remoteConfig, jsonlPath);
-      void this.refreshRemoteNextSteps(compositeId, remoteConfig, jsonlPath);
+      const existing = this.store.get(compositeId);
+      if (!existing?.goalSummary || !existing?.contextSummary) {
+        void this.refreshAllRemoteSummaries(compositeId, remoteConfig, jsonlPath);
+      }
     }
 
     // Store JSONL path for remote polling
@@ -987,7 +1144,7 @@ export class Tower extends EventEmitter {
       if (event.event === 'session-start' && event.cwd && !event.cwd.startsWith('/tmp')) {
         // Find the dead/dying session with same CWD for metadata migration
         const dyingSession = event.cwd
-          ? this.store.getAll().find(s => s.cwd === event.cwd && (s.status === 'dead' || s.status === 'idle'))
+          ? this.store.getAll().find(s => s.cwd === event.cwd)
           : undefined;
         const migratedMeta = dyingSession ? {
           label: dyingSession.label,
@@ -1012,7 +1169,11 @@ export class Tower extends EventEmitter {
               cwd: event.cwd!,
               startedAt: Date.now(),
             };
-            await this.registerSession(info);
+            await this.registerSession(info, { skipJsonlFallback: true });
+            // Use pane from hook payload if available (more reliable than PID→TTY chain)
+            if (event.pane) {
+              this.store.update(hookSid, { paneId: event.pane, hasTmux: true });
+            }
             // Migrate only favorite status — label/tags belong to previous conversation
             if (migratedMeta) {
               const patch: Record<string, unknown> = {};
@@ -1039,9 +1200,17 @@ export class Tower extends EventEmitter {
     logger.info('tower: hook event received', { event: event.event, sessionId, hookSid });
 
     const session = this.store.get(sessionId);
-    if (session && session.detectionMode !== 'hook') {
+    if (session) {
+      const patch: Record<string, unknown> = {};
       // Upgrade to hook mode on first hook event
-      this.store.update(sessionId, { detectionMode: 'hook' });
+      if (session.detectionMode !== 'hook') patch['detectionMode'] = 'hook';
+      // Use pane ID from hook payload directly — more reliable than PID→TTY chain
+      if (event.pane && event.pane !== session.paneId) {
+        patch['paneId'] = event.pane;
+        patch['hasTmux'] = true;
+        logger.debug('tower: pane updated from hook', { sessionId, pane: event.pane });
+      }
+      if (Object.keys(patch).length > 0) this.store.update(sessionId, patch);
     }
 
     const fsm = this.stateMachines.get(sessionId);
@@ -1051,6 +1220,14 @@ export class Tower extends EventEmitter {
     const inputEvent: InputEvent | null = this.mapHookToInput(event);
     if (inputEvent) {
       fsm.transition(inputEvent);
+    }
+
+    // On session-start for an already-idle session, force JSONL re-check + summary refresh.
+    // This handles /resume: Claude Code does not update sessions/{pid}.json on /resume,
+    // so the FSM stays idle→idle (no state-change emitted). Without this, the newer JSONL
+    // created by /resume would never be detected and summaries would remain stale.
+    if (event.event === 'session-start' && fsm.getState() === 'idle') {
+      void this.refreshSessionAfterResume(sessionId);
     }
 
     // Update tool/message counts

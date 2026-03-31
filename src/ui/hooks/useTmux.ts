@@ -75,11 +75,9 @@ export function useTmux(closeKey: string = 'Escape') {
         : `tmux bind-key -T cctower-peek ${tmuxKey} detach-client && ` +
           `tmux attach \\\\; set-option key-table cctower-peek; ` +
           `tmux unbind-key -T cctower-peek ${tmuxKey}`;
-      // For peek, we need interactive TTY — convert "docker exec X" to "docker exec -it X"
-      const interactivePrefix = session.commandPrefix?.replace(/^docker exec /, 'docker exec -it ');
-      const remoteCmd = interactivePrefix
-        ? `${interactivePrefix} sh -c 'export LANG=C.UTF-8; ${setupCmd.replace(/'/g, "'\\''")}'`
-        : setupCmd;
+      // For peek, tmux is always on the SSH host — commandPrefix (e.g. "docker exec devenv")
+      // is for running Claude inside a container, NOT for host-level tmux operations.
+      const remoteCmd = setupCmd;
       await tmux.displayPopup({
         width: '80%',
         height: '80%',

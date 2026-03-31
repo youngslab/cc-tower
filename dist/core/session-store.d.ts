@@ -61,5 +61,38 @@ export declare class SessionStore extends EventEmitter {
     /** Synchronous persist — use at shutdown before process.exit() */
     persistSync(): void;
     private _writePersist;
+    /** Returns persisted sessions matching the given cwd, sorted by startedAt desc. */
+    getPastSessionsByCwd(cwd: string): Array<{
+        sessionId: string;
+        startedAt: number;
+        goalSummary?: string;
+        contextSummary?: string;
+        nextSteps?: string;
+    }>;
+    /**
+     * Returns past sessions grouped by cwd (most recent per cwd) for the given host.
+     * sshTarget undefined = local sessions; sshTarget string = remote sessions for that target.
+     * Excludes currently active sessions.
+     */
+    getPastSessionsByTarget(sshTarget?: string): Array<{
+        sessionId: string;
+        cwd: string;
+        startedAt: number;
+        goalSummary?: string;
+        contextSummary?: string;
+    }>;
+    /** Removes a past session from persistedMeta and rewrites state.json immediately. */
+    deletePersistedSession(sessionId: string): void;
+    /** Returns all persisted session IDs (keys of persistedMeta). Used to detect remote sessions by key prefix. */
+    getPersistedKeys(): string[];
+    /** Returns persisted remote sessions (new format with sshTarget) for pre-populating known map before first scan. */
+    getRestoredRemoteSessions(): Array<{
+        sessionId: string;
+        pid: number;
+        sshTarget: string;
+        cwd: string;
+        startedAt: number;
+        host: string;
+    }>;
     restore(): void;
 }

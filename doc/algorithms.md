@@ -14,6 +14,9 @@ This document describes the key algorithms and state management logic in cc-towe
 6. [LLM Summarization](#llm-summarization)
 7. [Session Metadata Migration](#session-metadata-migration)
 8. [Single Instance Lock](#single-instance-lock)
+9. [Ephemeral Session Filtering](#ephemeral-session-filtering)
+10. [Hook Event Resolution](#hook-event-resolution)
+11. [ps Command — Live State Snapshot](#ps-command--live-state-snapshot)
 
 ---
 
@@ -529,6 +532,653 @@ For hosts without hooks enabled, poll remote JSONL via SSH every 3 seconds:
 4. Update currentTask from last user message
 
 **File:** `src/core/tower.ts:registerRemoteSession()`, `startRemoteJsonlPoller()`
+
+---
+
+## Ephemeral Session Filtering
+
+Claude Code spawns short-lived subprocesses with `/tmp`-based working directories for internal tasks (LLM summarization, hook execution, etc.). These must be excluded from the dashboard.
+
+### Why /tmp Sessions Appear
+
+Several code paths produce ephemeral Claude processes:
+
+| Source | CWD | Example |
+|--------|-----|---------|
+| LLM summarizer | `/tmp/cc-tower-llm` | `claude --print` for goal/context summaries |
+| Tool execution shells | `/tmp/claude-<hash>/...` | Claude Code's bash tool subshells |
+| Hook scripts | `/tmp/...` | Shell snapshot environments |
+
+Without filtering, these appear as real sessions in the dashboard — potentially hundreds at once during active tool use.
+
+### Filter Points
+
+Filtering is applied at two independent layers:
+
+**1. Discovery (session file scan)**
+
+`src/core/discovery.ts:scanOnce()`
+
+After parsing each `~/.claude/sessions/*.json` file, skip entries whose `cwd` starts with `/tmp`:
+
+```typescript
+if (info.cwd.startsWith('/tmp')) {
+  logger.debug('discovery: skipping /tmp session', { filePath, cwd: info.cwd });
+  continue;
+}
+```
+
+This prevents `/tmp` sessions from ever emitting `session-found` events.
+
+**2. Registration guard**
+
+`src/core/tower.ts:registerSession()`
+
+Secondary guard that rejects any registration attempt for `/tmp` cwds, regardless of how the session was discovered (hook path, remote discovery, etc.):
+
+```typescript
+if (info.cwd.startsWith('/tmp')) return;
+```
+
+**Why two layers?** The discovery filter covers session-file-based detection. The registration guard covers all other paths (hook-based fast-registration, remote sessions, manual registration). Defense in depth.
+
+**Process scan filter** (existing, unchanged):
+
+`src/core/discovery.ts:scanProcesses()`
+
+The fallback process scanner already filtered `/tmp` at line 150–151. The session file scan now applies the same rule for consistency.
+
+### Criteria
+
+Only `cwd.startsWith('/tmp')` is checked. This excludes:
+- `/tmp/cc-tower-llm`
+- `/tmp/claude-<hash>/...`
+- Any other `/tmp/...` path
+
+Real user sessions always reside under home directories (e.g., `/home/user/project`, `/root/project`, `/Users/user/project`) and are unaffected.
+
+**Files:** `src/core/discovery.ts`, `src/core/tower.ts`
+
+---
+
+## Hook Event Resolution
+
+When a Claude Code hook fires, Tower must map the hook's `session_id` to an internally tracked session. This is non-trivial because session IDs can differ between the hook payload and Tower's internal keys (especially for remote sessions).
+
+### Resolution Algorithm
+
+`src/core/tower.ts:resolveSessionId(hookSid, hookCwd)`
+
+Four-step lookup in priority order:
+
+**Step 1: Direct match**
+```typescript
+if (this.stateMachines.has(hookSid)) return hookSid;
+```
+Fastest path. Works when hook SID equals internal session ID (local sessions).
+
+**Step 2: Cached mapping**
+```typescript
+const cached = this.hookSidToSessionId.get(hookSid);
+if (cached && this.stateMachines.has(cached)) return cached;
+```
+O(1) fast path for previously resolved remote sessions. Cache populated by Steps 3–4.
+
+**Step 3: Composite key suffix match**
+```typescript
+for (const key of this.stateMachines.keys()) {
+  if (key.endsWith(`::${hookSid}`)) return key;
+}
+```
+Remote sessions use composite keys: `host::bareSessionId`. Hook payloads send only the bare ID. This step matches `host::abc123` when hook sends `abc123`.
+
+**Step 4: CWD fallback**
+```typescript
+for (const session of this.store.getAll()) {
+  if (session.cwd === hookCwd && session.status !== 'dead') return session.sessionId;
+}
+```
+Last resort when session ID is unavailable (`sid='unknown'`) or not yet registered. Matches by working directory.
+
+### Unknown Session Path
+
+If all four steps fail, the session is unknown. For `session-start` events on unknown non-`/tmp` sessions:
+
+1. Search store for a session with the same CWD (`dyingSession`)
+2. Clean up the dying session immediately
+3. Register the new session using `hookSid` and `hookCwd`
+4. Migrate favorite status only (labels/tags belong to the previous conversation)
+
+This handles `/clear` and `/resume`-to-new-project scenarios where the hook fires before the discovery scan detects the change.
+
+### session-start on Idle Session (/resume Detection)
+
+When `session-start` hook fires for a session that is already `idle`, Tower checks whether a newer JSONL exists for that session. This handles `/resume`:
+
+**Why this is needed:**
+- `/resume` in an active Claude Code session does NOT update `~/.claude/sessions/{pid}.json`
+- The sessions file retains the old session ID → discovery never emits `session-changed`
+- `/resume` creates a new JSONL file but the FSM stays `idle→idle` (no `state-change` event)
+- Without intervention, stale summaries from the old session persist indefinitely
+
+**Algorithm:** `refreshSessionAfterResume(sessionId)`
+
+1. Read current JSONL path from `jsonlPaths` map
+2. Scan project directory for all `.jsonl` files sorted by mtime
+3. If newest JSONL differs from current path:
+   - Switch `jsonlPaths` to the newer file
+   - Unwatch old JSONL, start watching new JSONL
+   - Clear stale `goalSummary`, `contextSummary`, `nextSteps` from store
+4. Trigger `refreshGoalSummary` + `refreshContextSummary` from the (possibly new) JSONL
+
+**Trigger condition:** `event.event === 'session-start' && fsm.getState() === 'idle'`
+
+**File:** `src/core/tower.ts:refreshSessionAfterResume()`, `handleHookEvent()`
+
+---
+
+### resume vs. clear Detection
+
+After a `/resume` or `/clear`, `session-changed` is emitted by the discovery engine. Tower distinguishes the two cases to decide which metadata to migrate:
+
+```typescript
+const nextJsonl = path.join(claudeDir, 'projects', slug, `${next.sessionId}.jsonl`);
+const isResume = (() => {
+  try { return fs.statSync(nextJsonl).size > 0; } catch { return false; }
+})();
+```
+
+| Operation | JSONL file for new sessionId | `isResume` | Metadata migrated |
+|-----------|------------------------------|------------|-------------------|
+| `/resume` | Exists and has content       | `true`     | All (label, tags, favorite, summaries restored from persisted store) |
+| `/clear`  | Empty or missing             | `false`    | Favorite only (label/tags belong to previous conversation) |
+
+**Rationale:** `/resume` restores a previous conversation — its metadata was already persisted and is automatically restored via `persistedMeta` in `store.register()`. `/clear` starts a fresh conversation in the same project — only the user's affinity (favorite) should carry over.
+
+**File:** `src/core/tower.ts:handleHookEvent()`, `session-changed` listener
+
+---
+
+## ps Command — Live State Snapshot
+
+`cc-tower ps` prints the current state of all sessions without starting a new Tower instance. It queries the running Tower via the Unix socket, with a fallback to `state.json` if Tower is not running.
+
+### Query Protocol
+
+Tower's Unix socket (`/tmp/cc-tower.sock` or `$XDG_RUNTIME_DIR/cc-tower.sock`) supports two message types:
+
+| `event` field | Direction | Description |
+|---------------|-----------|-------------|
+| `session-start`, `hook-event`, etc. | Client → Tower | One-way hook notifications (existing) |
+| `query` | Client → Tower → Client | Request/response: Tower writes JSON and closes |
+
+**Query flow:**
+1. Client connects to socket
+2. Client sends `{"event":"query"}\n`
+3. Tower serializes `store.getAll()` and writes `[...sessions...]\n`
+4. Tower closes the connection
+5. Client parses and displays
+
+**Timeout:** Client times out after 2 seconds if Tower does not respond.
+
+### Fallback: state.json
+
+If the socket is unavailable (Tower not running), `ps` reads `state.json` directly:
+- Path: `~/.local/share/cc-tower/state.json` (or `~/.config/cc-tower/state.json`)
+- Contains: persisted metadata (label, tags, goalSummary, etc.) but NOT live status
+- All sessions show `status: ?` in this mode
+
+Output header indicates the source: `source: live` or `source: state.json (Tower not running)`.
+
+### Output Format
+
+```
+source: live  (6 sessions)
+
+SID     LABEL             STATUS     CWD                           GOAL
+────────────────────────────────────────────────────────────────────────────────
+9ec2f593cc-tower          idle       ~/workspace/cc-tower          Fixing /tmp session filtering bug
+a099dd85shared-storage    thinking   ~/workspace/ccu-2.0/shared-s  Writing performance analysis doc
+```
+
+`--json` flag outputs raw JSON including `source` and `sessions` array.
+
+### Implementation
+
+**HookReceiver** (`src/core/hook-receiver.ts`):
+- Detects `event === "query"` in incoming messages
+- Emits `query` event with the raw `net.Socket` connection (instead of `hook-event`)
+
+**Tower** (`src/core/tower.ts`):
+- Listens for `query` event on `hookReceiver`
+- Calls `this.store.getAll()`, serializes, writes to socket, closes
+
+**index.tsx** — `ps` command:
+- Tries socket query first (2s timeout)
+- Falls back to state.json
+- Formats output in columns or `--json` mode
+
+**Files:** `src/core/hook-receiver.ts`, `src/core/tower.ts`, `src/index.tsx`
+
+---
+
+## tmux Session Auto-Rename
+
+When a new Claude session is registered, cc-tower automatically renames the containing tmux session to `claude-{projectName}` so session names are predictable and identifiable.
+
+### Trigger
+
+Called from `Tower.registerSession()` after the session is added to the store:
+
+```
+if mapping.paneId is set AND session is local (not SSH)
+  → ensureTmuxSessionName(paneId, projectName)
+```
+
+`paneId` comes from:
+1. Hook payload `pane` field (`$TMUX_PANE` sent by `cc-tower-hook.sh`)
+2. Fallback: PID→TTY→pane resolution
+
+### Rename Algorithm
+
+```
+targetName = "claude-" + projectName
+
+1. tmux.listPanes() → find pane with paneId
+2. If pane not found → abort (no-op)
+3. If pane.sessionName === targetName → already correct, abort
+4. If pane.sessionName === "claude-cc-tower" → never rename (Tower's own session)
+5. If pane.sessionName starts with "claude-" and ≠ targetName → skip
+   (already claimed by another project — don't clobber)
+6. Otherwise → tmux.renameSession(pane.sessionName, targetName)
+```
+
+### Guard Conditions
+
+| Condition | Action | Reason |
+|-----------|--------|--------|
+| `paneId` not in tmux | no-op | pane may have closed |
+| Already named correctly | no-op | idempotent |
+| Session is `claude-cc-tower` | skip | Tower's own session is sacred |
+| Session already `claude-*` | skip | Another project owns it |
+| `tmux rename-session` fails | log debug, swallow | non-fatal |
+
+### Example
+
+```
+Project: my-app  →  tmux session renamed to: claude-my-app
+Project: cc-tower →  tmux session: claude-cc-tower (never renamed away)
+```
+
+### Implementation
+
+**`tmux.renameSession(target, newName)`** (`src/tmux/commands.ts`):
+```
+execa('tmux', ['rename-session', '-t', target, newName])
+```
+
+**`Tower.ensureTmuxSessionName(paneId, projectName)`** (`src/core/tower.ts`):
+- Lists all panes, finds the one matching `paneId`
+- Applies guard conditions, calls `tmux.renameSession` if needed
+
+**Files:** `src/tmux/commands.ts`, `src/core/tower.ts`
+
+---
+
+## Remote Session Discovery Workflow
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                          STARTUP                                    │
+│                                                                     │
+│   Tower.start()                                                     │
+│       │                                                             │
+│       ├─ store.restore()           ← load dal::uuid from state.json │
+│       ├─ remoteDiscovery.addKnown() ← pre-populate known map        │
+│       └─ remoteDiscovery.start(5000ms)                              │
+└───────────────────────────────┬─────────────────────────────────────┘
+                                │
+                    ┌───────────▼───────────┐
+                    │   every 5s per host   │◄──────────────────────┐
+                    └───────────┬───────────┘                       │
+                                │                                   │
+                    ┌───────────▼───────────┐                       │
+                    │  SSH: cat sessions    │                       │
+                    │  *.json on remote     │                       │
+                    └───────────┬───────────┘                       │
+                                │                                   │
+                    ┌───────────▼───────────┐                       │
+                    │    SSH success?       │                       │
+                    └──────┬────────┬───────┘                       │
+                     Yes   │        │ No                            │
+          ┌────────────────┘        └──────────────────┐            │
+          │                                            │            │
+┌─────────▼──────────┐                    ┌────────────▼─────────┐  │
+│   Parse JSON       │                    │  emit host-offline   │  │
+│  [{pid,sessionId,  │                    │  sessions → dim      │  │
+│    cwd,startedAt}] │                    │  (not removed)       │  │
+└─────────┬──────────┘                    └────────────┬─────────┘  │
+          │                                            │            │
+┌─────────▼──────────────────────────┐       SSH      │            │
+│  Batch PID liveness check (SSH)    │    recovers?   │            │
+│  for pid in ...; do                │    ┌───Yes─────┘            │
+│    kill -0 $pid && echo $pid       │    │                        │
+│  done  (uses commandPrefix)        │    └─► emit host-online ───►┘
+│  → filter dead PIDs                │        sessions → bright
+│  SSH fail → keep all (no false neg)│
+└─────────┬──────────────────────────┘
+          │
+┌─────────▼──────────────────────────┐
+│      Diff vs known map             │
+└────────┬───────────────┬───────────┘
+         │               │
+   new session      missing session
+         │               │
+┌────────▼────────┐  ┌───▼──────────────────────────────────┐
+│ emit            │  │ emit session-lost                     │
+│ session-found   │  │                                       │
+└────────┬────────┘  │  FSM → dead                          │
+         │           │  store.update(status: dead)           │
+         │           │  30s delay → store.unregister()       │
+         │           └───────────────────────────────────────┘
+         │
+┌────────▼────────────────────────────────────────────────────────┐
+│                  registerRemoteSession()                        │
+│                                                                 │
+│  compositeId = "dal::uuid"                                      │
+│                                                                 │
+│  already in store? ──Yes──► skip                                │
+│       │ No                                                      │
+│       ▼                                                         │
+│  SSH: ls *.jsonl | head -1   → resolve JSONL path               │
+│       │                                                         │
+│       ▼                                                         │
+│  SSH: tail {jsonlPath}       → coldStartScan → initialState     │
+│       │                                                         │
+│       ▼                                                         │
+│  SSH: tmux list-panes + ps   → try to find paneId               │
+│       │                        (fails for docker sessions —     │
+│       │                         PID crosses container boundary) │
+│       ▼                                                         │
+│  store.register(session)                                        │
+│    hasTmux: true   ← always (even without paneId)               │
+│    paneId:  may be undefined                                    │
+│       │                                                         │
+│  initialState === idle                                          │
+│  AND goalSummary/contextSummary missing?                        │
+│       │ Yes                                                     │
+│       ▼                                                         │
+│  refreshAllRemoteSummaries()                                    │
+│    summaryLoading = true                                        │
+│    Promise.all([goalSummary, contextSummary, nextSteps])        │
+│    summaryLoading = false                                       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Configuration
+
+Each remote host is defined in `~/.config/cc-tower/config.yaml`:
+
+```yaml
+hosts:
+  - name: dal
+    ssh: dal                          # SSH alias or user@host
+    ssh_options: ""                   # extra ssh flags (e.g. ProxyJump)
+    hooks: false                      # true if Claude Code hook is installed on remote
+    command_prefix: "docker exec devenv"  # prefix for Claude process commands
+    claude_dir: "~/.claude"           # remote Claude data directory
+```
+
+`command_prefix` is used to run commands **inside** the container where Claude runs.
+tmux management commands (peek, go) always run on the **SSH host**, never inside the container.
+
+---
+
+### Startup: Pre-populate known sessions
+
+Before the first scan, Tower pre-populates `RemoteDiscovery.known` with sessions restored from `state.json`. This ensures the first scan correctly emits `session-lost` for dead sessions (e.g. after server reboot).
+
+```
+Tower.start()
+  store.restore()                  ← loads dal::uuid sessions from state.json
+  for each remote session in store:
+    remoteDiscovery.addKnown(session)  ← pre-populate known map
+  remoteDiscovery.start(5000ms)    ← begin polling
+```
+
+---
+
+### Poll Cycle (every 5 seconds per host)
+
+```
+scanHost("dal", config)
+│
+├── remoteReadSessions(config)
+│     ssh dal "cat ~/.claude/sessions/*.json"
+│     (uses commandPrefix if set — session files live inside container)
+│
+├── Parse JSON → [{ pid, sessionId, cwd, startedAt }, ...]
+│
+├── PID liveness check (batch, single SSH call)
+│     cmd: "for pid in 123 456; do kill -0 $pid 2>/dev/null && echo $pid; done"
+│     (uses commandPrefix — Claude PIDs are inside container)
+│     → filter sessions to alive PIDs only
+│     → on SSH failure: keep all (conservative — avoid false negatives)
+│
+├── host-online emit
+│
+├── Diff against known map:
+│     new session  (not in known) → session-found emit → registerRemoteSession()
+│     dead session (in known, not in current) → session-lost emit → deregisterSession()
+│
+└── Update known map
+```
+
+---
+
+### registerRemoteSession()
+
+Called on `session-found`. Runs several SSH calls to bootstrap the session:
+
+```
+compositeId = "dal::uuid"
+if store.get(compositeId) → skip (already registered)
+
+1. SSH: ls -t {claudeDir}/projects/{slug}/*.jsonl | head -1
+   → resolve JSONL path (use newest file)
+
+2. SSH: tail {jsonlPath}
+   → coldStartScan: determine initialState (idle/thinking/executing)
+   → coldStartLastTask: find last user message
+
+3. SSH: tmux list-panes + ps ancestry walk
+   → try to find paneId by walking Claude PID → parent PIDs → tmux pane PID
+   → NOTE: fails when commandPrefix (docker exec) is used — PID ancestry crosses container boundary
+   → result: paneId = undefined for docker-based sessions
+
+4. store.register(session)
+   hasTmux: true   ← always true for remote (even without paneId)
+   paneId:  may be undefined
+
+5. if initialState === idle AND (goalSummary/contextSummary missing):
+   → refreshAllRemoteSummaries()
+```
+
+---
+
+### session-lost → deregisterSession()
+
+```
+session-lost emitted when:
+  - Session file deleted on remote (Claude Code cleared session)
+  - PID no longer alive (process killed, server rebooted)
+  - SSH fails repeatedly (host-offline path handles separately)
+
+deregisterSession(compositeId):
+  → FSM.transition(session-end) → state = dead
+  → store.update(status: dead)
+  → 30s delay → store.unregister() → removed from dashboard
+```
+
+---
+
+### host-offline / host-online
+
+```
+SSH to remote fails → host-offline emit
+  → all sessions for host: hostOnline = false
+  → dashboard shows sessions as dimmed (hostOnline indicator)
+  → sessions NOT removed — SSH outage is transient
+
+SSH succeeds again → host-online emit
+  → all sessions for host: hostOnline = true
+  → next scan resumes normal session-found/lost detection
+```
+
+---
+
+### Peek / Go for Remote Sessions
+
+```
+Peek (p key):
+  → ssh -t -o LogLevel=ERROR {sshTarget} "{setupCmd}"
+  → setupCmd uses paneId if available (links specific window in popup)
+  → setupCmd falls back to "tmux attach" if paneId unknown
+  → commandPrefix NOT used — tmux is on SSH host, not inside container
+
+Go (g key):
+  → requires paneId (returns early if missing)
+  → same setupCmd pattern as peek, full-screen popup
+  → commandPrefix NOT used
+```
+
+---
+
+### Key Design Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| `commandPrefix` for session reads/PID check | Claude process lives inside container; session files and PIDs are container-scoped |
+| `commandPrefix` NOT for tmux | tmux sessions are on the SSH host; container doesn't have tmux |
+| `hasTmux: true` always for remote | Even without `paneId`, remote sessions are accessible via SSH; prevents "monitor-only" display |
+| Pre-populate `known` from state.json | Ensures first scan detects sessions killed by reboot as `session-lost` |
+| PID check on SSH failure: keep all | Avoids removing live sessions due to transient SSH errors |
+
+**Files:** `src/ssh/remote-discovery.ts`, `src/ssh/remote-commands.ts`, `src/core/tower.ts` (`registerRemoteSession`, `startRemoteJsonlPoller`), `src/ui/hooks/useTmux.ts` (peek), `src/ui/App.tsx` (go)
+
+---
+
+## Summary & Next Action Update Workflow
+
+Three LLM-generated fields are maintained per session:
+
+| Field | Question answered | Source messages |
+|-------|-------------------|-----------------|
+| `goalSummary` | What is this session trying to do? | First 15 user/assistant messages |
+| `contextSummary` | What is the current state? | Last 15 user/assistant messages |
+| `nextSteps` | What should happen next? | Last 15 user/assistant messages |
+
+### LLM Cache Layer
+
+All three fields use in-memory hash-based caching in `src/core/llm-summarizer.ts`:
+
+```
+generateGoalSummary(sessionId, text)
+  hash = simpleHash(text)
+  if cache[sessionId].hash === hash → return cached (no LLM call)
+  if inflight[sessionId] → return cached (dedup concurrent calls)
+  else → spawn "claude --print", cache result
+```
+
+**Cache is in-memory only** — clears on Tower restart. First run after restart always calls LLM.
+
+---
+
+### Local Session: Trigger Points
+
+```
+1. Tower startup (line 242-244 in tower.ts)
+   ├── refreshGoalSummary          ← always (re-checks via hash cache)
+   ├── refreshContextSummary       ← only if contextSummary missing
+   └── refreshNextSteps            ← only if nextSteps missing AND status === 'idle'
+
+2. /resume detected (refreshSessionAfterResume)
+   ├── refreshGoalSummary
+   └── refreshContextSummary
+
+3. FSM: any state → idle  [MAIN PATH]
+   ├── refreshGoalSummary
+   ├── refreshContextSummary
+   └── refreshNextSteps
+
+4. FSM: session-start on idle session (idle→idle, /resume hook)
+   ├── refreshGoalSummary
+   └── refreshContextSummary
+
+5. Manual refreshSession()
+   ├── refreshGoalSummary
+   ├── refreshContextSummary
+   └── refreshNextSteps
+```
+
+### Remote Session: Trigger Points
+
+All remote refreshes go through a single entry point `refreshAllRemoteSummaries`:
+
+```
+refreshAllRemoteSummaries(compositeId, config, jsonlPath)
+  summaryLoading: true
+  await Promise.all([
+    refreshRemoteGoalSummary    ← SSH read + LLM
+    refreshRemoteContextSummary ← SSH read + LLM
+    refreshRemoteNextSteps      ← SSH read + LLM
+  ])
+  summaryLoading: false (finally)
+```
+
+Trigger points:
+
+```
+1. registerRemoteSession (initial registration)
+   → only if goalSummary OR contextSummary missing
+   → refreshAllRemoteSummaries
+
+2. Remote JSONL poller → FSM idle transition
+   → refreshAllRemoteSummaries
+
+3. Manual refreshSession()
+   → refreshAllRemoteSummaries
+```
+
+### summaryLoading Behavior
+
+| Session type | set true | set false |
+|---|---|---|
+| Local | inside `refreshContextSummary` (mid-way) | `refreshContextSummary` complete/fail |
+| Remote | `refreshAllRemoteSummaries` start | `refreshAllRemoteSummaries` finally |
+
+> **Known issue (local):** If only `goalSummary` completes before `contextSummary` starts, `summaryLoading` may briefly be unset between the two. Remote sessions avoid this via the wrapper.
+
+### /clear Behavior
+
+After `/clear`, new session is registered with `skipJsonlFallback: true`:
+- New JSONL exists but is empty → no messages → all three fields skip LLM call
+- Fields remain empty until user types and session goes idle
+
+### Guard: Skip Re-generation on Tower Restart
+
+Remote sessions skip initial summary generation if both `goalSummary` and `contextSummary` are already populated in the store (restored from `state.json`).
+
+Local sessions rely on the LLM hash cache — if JSONL content hasn't changed, `generateGoalSummary` returns cached result immediately without calling LLM.
+
+### Files
+
+| File | Role |
+|------|------|
+| `src/core/tower.ts` | Trigger logic, `refresh*` methods, `refreshAllRemoteSummaries` |
+| `src/core/llm-summarizer.ts` | `generateGoalSummary`, `generateContextSummary`, `generateNextSteps`, hash cache |
+| `src/core/jsonl-watcher.ts` | `readRecentContext` — reads local JSONL for LLM input |
+| `src/ssh/remote-commands.ts` | `remoteReadJsonlTail` — SSH JSONL read for remote sessions |
 
 ---
 

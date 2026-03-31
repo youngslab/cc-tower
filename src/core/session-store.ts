@@ -58,6 +58,10 @@ interface PersistedEntry {
   contextSummary?: string;
   nextSteps?: string;
   host?: string;
+  pid?: number;
+  sshTarget?: string;
+  cwd?: string;
+  startedAt?: number;
 }
 
 interface PersistFormat {
@@ -150,6 +154,7 @@ export class SessionStore extends EventEmitter {
     }
     const data: PersistFormat = { sessions: {} };
     for (const [id, session] of this.sessions) {
+      if (session.status === 'dead') continue;
       const entry: PersistedEntry = {};
       if (session.label !== undefined) entry.label = session.label;
       if (session.tags !== undefined) entry.tags = session.tags;
@@ -158,7 +163,14 @@ export class SessionStore extends EventEmitter {
       if (session.goalSummary !== undefined) entry.goalSummary = session.goalSummary;
       if (session.contextSummary !== undefined) entry.contextSummary = session.contextSummary;
       if (session.nextSteps !== undefined) entry.nextSteps = session.nextSteps;
-      if (Object.keys(entry).length > 0) data.sessions[id] = entry;
+      if (session.cwd) entry.cwd = session.cwd;
+      if (session.startedAt) entry.startedAt = session.startedAt.getTime();
+      if (session.sshTarget !== undefined) {
+        entry.pid = session.pid;
+        entry.sshTarget = session.sshTarget;
+        entry.host = session.host;
+      }
+      data.sessions[id] = entry;
     }
     try {
       mkdirSync(dirname(this.persistPath), { recursive: true });
@@ -169,6 +181,7 @@ export class SessionStore extends EventEmitter {
   private async _writePersist(): Promise<void> {
     const data: PersistFormat = { sessions: {} };
     for (const [id, session] of this.sessions) {
+      if (session.status === 'dead') continue;
       const entry: PersistedEntry = {};
       if (session.label !== undefined) entry.label = session.label;
       if (session.tags !== undefined) entry.tags = session.tags;
@@ -177,9 +190,14 @@ export class SessionStore extends EventEmitter {
       if (session.goalSummary !== undefined) entry.goalSummary = session.goalSummary;
       if (session.contextSummary !== undefined) entry.contextSummary = session.contextSummary;
       if (session.nextSteps !== undefined) entry.nextSteps = session.nextSteps;
-      if (Object.keys(entry).length > 0) {
-        data.sessions[id] = entry;
+      if (session.cwd) entry.cwd = session.cwd;
+      if (session.startedAt) entry.startedAt = session.startedAt.getTime();
+      if (session.sshTarget !== undefined) {
+        entry.pid = session.pid;
+        entry.sshTarget = session.sshTarget;
+        entry.host = session.host;
       }
+      data.sessions[id] = entry;
     }
 
     try {
@@ -189,6 +207,80 @@ export class SessionStore extends EventEmitter {
     } catch (err) {
       logger.error('session-store: failed to persist state', { err: String(err) });
     }
+  }
+
+  /** Returns persisted sessions matching the given cwd, sorted by startedAt desc. */
+  getPastSessionsByCwd(cwd: string): Array<{ sessionId: string; startedAt: number; goalSummary?: string; contextSummary?: string; nextSteps?: string }> {
+    const result: Array<{ sessionId: string; startedAt: number; goalSummary?: string; contextSummary?: string; nextSteps?: string }> = [];
+    const activeIds = new Set(this.sessions.keys());
+    for (const [sessionId, entry] of this.persistedMeta) {
+      if (entry.cwd === cwd && !activeIds.has(sessionId)) {
+        result.push({
+          sessionId,
+          startedAt: entry.startedAt ?? 0,
+          goalSummary: entry.goalSummary,
+          contextSummary: entry.contextSummary,
+          nextSteps: entry.nextSteps,
+        });
+      }
+    }
+    return result.sort((a, b) => b.startedAt - a.startedAt);
+  }
+
+  /**
+   * Returns past sessions grouped by cwd (most recent per cwd) for the given host.
+   * sshTarget undefined = local sessions; sshTarget string = remote sessions for that target.
+   * Excludes currently active sessions.
+   */
+  getPastSessionsByTarget(sshTarget?: string): Array<{ sessionId: string; cwd: string; startedAt: number; goalSummary?: string; contextSummary?: string }> {
+    const activeIds = new Set(this.sessions.keys());
+    const all: Array<{ sessionId: string; cwd: string; startedAt: number; goalSummary?: string; contextSummary?: string }> = [];
+    for (const [sessionId, entry] of this.persistedMeta) {
+      if (entry.sshTarget !== sshTarget) continue;
+      if (!entry.cwd) continue;
+      if (activeIds.has(sessionId)) continue;
+      all.push({ sessionId, cwd: entry.cwd, startedAt: entry.startedAt ?? 0, goalSummary: entry.goalSummary, contextSummary: entry.contextSummary });
+    }
+    all.sort((a, b) => b.startedAt - a.startedAt);
+    const byCwd = new Map<string, typeof all[0]>();
+    for (const s of all) {
+      if (!byCwd.has(s.cwd)) byCwd.set(s.cwd, s);
+    }
+    return Array.from(byCwd.values());
+  }
+
+  /** Removes a past session from persistedMeta and rewrites state.json immediately. */
+  deletePersistedSession(sessionId: string): void {
+    this.persistedMeta.delete(sessionId);
+    try {
+      const raw = readFileSync(this.persistPath, 'utf8');
+      const data = JSON.parse(raw) as { sessions: Record<string, unknown> };
+      delete data.sessions[sessionId];
+      writeFileSync(this.persistPath, JSON.stringify(data, null, 2));
+    } catch {}
+  }
+
+  /** Returns all persisted session IDs (keys of persistedMeta). Used to detect remote sessions by key prefix. */
+  getPersistedKeys(): string[] {
+    return Array.from(this.persistedMeta.keys());
+  }
+
+  /** Returns persisted remote sessions (new format with sshTarget) for pre-populating known map before first scan. */
+  getRestoredRemoteSessions(): Array<{ sessionId: string; pid: number; sshTarget: string; cwd: string; startedAt: number; host: string }> {
+    const result = [];
+    for (const [sessionId, entry] of this.persistedMeta) {
+      if (entry.sshTarget && entry.pid && entry.cwd && entry.host) {
+        result.push({
+          sessionId,
+          pid: entry.pid,
+          sshTarget: entry.sshTarget,
+          cwd: entry.cwd,
+          startedAt: entry.startedAt ?? 0,
+          host: entry.host,
+        });
+      }
+    }
+    return result;
   }
 
   restore(): void {

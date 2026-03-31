@@ -149,3 +149,16 @@ describe('tmux.sendKeys', () => {
     await expect(tmux.sendKeys('%99', 'test')).rejects.toThrow('tmux send-keys to %99 failed');
   });
 });
+
+describe('tmux.renameSession', () => {
+  it('calls execa with correct args', async () => {
+    mockExeca.mockResolvedValueOnce(makeExecaResult('') as never);
+    await tmux.renameSession('my-session', 'claude-myproject');
+    expect(mockExeca).toHaveBeenCalledWith('tmux', ['rename-session', '-t', 'my-session', 'claude-myproject']);
+  });
+
+  it('throws descriptive error on failure', async () => {
+    mockExeca.mockRejectedValueOnce(new Error('session not found') as never);
+    await expect(tmux.renameSession('bad-session', 'claude-x')).rejects.toThrow('tmux rename-session bad-session → claude-x failed');
+  });
+});

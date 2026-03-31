@@ -72,7 +72,7 @@ This creates `~/.claude/plugins/cc-tower/` with hook definitions. New Claude Cod
 
 ## Usage
 
-### TUI Dashboard (Default)
+### Dashboard (TUI) — Main Interface
 
 Launch the interactive dashboard:
 
@@ -80,9 +80,11 @@ Launch the interactive dashboard:
 cc-tower
 ```
 
-The dashboard displays all active Claude Code sessions with real-time status updates. See keybindings below.
+The dashboard displays all active Claude Code sessions with real-time status updates. This is the primary interface for monitoring and interacting with sessions.
 
-### List Sessions
+### CLI Commands
+
+#### List Sessions
 
 Show all sessions in table format:
 
@@ -96,54 +98,9 @@ Export as JSON:
 cc-tower list --json
 ```
 
-### Send Command to Session
+#### Status
 
-Send a message or command to a running session:
-
-```bash
-cc-tower send <session> "message"
-```
-
-Where `<session>` can be:
-- Pane ID: `%5`
-- Session ID prefix: `9445bc28` (first 8 chars)
-- Custom label: `migration-api`
-
-Example:
-
-```bash
-cc-tower send migration-api "npm test -- --watch"
-```
-
-### Peek at Session
-
-Open a read-only popup view of a session's output:
-
-```bash
-cc-tower peek <session>
-```
-
-Press `prefix + d` (default: `Ctrl-b d`) to close the popup and return to the dashboard.
-
-### Label a Session
-
-Assign a human-readable name:
-
-```bash
-cc-tower label 9445bc28 "feature-branch"
-```
-
-### Tag Sessions
-
-Add custom tags for organization:
-
-```bash
-cc-tower tag migration-api backend important
-```
-
-### View Status
-
-Quick status check:
+Quick status check of all sessions:
 
 ```bash
 cc-tower status
@@ -152,10 +109,80 @@ cc-tower status
 Show details for one session:
 
 ```bash
-cc-tower status migration-api
+cc-tower status <session>
 ```
 
-### Manage Configuration
+Where `<session>` can be:
+- Pane ID: `%5`
+- Session ID prefix: `9445bc28` (first 8 chars)
+- Custom label: `migration-api`
+
+#### Send Command to Session
+
+Send a message or command to a running session:
+
+```bash
+cc-tower send <session> <message>
+```
+
+Examples:
+
+```bash
+# Send by pane ID
+cc-tower send %5 "npm test"
+
+# Send by label
+cc-tower send migration-api "npm test -- --watch"
+
+# Send by session ID prefix
+cc-tower send 9445bc28 "clear"
+```
+
+The command is sent to the session's tmux pane. For SSH-based sessions, the command is delivered via SSH.
+
+#### Peek at Session
+
+Open a read-only popup view of a session's output (tmux popup window):
+
+```bash
+cc-tower peek <session>
+```
+
+The popup shows the full pane content in a scrollable view. Press `prefix + d` (default: `Ctrl-b d`) to close and return to the dashboard.
+
+#### Inspect Session
+
+Debug session summaries vs. actual JSONL content (no tower startup needed):
+
+```bash
+cc-tower inspect <session>
+```
+
+Options:
+
+```bash
+cc-tower inspect migration-api -n 20  # Show last 20 messages
+```
+
+Matches sessions by ID, label, project name, or goal summary. Useful for verifying LLM summaries and recent activity.
+
+#### Label a Session
+
+Assign a human-readable name:
+
+```bash
+cc-tower label 9445bc28 "feature-branch"
+```
+
+#### Tag Sessions
+
+Add custom tags for organization:
+
+```bash
+cc-tower tag migration-api backend important
+```
+
+#### Manage Configuration
 
 Edit the config file in your default editor:
 
@@ -165,19 +192,19 @@ cc-tower config
 
 Config location: `~/.config/cc-tower/config.yaml`
 
-## Keybindings
-
-Dashboard navigation and controls:
+## Dashboard Keyboard Shortcuts
 
 | Key | Action |
 |-----|--------|
-| `j` / `↓` | Move cursor down |
-| `k` / `↑` | Move cursor up |
+| `j` / `↓` | Navigate down |
+| `k` / `↑` | Navigate up |
 | `1-9` | Jump to session N |
 | `Enter` | View session details |
+| `p` | Peek at session (tmux popup) |
 | `/` | Send command to session |
-| `p` | Peek at session output |
 | `f` | Toggle favorite (pinned to top) |
+| `n` | New session (creates new Claude Code instance) |
+| `r` | Refresh session (forces state update) |
 | `q` / `Ctrl-C` | Quit with confirmation |
 
 ## Configuration
@@ -342,6 +369,7 @@ tmux `display-popup` does not forward OSC52 escape sequences to the parent termi
 |-------|--------|----------|
 | **Phase 1** | ✓ Complete | Local MVP: auto-discovery, TUI, hooks, JSONL fallback, Send/Peek |
 | **Phase 1.5** | ✓ Complete | SSH remote: socket forwarding, remote Peek/Send, multi-host dashboard |
+| **Phase 1.6** | TODO | Remote clipboard: copy support in remote Go/Peek (OSC52 or copy-command) |
 | **Phase 2** | Future | Web UI: browser dashboard, team collaboration, cost tracking, analytics |
 
 ## License

@@ -1,9 +1,12 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
+import path from 'node:path';
 import { parseJsonlLine } from '../utils/jsonl-parser.js';
 import { cleanDisplayText, isInternalMessage } from '../utils/slug.js';
 export class JsonlWatcher extends EventEmitter {
     watchers = new Map();
+    /** Sessions waiting for their JSONL file to be created */
+    pendingWatchers = new Map();
     /**
      * Scan a JSONL file to determine the current session state at cold start.
      * Reads the last meaningful message to infer state.
@@ -152,9 +155,31 @@ export class JsonlWatcher extends EventEmitter {
         if (this.watchers.has(sessionId)) {
             this.unwatch(sessionId);
         }
-        // Skip if file doesn't exist
-        if (!fs.existsSync(jsonlPath))
+        // If file doesn't exist yet, watch the parent directory for its creation
+        if (!fs.existsSync(jsonlPath)) {
+            const dir = path.dirname(jsonlPath);
+            const filename = path.basename(jsonlPath);
+            try {
+                const dirWatcher = fs.watch(dir, (event, changedFile) => {
+                    if (changedFile !== filename)
+                        return;
+                    if (!fs.existsSync(jsonlPath))
+                        return;
+                    // File appeared — cancel pending watcher and start real watch
+                    const pending = this.pendingWatchers.get(sessionId);
+                    if (pending) {
+                        pending.dirWatcher.close();
+                        this.pendingWatchers.delete(sessionId);
+                    }
+                    this.watch(sessionId, jsonlPath);
+                });
+                this.pendingWatchers.set(sessionId, { dirWatcher, jsonlPath });
+            }
+            catch {
+                // directory may not exist; silently skip
+            }
             return;
+        }
         // Start offset at end of current file
         let offset = 0;
         try {
@@ -243,6 +268,11 @@ export class JsonlWatcher extends EventEmitter {
         this.watchers.set(sessionId, { fsWatcher, offset, reconcileTimer, jsonlPath });
     }
     unwatch(sessionId) {
+        const pending = this.pendingWatchers.get(sessionId);
+        if (pending) {
+            pending.dirWatcher.close();
+            this.pendingWatchers.delete(sessionId);
+        }
         const entry = this.watchers.get(sessionId);
         if (entry) {
             entry.fsWatcher.close();
@@ -400,6 +430,9 @@ export class JsonlWatcher extends EventEmitter {
         }
     }
     unwatchAll() {
+        for (const [sessionId] of this.pendingWatchers) {
+            this.unwatch(sessionId);
+        }
         for (const [sessionId] of this.watchers) {
             this.unwatch(sessionId);
         }

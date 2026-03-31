@@ -25,6 +25,7 @@ export declare const tmux: {
     selectPane(paneId: string): Promise<void>;
     selectWindow(windowTarget: string): Promise<void>;
     newGroupSession(name: string, targetSession: string): Promise<void>;
+    renameSession(target: string, newName: string): Promise<void>;
     killSession(name: string): Promise<void>;
     getCurrentPane(): Promise<{
         windowId: string;

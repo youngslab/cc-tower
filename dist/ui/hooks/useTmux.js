@@ -2,6 +2,7 @@ import { useCallback } from 'react';
 import { execa } from 'execa';
 import stringWidth from 'string-width';
 import { tmux } from '../../tmux/commands.js';
+import { mapPidToPane } from '../../tmux/pane-mapper.js';
 function truncateWidth(str, max) {
     if (stringWidth(str) <= max)
         return str;
@@ -27,8 +28,12 @@ export function useTmux(closeKey = 'Escape') {
     // Map config key name to tmux key name
     const tmuxKey = closeKey === 'Escape' ? 'Escape' : closeKey;
     const send = useCallback(async (session, text) => {
-        if (!session.paneId && !session.sshTarget)
-            return false;
+        if (!session.paneId && !session.sshTarget) {
+            const mapping = await mapPidToPane(session.pid);
+            if (!mapping.paneId)
+                return false;
+            session = { ...session, paneId: mapping.paneId };
+        }
         if (session.sshTarget) {
             // Remote send via SSH
             const escaped = text.replace(/'/g, "'\\''");
@@ -69,11 +74,9 @@ export function useTmux(closeKey = 'Escape') {
                 : `tmux bind-key -T cctower-peek ${tmuxKey} detach-client && ` +
                     `tmux attach \\\\; set-option key-table cctower-peek; ` +
                     `tmux unbind-key -T cctower-peek ${tmuxKey}`;
-            // For peek, we need interactive TTY — convert "docker exec X" to "docker exec -it X"
-            const interactivePrefix = session.commandPrefix?.replace(/^docker exec /, 'docker exec -it ');
-            const remoteCmd = interactivePrefix
-                ? `${interactivePrefix} sh -c 'export LANG=C.UTF-8; ${setupCmd.replace(/'/g, "'\\''")}'`
-                : setupCmd;
+            // For peek, tmux is always on the SSH host — commandPrefix (e.g. "docker exec devenv")
+            // is for running Claude inside a container, NOT for host-level tmux operations.
+            const remoteCmd = setupCmd;
             await tmux.displayPopup({
                 width: '80%',
                 height: '80%',
@@ -84,8 +87,14 @@ export function useTmux(closeKey = 'Escape') {
             return true;
         }
         // Local peek: use session group to avoid syncing windows with the original session
+        // Resolve paneId on-demand if it wasn't set at registration time
+        let resolvedPaneId = session.paneId;
+        if (!resolvedPaneId) {
+            const mapping = await mapPidToPane(session.pid);
+            resolvedPaneId = mapping.paneId;
+        }
         const panes = await tmux.listPanes();
-        const targetPane = panes.find(p => p.paneId === session.paneId);
+        const targetPane = panes.find(p => p.paneId === resolvedPaneId);
         if (!targetPane)
             return false;
         const peekName = `_cctower_peek_${process.pid}`;

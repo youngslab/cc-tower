@@ -42,6 +42,37 @@ export function getTty(pid: number): string | null {
 }
 
 /**
+ * Read the command-line arguments of a process from /proc/<pid>/cmdline.
+ * Returns null if not available.
+ */
+export function getCmdline(pid: number): string[] | null {
+  try {
+    const raw = readFileSync(`/proc/${pid}/cmdline`);
+    return raw.toString().split('\0').filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Returns true if the process (or any ancestor) was invoked with --print,
+ * indicating a headless/non-interactive Claude session.
+ */
+export function isHeadlessProcess(pid: number): boolean {
+  let current = pid;
+  let depth = 0;
+  while (current > 1 && depth < 10) {
+    const args = getCmdline(current);
+    if (args && args.some(a => a === '--print' || a === '-p')) return true;
+    const ppid = getPpid(current);
+    if (ppid === null || ppid === current || ppid <= 1) break;
+    current = ppid;
+    depth++;
+  }
+  return false;
+}
+
+/**
  * Walk the ppid chain from `pid` upward until either:
  * 1. The ancestor PID matches a tmux pane PID directly (primary), or
  * 2. The ancestor TTY matches a tmux pane TTY (fallback).
