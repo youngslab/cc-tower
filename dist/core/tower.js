@@ -10,7 +10,7 @@ import { SessionStateMachine } from './state-machine.js';
 import { Summarizer } from './summarizer.js';
 import { Notifier } from './notifier.js';
 import { mapPidToPane } from '../tmux/pane-mapper.js';
-import { isHeadlessProcess } from '../utils/pid-resolver.js';
+import { isHeadlessProcess, isPidAlive, getPpid } from '../utils/pid-resolver.js';
 import { tmux } from '../tmux/commands.js';
 import { cwdToSlug, cleanDisplayText, isInternalMessage } from '../utils/slug.js';
 import { generateContextSummary, generateGoalSummary, generateNextSteps, clearSummaryCache, startLlmSession, stopLlmSession } from './llm-summarizer.js';
@@ -823,6 +823,21 @@ export class Tower extends EventEmitter {
                 }
             }
         });
+        // PID liveness check on inactivity timeout — only go idle if the process is actually dead
+        fsm.on('inactivity-check', () => {
+            const session = this.store.get(info.sessionId);
+            if (!session || session.status === 'idle' || session.status === 'dead')
+                return;
+            if (isPidAlive(session.pid)) {
+                // Process still alive — reset the timer by re-entering current state via a no-op transition
+                logger.debug('tower: inactivity-check — PID alive, resetting timer', { sessionId: info.sessionId, pid: session.pid });
+                fsm.resetInactivityTimer();
+            }
+            else {
+                logger.info('tower: inactivity-check — PID dead, transitioning to idle', { sessionId: info.sessionId, pid: session.pid });
+                fsm.transition({ type: 'stop' });
+            }
+        });
         this.stateMachines.set(info.sessionId, fsm);
         // g. Track JSONL path + start watcher
         this.jsonlPaths.set(info.sessionId, jsonlPath);
@@ -1077,7 +1092,7 @@ export class Tower extends EventEmitter {
             this.store.unregister(sessionId);
         }, 30000);
     }
-    resolveSessionId(hookSid, hookCwd) {
+    resolveSessionId(hookSid, hookCwd, hookPid) {
         // 1. Direct match (hook sid === internal sessionId)
         if (this.stateMachines.has(hookSid))
             return hookSid;
@@ -1094,7 +1109,26 @@ export class Tower extends EventEmitter {
                 return key;
             }
         }
-        // 4. Fallback: match by CWD across all sessions
+        // 4. PID-ancestry match: walk ppid chain from hookPid to find session whose pid is an ancestor
+        if (hookPid && hookPid > 0) {
+            let current = hookPid;
+            let depth = 0;
+            while (current > 1 && depth < 15) {
+                for (const session of this.store.getAll()) {
+                    if (session.pid && session.pid === current && session.status !== 'dead' && this.stateMachines.has(session.sessionId)) {
+                        this.hookSidToSessionId.set(hookSid, session.sessionId);
+                        logger.debug('tower: hook sid mapped to session via PID ancestry', { hookSid, sessionId: session.sessionId, hookPid, matchedPid: current });
+                        return session.sessionId;
+                    }
+                }
+                const ppid = getPpid(current);
+                if (ppid === null || ppid === current || ppid <= 1)
+                    break;
+                current = ppid;
+                depth++;
+            }
+        }
+        // 5. Fallback: match by CWD across all sessions (last resort — may be wrong with multiple sessions in same cwd)
         if (hookCwd) {
             for (const session of this.store.getAll()) {
                 if (session.cwd === hookCwd && session.status !== 'dead' && this.stateMachines.has(session.sessionId)) {
@@ -1124,12 +1158,33 @@ export class Tower extends EventEmitter {
         // When CLAUDE_SESSION_ID is not available (sid='unknown'), resolve by CWD only
         const sessionId = hookSid === 'unknown'
             ? this.resolveSessionIdByCwd(event.cwd)
-            : this.resolveSessionId(hookSid, event.cwd);
+            : this.resolveSessionId(hookSid, event.cwd, event.pid);
         if (!sessionId) {
             logger.info('tower: hook event for unknown session', { hookSid, event: event.event, cwd: event.cwd });
             // session-start from unknown session = likely /clear or new session — trigger immediate re-scan
             // Ignore /tmp sessions (LLM summarizer spawns claude --print there)
             if (event.event === 'session-start' && event.cwd && !event.cwd.startsWith('/tmp')) {
+                // Check if the new session is headless (claude --print) by finding its PID
+                // from ~/.claude/sessions/{pid}.json — skip if headless to avoid evicting interactive sessions
+                try {
+                    const sessionsDir = this.config.discovery.claude_dir.replace('~', os.homedir()) + '/sessions';
+                    const files = fs.readdirSync(sessionsDir).filter(f => f.endsWith('.json'));
+                    for (const f of files) {
+                        try {
+                            const raw = fs.readFileSync(path.join(sessionsDir, f), 'utf8');
+                            const parsed = JSON.parse(raw);
+                            if (parsed.sessionId === hookSid && parsed.pid) {
+                                if (isHeadlessProcess(parsed.pid)) {
+                                    logger.debug('tower: ignoring session-start from headless process', { hookSid, pid: parsed.pid, cwd: event.cwd });
+                                    return;
+                                }
+                                break;
+                            }
+                        }
+                        catch { }
+                    }
+                }
+                catch { }
                 // Find the dead/dying session with same CWD for metadata migration
                 const dyingSession = event.cwd
                     ? this.store.getAll().find(s => s.cwd === event.cwd)

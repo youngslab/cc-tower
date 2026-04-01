@@ -51,6 +51,22 @@ export function getCmdline(pid) {
     }
 }
 /**
+ * Returns true if the given process is alive (responds to signal 0).
+ */
+export function isPidAlive(pid) {
+    if (!pid || pid <= 0)
+        return false;
+    try {
+        process.kill(pid, 0);
+        return true;
+    }
+    catch (err) {
+        if (err?.code === 'EPERM')
+            return true; // process exists but no permission
+        return false;
+    }
+}
+/**
  * Returns true if the process (or any ancestor) was invoked with --print,
  * indicating a headless/non-interactive Claude session.
  */

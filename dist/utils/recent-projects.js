@@ -37,6 +37,9 @@ export function getRecentProjects(limit = 15) {
     for (const slug of dirs) {
         const dirPath = path.join(projectsDir, slug);
         const originalPath = slugToPath(slug);
+        // Skip ephemeral paths (LLM summarizer, tmp sessions)
+        if (originalPath.startsWith('/tmp'))
+            continue;
         // Check if path actually exists
         if (!fs.existsSync(originalPath))
             continue;

@@ -198,7 +198,7 @@ export class SessionStore extends EventEmitter {
                 continue;
             if (activeIds.has(sessionId))
                 continue;
-            all.push({ sessionId, cwd: entry.cwd, startedAt: entry.startedAt ?? 0, goalSummary: entry.goalSummary, contextSummary: entry.contextSummary });
+            all.push({ sessionId, cwd: entry.cwd, startedAt: entry.startedAt ?? 0, goalSummary: entry.goalSummary, contextSummary: entry.contextSummary, sshTarget: entry.sshTarget });
         }
         all.sort((a, b) => b.startedAt - a.startedAt);
         const byCwd = new Map();
@@ -207,6 +207,27 @@ export class SessionStore extends EventEmitter {
                 byCwd.set(s.cwd, s);
         }
         return Array.from(byCwd.values());
+    }
+    /** Returns all past sessions across all hosts, sorted by most recent. */
+    getAllPastSessions() {
+        const activeIds = new Set(this.sessions.keys());
+        const all = [];
+        for (const [sessionId, entry] of this.persistedMeta) {
+            if (!entry.cwd)
+                continue;
+            if (activeIds.has(sessionId))
+                continue;
+            all.push({ sessionId, cwd: entry.cwd, startedAt: entry.startedAt ?? 0, goalSummary: entry.goalSummary, contextSummary: entry.contextSummary, sshTarget: entry.sshTarget });
+        }
+        all.sort((a, b) => b.startedAt - a.startedAt);
+        // Deduplicate by (sshTarget, cwd) — keep most recent
+        const seen = new Map();
+        for (const s of all) {
+            const key = `${s.sshTarget ?? ''}::${s.cwd}`;
+            if (!seen.has(key))
+                seen.set(key, s);
+        }
+        return Array.from(seen.values());
     }
     /** Removes a past session from persistedMeta and rewrites state.json immediately. */
     deletePersistedSession(sessionId) {

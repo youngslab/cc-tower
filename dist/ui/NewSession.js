@@ -116,13 +116,13 @@ function formatAge(ts) {
         return `${h}h ago`;
     return 'recently';
 }
-export function NewSession({ projects, hosts, onSelect, onCancel, getPastSessions, getPastSessionsByTarget, onDeleteSession }) {
+export function NewSession({ projects, hosts, onSelect, onCancel, getPastSessions, getPastSessionsByTarget, getAllPastSessions, onDeleteSession }) {
     const [cursor, setCursor] = useState(0);
     const [filter, setFilter] = useState('');
     const [customPath, setCustomPath] = useState('');
     const [deletedIds, setDeletedIds] = useState(new Set());
     const [mode, setMode] = useState(() => {
-        const hasRecent = getPastSessionsByTarget(undefined).length > 0;
+        const hasRecent = getAllPastSessions().length > 0;
         if (hasRecent)
             return 'recent';
         return hosts.length > 0 ? 'host' : 'list';
@@ -131,6 +131,7 @@ export function NewSession({ projects, hosts, onSelect, onCancel, getPastSession
     const [pendingPath, setPendingPath] = useState('');
     const [pastSessions, setPastSessions] = useState([]);
     const [listCursor, setListCursor] = useState(-1); // -1 = text input focused, 0+ = past session list
+    const [customOrigin, setCustomOrigin] = useState('list');
     // Host options: "local" + configured remote hosts
     const hostOptions = [
         { label: 'local' },
@@ -151,7 +152,7 @@ export function NewSession({ projects, hosts, onSelect, onCancel, getPastSession
             return [];
         return getPastSessionsByTarget(selectedHost?.ssh).filter(s => !deletedIds.has(s.sessionId));
     }, [mode, selectedHost, getPastSessionsByTarget, deletedIds]);
-    const recentSessions = useMemo(() => getPastSessionsByTarget(undefined).filter(s => !deletedIds.has(s.sessionId)), [getPastSessionsByTarget, deletedIds]);
+    const recentSessions = useMemo(() => getAllPastSessions().filter(s => !deletedIds.has(s.sessionId)), [getAllPastSessions, deletedIds]);
     const handlePathSelected = useCallback((projectPath) => {
         const past = getPastSessions(projectPath);
         if (past.length > 0) {
@@ -172,7 +173,7 @@ export function NewSession({ projects, hosts, onSelect, onCancel, getPastSession
                 return;
             }
             if (mode === 'custom') {
-                setMode(selectedHost ? 'host-list' : 'list');
+                setMode(selectedHost ? 'host-list' : customOrigin);
                 setCustomPath('');
                 setCursor(0);
                 return;
@@ -202,11 +203,20 @@ export function NewSession({ projects, hosts, onSelect, onCancel, getPastSession
                 setCursor(c => Math.min(recentSessions.length - 1, c + 1));
             if (key.return && recentSessions[cursor]) {
                 const s = recentSessions[cursor];
-                onSelect(s.cwd, undefined, s.sessionId);
+                const host = s.sshTarget ? hosts.find(h => h.ssh === s.sshTarget) : undefined;
+                onSelect(s.cwd, host, s.sessionId);
             }
             if (input === 'n') {
                 setMode(hosts.length > 0 ? 'host' : 'list');
                 setCursor(0);
+            }
+            if (input === 'c') {
+                setSelectedHost(undefined);
+                setCustomPath('');
+                setCustomOrigin('recent');
+                setMode('custom');
+                setCursor(0);
+                setListCursor(-1);
             }
             if (input === 'd' && recentSessions[cursor]) {
                 const id = recentSessions[cursor].sessionId;
@@ -275,6 +285,7 @@ export function NewSession({ projects, hosts, onSelect, onCancel, getPastSession
                 setCursor(c => Math.min(filtered.length, c + 1));
             if (key.return) {
                 if (cursor === filtered.length) {
+                    setCustomOrigin('list');
                     setMode('custom');
                 }
                 else if (filtered[cursor]) {
@@ -334,8 +345,9 @@ export function NewSession({ projects, hosts, onSelect, onCancel, getPastSession
                         const sel = i === cursor;
                         const label = s.cwd.split('/').pop() ?? s.cwd;
                         const summary = s.contextSummary ?? s.goalSummary;
-                        return (_jsxs(Box, { flexDirection: "column", children: [_jsxs(Box, { children: [_jsx(Text, { color: sel ? 'cyan' : undefined, bold: sel, children: sel ? '▸ ' : '  ' }), _jsx(Text, { color: sel ? 'cyan' : undefined, bold: sel, children: label }), _jsxs(Text, { dimColor: true, children: ["  ", s.cwd, "  \u00B7  ", formatAge(s.startedAt)] })] }), summary && sel && (_jsxs(Text, { dimColor: true, children: ["    ", summary.length > 72 ? summary.slice(0, 71) + '…' : summary] }))] }, s.sessionId));
-                    })), _jsx(Text, { children: " " }), _jsx(Text, { dimColor: true, children: "\u2191\u2193 navigate \u00B7 Enter resume \u00B7 n new session \u00B7 d delete \u00B7 Esc cancel" })] })) : mode === 'host' ? (_jsxs(_Fragment, { children: [_jsx(Text, { dimColor: true, children: "Select target host" }), _jsx(Text, { children: " " }), hostOptions.map((h, i) => (_jsx(Box, { children: _jsxs(Text, { color: i === cursor ? 'cyan' : undefined, bold: i === cursor, children: [i === cursor ? '▸ ' : '  ', h.label] }) }, h.label))), _jsx(Text, { children: " " }), _jsx(Text, { dimColor: true, children: "\u2191\u2193 navigate \u00B7 Enter select \u00B7 Esc cancel" })] })) : mode === 'host-list' ? (_jsxs(_Fragment, { children: [_jsxs(Text, { dimColor: true, children: ["\u2301 ", selectedHost?.name, " (", selectedHost?.ssh, ")"] }), _jsx(Text, { children: " " }), targetSessions.length === 0 ? (_jsx(Text, { dimColor: true, children: "  No past sessions" })) : (targetSessions.map((s, i) => {
+                        const hostBadge = s.sshTarget ? `⌁ ${s.sshTarget.split('@').pop() ?? s.sshTarget}` : 'local';
+                        return (_jsxs(Box, { flexDirection: "column", children: [_jsxs(Box, { children: [_jsx(Text, { color: sel ? 'cyan' : undefined, bold: sel, children: sel ? '▸ ' : '  ' }), _jsx(Text, { color: sel ? 'cyan' : undefined, bold: sel, children: label }), _jsxs(Text, { dimColor: true, children: ["  [", hostBadge, "]  ", s.cwd, "  \u00B7  ", formatAge(s.startedAt)] })] }), summary && sel && (_jsxs(Text, { dimColor: true, children: ["    ", summary.length > 72 ? summary.slice(0, 71) + '…' : summary] }))] }, s.sessionId));
+                    })), _jsx(Text, { children: " " }), _jsx(Text, { dimColor: true, children: "\u2191\u2193 navigate \u00B7 Enter resume \u00B7 n new \u00B7 c custom path \u00B7 d delete \u00B7 Esc cancel" })] })) : mode === 'host' ? (_jsxs(_Fragment, { children: [_jsx(Text, { dimColor: true, children: "Select target host" }), _jsx(Text, { children: " " }), hostOptions.map((h, i) => (_jsx(Box, { children: _jsxs(Text, { color: i === cursor ? 'cyan' : undefined, bold: i === cursor, children: [i === cursor ? '▸ ' : '  ', h.label] }) }, h.label))), _jsx(Text, { children: " " }), _jsx(Text, { dimColor: true, children: "\u2191\u2193 navigate \u00B7 Enter select \u00B7 Esc cancel" })] })) : mode === 'host-list' ? (_jsxs(_Fragment, { children: [_jsxs(Text, { dimColor: true, children: ["\u2301 ", selectedHost?.name, " (", selectedHost?.ssh, ")"] }), _jsx(Text, { children: " " }), targetSessions.length === 0 ? (_jsx(Text, { dimColor: true, children: "  No past sessions" })) : (targetSessions.map((s, i) => {
                         const sel = i === cursor;
                         const label = s.cwd.split('/').pop() ?? s.cwd;
                         const summary = s.contextSummary ?? s.goalSummary;

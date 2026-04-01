@@ -80,6 +80,16 @@ export declare class SessionStore extends EventEmitter {
         startedAt: number;
         goalSummary?: string;
         contextSummary?: string;
+        sshTarget?: string;
+    }>;
+    /** Returns all past sessions across all hosts, sorted by most recent. */
+    getAllPastSessions(): Array<{
+        sessionId: string;
+        cwd: string;
+        startedAt: number;
+        goalSummary?: string;
+        contextSummary?: string;
+        sshTarget?: string;
     }>;
     /** Removes a past session from persistedMeta and rewrites state.json immediately. */
     deletePersistedSession(sessionId: string): void;

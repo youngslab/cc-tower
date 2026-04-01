@@ -1,4 +1,5 @@
 import { spawn, ChildProcess } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { logger } from '../utils/logger.js';
 import { sshPing } from './exec.js';
 
@@ -32,9 +33,16 @@ export class ConnectionManager {
     }
 
     const remoteSocket = localSocket; // same path on remote
+    // Use the same ControlPath as sshExec so the tunnel becomes the ControlMaster
+    // and subsequent sshExec calls reuse this connection (no extra cloudflared per call).
+    const controlPath = `${tmpdir()}/cc-tower-cm-%r@%h:%p`;
+
     const args: string[] = [];
     if (sshOptions) args.push(...sshOptions.split(/\s+/));
     args.push(
+      '-o', 'ControlMaster=auto',
+      '-o', `ControlPath=${controlPath}`,
+      '-o', 'ControlPersist=yes',
       '-o', 'BatchMode=yes',
       '-o', 'ServerAliveInterval=15',
       '-o', 'ServerAliveCountMax=3',
@@ -63,6 +71,14 @@ export class ConnectionManager {
       child.on('close', (code) => {
         logger.warn('connection-manager: tunnel closed', { host: hostName, code: code ?? undefined });
         tunnel.healthy = false;
+        // Kill the ControlMaster socket so next reconnect creates a fresh master
+        try {
+          spawn('ssh', [
+            '-o', `ControlPath=${controlPath}`,
+            '-O', 'exit',
+            sshTarget,
+          ], { stdio: 'ignore' }).unref();
+        } catch {}
       });
 
       child.on('error', (err) => {
@@ -112,8 +128,12 @@ export class ConnectionManager {
       clearInterval(this.healthTimer);
       this.healthTimer = null;
     }
+    const controlPath = `${tmpdir()}/cc-tower-cm-%r@%h:%p`;
     for (const [name, tunnel] of this.tunnels) {
       try { tunnel.process.kill(); } catch {}
+      try {
+        spawn('ssh', ['-o', `ControlPath=${controlPath}`, '-O', 'exit', tunnel.sshTarget], { stdio: 'ignore' }).unref();
+      } catch {}
       logger.debug('connection-manager: tunnel stopped', { host: name });
     }
     this.tunnels.clear();

@@ -73,19 +73,26 @@ export function App({ tower }) {
         if (session.sshTarget) {
             // Remote: full-screen popup — tmux commands run on SSH host, NOT inside commandPrefix container
             const paneSelect = `tmux list-panes -a -F '#{pane_id} #{session_name} #{window_index}' | grep '^${session.paneId} ' | head -1`;
-            const setupCmd = `PINFO=\\$(${paneSelect}); SESS=\\$(echo \\$PINFO | awk '{print \\$2}'); WIDX=\\$(echo \\$PINFO | awk '{print \\$3}'); ` +
+            const resumeSessionName = `claude-${session.projectName}`.replace(/[^a-zA-Z0-9_-]/g, '-');
+            const claudeResumeCmd = session.sessionId ? `claude --resume ${session.sessionId}` : 'claude';
+            const restartCmd = `tmux new-session -d -s ${resumeSessionName} -c ${session.cwd} '${claudeResumeCmd}' 2>/dev/null || true; ` +
+                `tmux bind-key -T root ${tmuxKey} detach-client && ` +
+                `TMUX= tmux attach -t ${resumeSessionName}; ` +
+                `tmux unbind-key -T root ${tmuxKey}`;
+            const setupCmd = `PINFO=\\$(${paneSelect}); ` +
+                `if [ -z "\\$PINFO" ]; then ${restartCmd}; else ` +
+                `SESS=\\$(echo \\$PINFO | awk '{print \\$2}'); WIDX=\\$(echo \\$PINFO | awk '{print \\$3}'); ` +
                 `GO=_cctower_go_\\$\\$; tmux kill-session -t \\$GO 2>/dev/null; ` +
                 `tmux new-session -d -s \\$GO -t \\$SESS && ` +
                 `tmux set-option -t \\$GO window-size largest 2>/dev/null; ` +
                 `tmux bind-key -T root ${tmuxKey} detach-client && ` +
                 `TMUX= tmux attach -t \\$GO \\\\; select-window -t :\\$WIDX; ` +
-                `tmux unbind-key -T root ${tmuxKey}; tmux kill-session -t \\$GO 2>/dev/null`;
-            const remoteCmd = setupCmd;
+                `tmux unbind-key -T root ${tmuxKey}; tmux kill-session -t \\$GO 2>/dev/null; fi`;
             await tmux.displayPopup({
                 width: '100%',
                 height: '100%',
                 title: ` ⌁ ${session.host}:${session.projectName} | ${tmuxKey} to close `,
-                command: `ssh -t -o LogLevel=ERROR ${session.sshTarget} "${remoteCmd}"`,
+                command: `ssh -t -o LogLevel=ERROR ${session.sshTarget} "${setupCmd}"`,
                 closeOnExit: true,
             });
         }
@@ -105,7 +112,33 @@ export function App({ tower }) {
                 // Set key table on target session
                 await ex('tmux', ['set-option', '-t', `${targetSession}`, 'key-table', 'cctower-go']);
             }
-            catch { }
+            catch {
+                // Pane is gone — restart in cc-tower-hive with --resume
+                const resumeArg = session.sessionId ? ` --resume ${session.sessionId}` : '';
+                const claudeArgs = (tower.config.claude_args ? ` ${tower.config.claude_args}` : '') + resumeArg;
+                const hiveSession = 'cc-tower-hive';
+                const windowName = session.projectName.replace(/[^a-zA-Z0-9_-]/g, '-');
+                try {
+                    let sessionExists = false;
+                    try {
+                        await ex('tmux', ['has-session', '-t', hiveSession]);
+                        sessionExists = true;
+                    }
+                    catch { }
+                    const args = sessionExists
+                        ? ['new-window', '-t', hiveSession, '-n', windowName, '-c', session.cwd, '-P', '-F', '#{window_index}', `claude${claudeArgs}`]
+                        : ['new-session', '-d', '-s', hiveSession, '-n', windowName, '-c', session.cwd, '-P', '-F', '#{window_index}', `claude${claudeArgs}`];
+                    const { stdout: windowIndex } = await ex('tmux', args);
+                    const { stdout: homeInfo } = await ex('tmux', ['display-message', '-p', '#{session_name}:#{window_index}']);
+                    const [homeSession, homeWindow] = homeInfo.trim().split(':');
+                    await ex('tmux', ['bind-key', '-T', 'cctower-go', tmuxKey,
+                        'run-shell', `tmux switch-client -t '${homeSession}:${homeWindow}' && tmux set-option -t ${hiveSession} key-table root`,
+                    ]);
+                    await ex('tmux', ['switch-client', '-t', `${hiveSession}:${windowIndex.trim()}`]);
+                    await ex('tmux', ['set-option', '-t', hiveSession, 'key-table', 'cctower-go']);
+                }
+                catch { }
+            }
         }
     }, [tower]);
     const handleOpenNewSession = useCallback(() => {
@@ -172,13 +205,14 @@ export function App({ tower }) {
                     ]);
                     windowIndex = stdout.trim();
                 }
-                await tmux.displayPopup({
-                    width: '80%',
-                    height: '80%',
-                    title: ` ${name} (new) | ${closeKey} to close `,
-                    command: `tmux bind-key -T cctower-peek ${closeKey} detach-client && TMUX= tmux attach -t ${hiveSession}:${windowIndex} \\; set-option key-table cctower-peek ; tmux unbind-key -T cctower-peek ${closeKey}`,
-                    closeOnExit: true,
-                });
+                // switch-client to the new window (like `go`, not popup) so only that window is shown
+                const { stdout: homeInfo } = await ex('tmux', ['display-message', '-p', '#{session_name}:#{window_index}']);
+                const [homeSession, homeWindow] = homeInfo.trim().split(':');
+                await ex('tmux', ['bind-key', '-T', 'cctower-go', closeKey,
+                    'run-shell', `tmux switch-client -t '${homeSession}:${homeWindow}' && tmux set-option -t ${hiveSession} key-table root`,
+                ]);
+                await ex('tmux', ['switch-client', '-t', `${hiveSession}:${windowIndex}`]);
+                await ex('tmux', ['set-option', '-t', hiveSession, 'key-table', 'cctower-go']);
             }
             catch { }
         }
@@ -212,6 +246,6 @@ export function App({ tower }) {
     }
     // Dynamic sizing: use 70% of terminal width
     const boxWidth = Math.max(MIN_WIDTH, Math.min(termWidth - 4, Math.floor(termWidth * 0.7)));
-    return (_jsxs(Box, { width: termWidth, height: termHeight, flexDirection: "column", alignItems: "center", justifyContent: "center", children: [view === 'dashboard' && termHeight >= 30 && (_jsxs(Box, { width: boxWidth, justifyContent: "flex-start", alignItems: "flex-end", marginBottom: 0, children: [_jsxs(Box, { flexDirection: "column", children: [_jsx(Text, { color: "cyan", children: ' ██████╗  ██████╗ ████████╗' }), _jsx(Text, { color: "cyan", children: '██╔════╝ ██╔════╝ ╚══██╔══╝' }), _jsx(Text, { color: "cyan", children: '██║      ██║         ██║' }), _jsx(Text, { color: "cyan", children: '╚██████╗ ╚██████╗    ██║' }), _jsx(Text, { color: "cyan", children: ' ╚═════╝  ╚═════╝    ╚═╝' })] }), _jsx(Box, { flexDirection: "column", justifyContent: "flex-end", marginLeft: 2, children: _jsxs(Text, { dimColor: true, children: [sessions.length, " sessions"] }) })] })), view === 'dashboard' && termHeight >= 20 && termHeight < 30 && (_jsxs(Box, { width: boxWidth, justifyContent: "flex-start", alignItems: "center", marginBottom: 0, children: [_jsx(Text, { color: "cyan", bold: true, children: "\u25C6 CCT" }), _jsxs(Text, { dimColor: true, children: [" ", sessions.length, " sessions"] })] })), _jsxs(Box, { flexDirection: "column", borderStyle: "round", borderColor: "cyan", paddingX: 2, paddingY: 1, width: boxWidth, children: [view === 'dashboard' && (_jsx(Dashboard, { sessions: sessions, tmuxCount: tmuxCount, maxTaskWidth: Math.max(10, boxWidth - 35), onSelect: handleSelect, onSend: handleSend, onPeek: handlePeek, onToggleFavorite: handleToggleFavorite, onRefresh: handleRefresh, onKill: handleKill, onGo: handleGo, onNewSession: handleOpenNewSession, onQuit: handleQuit })), view === 'new-session' && (_jsx(NewSession, { projects: recentProjects, hosts: tower.config.hosts.map(h => ({ name: h.name, ssh: h.ssh, commandPrefix: h.command_prefix })), onSelect: handleNewSession, onCancel: () => setView('dashboard'), getPastSessions: getPastSessions, getPastSessionsByTarget: getPastSessionsByTarget, onDeleteSession: (id) => tower.store.deletePersistedSession(id) })), view === 'detail' && selectedSession && (_jsx(DetailView, { session: selectedSession, onBack: handleBack, onSend: handleSend, onPeek: handlePeek })), view === 'send' && selectedSession && (_jsx(SendInput, { session: selectedSession, confirmWhenBusy: tower.config.commands.confirm_when_busy, onSend: handleSendText, onCancel: () => setView('dashboard') }))] })] }));
+    return (_jsxs(Box, { width: termWidth, height: termHeight, flexDirection: "column", alignItems: "center", justifyContent: "center", children: [view === 'dashboard' && termHeight >= 30 && (_jsxs(Box, { width: boxWidth, justifyContent: "flex-start", alignItems: "flex-end", marginBottom: 0, children: [_jsxs(Box, { flexDirection: "column", children: [_jsx(Text, { color: "cyan", children: ' ██████╗  ██████╗ ████████╗' }), _jsx(Text, { color: "cyan", children: '██╔════╝ ██╔════╝ ╚══██╔══╝' }), _jsx(Text, { color: "cyan", children: '██║      ██║         ██║' }), _jsx(Text, { color: "cyan", children: '╚██████╗ ╚██████╗    ██║' }), _jsx(Text, { color: "cyan", children: ' ╚═════╝  ╚═════╝    ╚═╝' })] }), _jsx(Box, { flexDirection: "column", justifyContent: "flex-end", marginLeft: 2, children: _jsxs(Text, { dimColor: true, children: [sessions.length, " sessions"] }) })] })), view === 'dashboard' && termHeight >= 20 && termHeight < 30 && (_jsxs(Box, { width: boxWidth, justifyContent: "flex-start", alignItems: "center", marginBottom: 0, children: [_jsx(Text, { color: "cyan", bold: true, children: "\u25C6 CCT" }), _jsxs(Text, { dimColor: true, children: [" ", sessions.length, " sessions"] })] })), _jsxs(Box, { flexDirection: "column", borderStyle: "round", borderColor: "cyan", paddingX: 2, paddingY: 1, width: boxWidth, children: [view === 'dashboard' && (_jsx(Dashboard, { sessions: sessions, tmuxCount: tmuxCount, maxTaskWidth: Math.max(10, boxWidth - 35), onSelect: handleSelect, onSend: handleSend, onPeek: handlePeek, onToggleFavorite: handleToggleFavorite, onRefresh: handleRefresh, onKill: handleKill, onGo: handleGo, onNewSession: handleOpenNewSession, onQuit: handleQuit })), view === 'new-session' && (_jsx(NewSession, { projects: recentProjects, hosts: tower.config.hosts.map(h => ({ name: h.name, ssh: h.ssh, commandPrefix: h.command_prefix })), onSelect: handleNewSession, onCancel: () => setView('dashboard'), getPastSessions: getPastSessions, getPastSessionsByTarget: getPastSessionsByTarget, getAllPastSessions: () => tower.store.getAllPastSessions(), onDeleteSession: (id) => tower.store.deletePersistedSession(id) })), view === 'detail' && selectedSession && (_jsx(DetailView, { session: selectedSession, onBack: handleBack, onSend: handleSend, onPeek: handlePeek })), view === 'send' && selectedSession && (_jsx(SendInput, { session: selectedSession, confirmWhenBusy: tower.config.commands.confirm_when_busy, onSend: handleSendText, onCancel: () => setView('dashboard') }))] })] }));
 }
 //# sourceMappingURL=App.js.map

@@ -232,14 +232,14 @@ export class SessionStore extends EventEmitter {
    * sshTarget undefined = local sessions; sshTarget string = remote sessions for that target.
    * Excludes currently active sessions.
    */
-  getPastSessionsByTarget(sshTarget?: string): Array<{ sessionId: string; cwd: string; startedAt: number; goalSummary?: string; contextSummary?: string }> {
+  getPastSessionsByTarget(sshTarget?: string): Array<{ sessionId: string; cwd: string; startedAt: number; goalSummary?: string; contextSummary?: string; sshTarget?: string }> {
     const activeIds = new Set(this.sessions.keys());
-    const all: Array<{ sessionId: string; cwd: string; startedAt: number; goalSummary?: string; contextSummary?: string }> = [];
+    const all: Array<{ sessionId: string; cwd: string; startedAt: number; goalSummary?: string; contextSummary?: string; sshTarget?: string }> = [];
     for (const [sessionId, entry] of this.persistedMeta) {
       if (entry.sshTarget !== sshTarget) continue;
       if (!entry.cwd) continue;
       if (activeIds.has(sessionId)) continue;
-      all.push({ sessionId, cwd: entry.cwd, startedAt: entry.startedAt ?? 0, goalSummary: entry.goalSummary, contextSummary: entry.contextSummary });
+      all.push({ sessionId, cwd: entry.cwd, startedAt: entry.startedAt ?? 0, goalSummary: entry.goalSummary, contextSummary: entry.contextSummary, sshTarget: entry.sshTarget });
     }
     all.sort((a, b) => b.startedAt - a.startedAt);
     const byCwd = new Map<string, typeof all[0]>();
@@ -247,6 +247,25 @@ export class SessionStore extends EventEmitter {
       if (!byCwd.has(s.cwd)) byCwd.set(s.cwd, s);
     }
     return Array.from(byCwd.values());
+  }
+
+  /** Returns all past sessions across all hosts, sorted by most recent. */
+  getAllPastSessions(): Array<{ sessionId: string; cwd: string; startedAt: number; goalSummary?: string; contextSummary?: string; sshTarget?: string }> {
+    const activeIds = new Set(this.sessions.keys());
+    const all: Array<{ sessionId: string; cwd: string; startedAt: number; goalSummary?: string; contextSummary?: string; sshTarget?: string }> = [];
+    for (const [sessionId, entry] of this.persistedMeta) {
+      if (!entry.cwd) continue;
+      if (activeIds.has(sessionId)) continue;
+      all.push({ sessionId, cwd: entry.cwd, startedAt: entry.startedAt ?? 0, goalSummary: entry.goalSummary, contextSummary: entry.contextSummary, sshTarget: entry.sshTarget });
+    }
+    all.sort((a, b) => b.startedAt - a.startedAt);
+    // Deduplicate by (sshTarget, cwd) — keep most recent
+    const seen = new Map<string, typeof all[0]>();
+    for (const s of all) {
+      const key = `${s.sshTarget ?? ''}::${s.cwd}`;
+      if (!seen.has(key)) seen.set(key, s);
+    }
+    return Array.from(seen.values());
   }
 
   /** Removes a past session from persistedMeta and rewrites state.json immediately. */

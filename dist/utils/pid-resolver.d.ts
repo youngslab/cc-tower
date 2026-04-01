@@ -19,6 +19,10 @@ export declare function getTty(pid: number): string | null;
  */
 export declare function getCmdline(pid: number): string[] | null;
 /**
+ * Returns true if the given process is alive (responds to signal 0).
+ */
+export declare function isPidAlive(pid: number): boolean;
+/**
  * Returns true if the process (or any ancestor) was invoked with --print,
  * indicating a headless/non-interactive Claude session.
  */

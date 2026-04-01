@@ -16,6 +16,7 @@ export interface PastSessionByCwd {
     startedAt: number;
     goalSummary?: string;
     contextSummary?: string;
+    sshTarget?: string;
 }
 interface Props {
     projects: Array<{
@@ -28,7 +29,8 @@ interface Props {
     onCancel: () => void;
     getPastSessions: (cwd: string) => PastSession[];
     getPastSessionsByTarget: (sshTarget?: string) => PastSessionByCwd[];
+    getAllPastSessions: () => PastSessionByCwd[];
     onDeleteSession: (sessionId: string) => void;
 }
-export declare function NewSession({ projects, hosts, onSelect, onCancel, getPastSessions, getPastSessionsByTarget, onDeleteSession }: Props): import("react/jsx-runtime").JSX.Element;
+export declare function NewSession({ projects, hosts, onSelect, onCancel, getPastSessions, getPastSessionsByTarget, getAllPastSessions, onDeleteSession }: Props): import("react/jsx-runtime").JSX.Element;
 export {};

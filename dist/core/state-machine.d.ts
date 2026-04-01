@@ -40,6 +40,8 @@ export declare class SessionStateMachine extends EventEmitter {
     getDuration(): number;
     transition(event: InputEvent): void;
     private clearInactivityTimer;
+    /** Called by tower when PID is still alive — restart the inactivity timer without state transition. */
+    resetInactivityTimer(): void;
     destroy(): void;
     private resolveNext;
 }

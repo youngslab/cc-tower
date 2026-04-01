@@ -27,7 +27,7 @@ export class SessionStateMachine extends EventEmitter {
   private stateEnteredAt: number;
   private previousState: State; // for agent-stop recovery
   private inactivityTimer: ReturnType<typeof setTimeout> | null = null;
-  private static readonly INACTIVITY_TIMEOUT = 60000; // 60s without JSONL activity → idle
+  private static readonly INACTIVITY_TIMEOUT = 120000; // 2min — emit check event, tower verifies PID before going idle
 
   constructor(
     private sessionId: string,
@@ -75,7 +75,9 @@ export class SessionStateMachine extends EventEmitter {
     if (next !== 'idle' && next !== 'dead') {
       this.inactivityTimer = setTimeout(() => {
         if (this.state !== 'idle' && this.state !== 'dead') {
-          this.transition({ type: 'stop' });
+          // Emit check event instead of forcing idle — tower.ts verifies PID liveness
+          // before deciding whether to transition to idle.
+          this.emit('inactivity-check', this.sessionId);
         }
       }, SessionStateMachine.INACTIVITY_TIMEOUT);
     }
@@ -86,6 +88,17 @@ export class SessionStateMachine extends EventEmitter {
       clearTimeout(this.inactivityTimer);
       this.inactivityTimer = null;
     }
+  }
+
+  /** Called by tower when PID is still alive — restart the inactivity timer without state transition. */
+  resetInactivityTimer(): void {
+    if (this.state === 'idle' || this.state === 'dead') return;
+    this.clearInactivityTimer();
+    this.inactivityTimer = setTimeout(() => {
+      if (this.state !== 'idle' && this.state !== 'dead') {
+        this.emit('inactivity-check', this.sessionId);
+      }
+    }, SessionStateMachine.INACTIVITY_TIMEOUT);
   }
 
   destroy(): void {

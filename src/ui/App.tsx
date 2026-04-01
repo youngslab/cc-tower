@@ -86,20 +86,28 @@ export function App({ tower }: Props) {
     if (session.sshTarget) {
       // Remote: full-screen popup — tmux commands run on SSH host, NOT inside commandPrefix container
       const paneSelect = `tmux list-panes -a -F '#{pane_id} #{session_name} #{window_index}' | grep '^${session.paneId} ' | head -1`;
+      const resumeSessionName = `claude-${session.projectName}`.replace(/[^a-zA-Z0-9_-]/g, '-');
+      const claudeResumeCmd = session.sessionId ? `claude --resume ${session.sessionId}` : 'claude';
+      const restartCmd =
+        `tmux new-session -d -s ${resumeSessionName} -c ${session.cwd} '${claudeResumeCmd}' 2>/dev/null || true; ` +
+        `tmux bind-key -T root ${tmuxKey} detach-client && ` +
+        `TMUX= tmux attach -t ${resumeSessionName}; ` +
+        `tmux unbind-key -T root ${tmuxKey}`;
       const setupCmd =
-        `PINFO=\\$(${paneSelect}); SESS=\\$(echo \\$PINFO | awk '{print \\$2}'); WIDX=\\$(echo \\$PINFO | awk '{print \\$3}'); ` +
+        `PINFO=\\$(${paneSelect}); ` +
+        `if [ -z "\\$PINFO" ]; then ${restartCmd}; else ` +
+        `SESS=\\$(echo \\$PINFO | awk '{print \\$2}'); WIDX=\\$(echo \\$PINFO | awk '{print \\$3}'); ` +
         `GO=_cctower_go_\\$\\$; tmux kill-session -t \\$GO 2>/dev/null; ` +
         `tmux new-session -d -s \\$GO -t \\$SESS && ` +
         `tmux set-option -t \\$GO window-size largest 2>/dev/null; ` +
         `tmux bind-key -T root ${tmuxKey} detach-client && ` +
         `TMUX= tmux attach -t \\$GO \\\\; select-window -t :\\$WIDX; ` +
-        `tmux unbind-key -T root ${tmuxKey}; tmux kill-session -t \\$GO 2>/dev/null`;
-      const remoteCmd = setupCmd;
+        `tmux unbind-key -T root ${tmuxKey}; tmux kill-session -t \\$GO 2>/dev/null; fi`;
       await tmux.displayPopup({
         width: '100%',
         height: '100%',
         title: ` ⌁ ${session.host}:${session.projectName} | ${tmuxKey} to close `,
-        command: `ssh -t -o LogLevel=ERROR ${session.sshTarget} "${remoteCmd}"`,
+        command: `ssh -t -o LogLevel=ERROR ${session.sshTarget} "${setupCmd}"`,
         closeOnExit: true,
       });
     } else {
@@ -119,7 +127,29 @@ export function App({ tower }: Props) {
         await ex('tmux', ['switch-client', '-t', `${targetSession}:${targetWindow}`]);
         // Set key table on target session
         await ex('tmux', ['set-option', '-t', `${targetSession}`, 'key-table', 'cctower-go']);
-      } catch {}
+      } catch {
+        // Pane is gone — restart in cc-tower-hive with --resume
+        const resumeArg = session.sessionId ? ` --resume ${session.sessionId}` : '';
+        const claudeArgs = (tower.config.claude_args ? ` ${tower.config.claude_args}` : '') + resumeArg;
+        const hiveSession = 'cc-tower-hive';
+        const windowName = session.projectName.replace(/[^a-zA-Z0-9_-]/g, '-');
+        try {
+          let sessionExists = false;
+          try { await ex('tmux', ['has-session', '-t', hiveSession]); sessionExists = true; } catch {}
+          const args = sessionExists
+            ? ['new-window', '-t', hiveSession, '-n', windowName, '-c', session.cwd, '-P', '-F', '#{window_index}', `claude${claudeArgs}`]
+            : ['new-session', '-d', '-s', hiveSession, '-n', windowName, '-c', session.cwd, '-P', '-F', '#{window_index}', `claude${claudeArgs}`];
+          const { stdout: windowIndex } = await ex('tmux', args);
+
+          const { stdout: homeInfo } = await ex('tmux', ['display-message', '-p', '#{session_name}:#{window_index}']);
+          const [homeSession, homeWindow] = homeInfo.trim().split(':');
+          await ex('tmux', ['bind-key', '-T', 'cctower-go', tmuxKey,
+            'run-shell', `tmux switch-client -t '${homeSession}:${homeWindow}' && tmux set-option -t ${hiveSession} key-table root`,
+          ]);
+          await ex('tmux', ['switch-client', '-t', `${hiveSession}:${windowIndex.trim()}`]);
+          await ex('tmux', ['set-option', '-t', hiveSession, 'key-table', 'cctower-go']);
+        } catch {}
+      }
     }
   }, [tower]);
 
@@ -187,13 +217,14 @@ export function App({ tower }: Props) {
           windowIndex = stdout.trim();
         }
 
-        await tmux.displayPopup({
-          width: '80%',
-          height: '80%',
-          title: ` ${name} (new) | ${closeKey} to close `,
-          command: `tmux bind-key -T cctower-peek ${closeKey} detach-client && TMUX= tmux attach -t ${hiveSession}:${windowIndex} \\; set-option key-table cctower-peek ; tmux unbind-key -T cctower-peek ${closeKey}`,
-          closeOnExit: true,
-        });
+        // switch-client to the new window (like `go`, not popup) so only that window is shown
+        const { stdout: homeInfo } = await ex('tmux', ['display-message', '-p', '#{session_name}:#{window_index}']);
+        const [homeSession, homeWindow] = homeInfo.trim().split(':');
+        await ex('tmux', ['bind-key', '-T', 'cctower-go', closeKey,
+          'run-shell', `tmux switch-client -t '${homeSession}:${homeWindow}' && tmux set-option -t ${hiveSession} key-table root`,
+        ]);
+        await ex('tmux', ['switch-client', '-t', `${hiveSession}:${windowIndex}`]);
+        await ex('tmux', ['set-option', '-t', hiveSession, 'key-table', 'cctower-go']);
       } catch {}
     }
   }, [tower]);
@@ -299,6 +330,7 @@ export function App({ tower }: Props) {
             onCancel={() => setView('dashboard')}
             getPastSessions={getPastSessions}
             getPastSessionsByTarget={getPastSessionsByTarget}
+            getAllPastSessions={() => tower.store.getAllPastSessions()}
             onDeleteSession={(id) => tower.store.deletePersistedSession(id)}
           />
         )}
