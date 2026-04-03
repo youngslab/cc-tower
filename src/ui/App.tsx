@@ -59,7 +59,7 @@ export function App({ tower }: Props) {
 
   const handleToggleFavorite = useCallback((session: Session) => {
     const nowFav = !session.favorite;
-    tower.store.update(session.sessionId, { favorite: nowFav, favoritedAt: nowFav ? Date.now() : undefined });
+    tower.store.updateBySessionId(session.sessionId, { favorite: nowFav, favoritedAt: nowFav ? Date.now() : undefined });
   }, [tower]);
 
   const handleRefresh = useCallback((session: Session) => {
