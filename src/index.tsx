@@ -398,7 +398,7 @@ program
     const sessions = tower.store.getAll();
     const s = sessions.find(s => s.sessionId.startsWith(sessionArg) || s.label === sessionArg || s.paneId === sessionArg);
     if (s) {
-      tower.store.update(s.sessionId, { tags });
+      tower.store.updateBySessionId(s.sessionId, { tags });
       tower.store.persist();
       console.log(`Tagged ${s.label ?? s.sessionId.slice(0, 8)}: ${tags.join(', ')}`);
     } else {
