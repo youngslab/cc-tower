@@ -384,9 +384,13 @@ export class Tower extends EventEmitter {
       logger.info('tower: refresh detected session change', { old: sessionId, new: match.sessionId });
       this.cleanupSession(identity);
       await this.registerSession(match);
-      // Migrate metadata
+      // Migrate metadata — only pass defined values to avoid overwriting with undefined
       const newIdentity = sessionIdentity(match);
-      this.store.updateMeta(newIdentity, { label: session.label, tags: session.tags, favorite: session.favorite, favoritedAt: session.favoritedAt });
+      const migrationMeta: Partial<import('./session-store.js').SessionMeta> = {};
+      if (session.label !== undefined) migrationMeta.label = session.label;
+      if (session.tags !== undefined) migrationMeta.tags = session.tags;
+      if (session.favorite !== undefined) { migrationMeta.favorite = session.favorite; migrationMeta.favoritedAt = session.favoritedAt; }
+      this.store.updateMeta(newIdentity, migrationMeta);
       this.store.update(newIdentity, { summaryLoading: true });
       const jp = this.jsonlPaths.get(match.sessionId);
       if (jp) {
