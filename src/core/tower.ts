@@ -1203,10 +1203,10 @@ export class Tower extends EventEmitter {
           for (const f of files) {
             try {
               const raw = fs.readFileSync(path.join(sessionsDir, f), 'utf8');
-              const parsed = JSON.parse(raw) as { sessionId?: string; pid?: number };
+              const parsed = JSON.parse(raw) as { sessionId?: string; pid?: number; entrypoint?: string };
               if (parsed.sessionId === hookSid && parsed.pid) {
-                if (isHeadlessProcess(parsed.pid)) {
-                  logger.debug('tower: ignoring session-start from headless process', { hookSid, pid: parsed.pid, cwd: event.cwd });
+                if (isHeadlessProcess(parsed.pid) || parsed.entrypoint === 'sdk-cli') {
+                  logger.debug('tower: ignoring session-start from headless/sdk-cli process', { hookSid, pid: parsed.pid, entrypoint: parsed.entrypoint, cwd: event.cwd });
                   return;
                 }
                 break;
