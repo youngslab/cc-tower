@@ -1172,6 +1172,22 @@ export class Tower extends EventEmitter {
     const hookSid = event.sid;
     if (!hookSid || typeof hookSid !== 'string') return;
 
+    // Skip hook events from sdk-cli (headless) sessions — e.g. services that spawn claude
+    // programmatically inside the same project. Their events must not be attributed to the
+    // parent interactive session via PID ancestry.
+    if (event.pid && event.pid > 0) {
+      try {
+        const sessionsDir = this.config.discovery.claude_dir.replace('~', os.homedir()) + '/sessions';
+        const raw = fs.readFileSync(path.join(sessionsDir, `${event.pid}.json`), 'utf8');
+        const end = raw.indexOf('}');
+        const parsed = JSON.parse(end >= 0 ? raw.slice(0, end + 1) : raw) as { entrypoint?: string };
+        if (parsed.entrypoint === 'sdk-cli') {
+          logger.debug('tower: ignoring hook event from sdk-cli session', { hookSid, pid: event.pid });
+          return;
+        }
+      } catch {}
+    }
+
     // When CLAUDE_SESSION_ID is not available (sid='unknown'), resolve by PID ancestry only
     let identity = this.resolveIdentity(hookSid, event.cwd, event.pid);
     if (!identity) {
@@ -1199,9 +1215,11 @@ export class Tower extends EventEmitter {
           }
         } catch {}
 
-        // Find the dead/dying session with same CWD for metadata migration
+        // Find the dead/dying session with same CWD for metadata migration.
+        // Only match if the hook pid matches the session pid (same claude process = /clear).
+        // A different pid means a new parallel session (e.g. sdk-cli) — not a /clear.
         const dyingSession = event.cwd
-          ? this.store.getAll().find(s => s.cwd === event.cwd)
+          ? this.store.getAll().find(s => s.cwd === event.cwd && (!event.pid || s.pid === event.pid))
           : undefined;
         const migratedMeta = dyingSession ? {
           label: dyingSession.label,
