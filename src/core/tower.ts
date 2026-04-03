@@ -377,7 +377,7 @@ export class Tower extends EventEmitter {
 
     // Re-scan discovery to pick up any changes (new PID, session file changes)
     const discovered = await this.discovery.scanOnce();
-    const match = discovered.find(s => s.cwd === session.cwd) ?? discovered.find(s => s.sessionId === sessionId);
+    const match = discovered.find(s => s.sessionId === sessionId) ?? discovered.find(s => s.cwd === session.cwd && s.pid === session.pid);
 
     if (match && match.sessionId !== sessionId) {
       // Session ID changed (e.g., /clear, /resume) — re-register
@@ -719,7 +719,7 @@ export class Tower extends EventEmitter {
       for (const existing of this.store.getAll()) {
         if (existing.paneId === mapping.paneId && existing.sessionId !== info.sessionId && existing.status !== 'dead') {
           logger.info('tower: evicting session — same pane taken by new session', { evicted: existing.sessionId, new: info.sessionId, paneId: mapping.paneId });
-          this.cleanupSession(existing.sessionId);
+          this.cleanupSession(sessionIdentity(existing));
         }
       }
     }
