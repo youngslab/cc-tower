@@ -1,6 +1,10 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { Box, Text, useApp, useStdout } from 'ink';
+import { createRequire } from 'node:module';
 import { Tower } from '../core/tower.js';
+
+const _require = createRequire(import.meta.url);
+const { version: APP_VERSION } = _require('../../package.json') as { version: string };
 import { Session } from '../core/session-store.js';
 import { useSessionStore } from './hooks/useSessionStore.js';
 import { useTmux } from './hooks/useTmux.js';
@@ -231,6 +235,13 @@ export function App({ tower }: Props) {
 
   const handleQuit = useCallback(async () => {
     await tower.stop();
+    // Kill the entire cc-tower tmux session so all outer wrapper processes exit cleanly
+    if (process.env['TMUX']) {
+      try {
+        const { execSync } = await import('node:child_process');
+        execSync('tmux kill-session -t claude-cc-tower 2>/dev/null', { timeout: 2000 });
+      } catch {}
+    }
     exit();
   }, [tower, exit]);
 
@@ -287,6 +298,7 @@ export function App({ tower }: Props) {
             <Text color="cyan">{' ╚═════╝  ╚═════╝    ╚═╝'}</Text>
           </Box>
           <Box flexDirection="column" justifyContent="flex-end" marginLeft={2}>
+            <Text dimColor>v{APP_VERSION}</Text>
             <Text dimColor>{sessions.length} sessions</Text>
           </Box>
         </Box>
@@ -294,7 +306,8 @@ export function App({ tower }: Props) {
       {view === 'dashboard' && termHeight >= 20 && termHeight < 30 && (
         <Box width={boxWidth} justifyContent="flex-start" alignItems="center" marginBottom={0}>
           <Text color="cyan" bold>◆ CCT</Text>
-          <Text dimColor> {sessions.length} sessions</Text>
+          <Text dimColor> v{APP_VERSION}</Text>
+          <Text dimColor>  {sessions.length} sessions</Text>
         </Box>
       )}
       <Box

@@ -65,7 +65,12 @@ interface PersistedEntry {
 }
 
 interface PersistFormat {
+  version?: number;  // 1 = legacy (no field), 2 = current
   sessions: Record<string, PersistedEntry>;
+}
+
+export function sessionIdentity(s: { paneId?: string; pid: number }): string {
+  return s.paneId ?? String(s.pid);
 }
 
 export class SessionStore extends EventEmitter {
@@ -81,8 +86,8 @@ export class SessionStore extends EventEmitter {
     return Array.from(this.sessions.values());
   }
 
-  get(sessionId: string): Session | undefined {
-    return this.sessions.get(sessionId);
+  get(identity: string): Session | undefined {
+    return this.sessions.get(identity);
   }
 
   getByPid(pid: number): Session | undefined {
@@ -90,6 +95,23 @@ export class SessionStore extends EventEmitter {
       if (session.pid === pid) return session;
     }
     return undefined;
+  }
+
+  getBySessionId(sessionId: string): Session | undefined {
+    for (const session of this.sessions.values()) {
+      if (session.sessionId === sessionId) return session;
+    }
+    return undefined;
+  }
+
+  rekey(oldIdentity: string, newIdentity: string): void {
+    if (oldIdentity === newIdentity) return;
+    const session = this.sessions.get(oldIdentity);
+    if (!session) return;
+    this.sessions.delete(oldIdentity);
+    this.sessions.set(newIdentity, session);
+    this.emit('session-rekeyed', { oldIdentity, newIdentity, session });
+    logger.debug('session-store: rekeyed session', { oldIdentity, newIdentity });
   }
 
   register(session: Session): void {
@@ -106,34 +128,43 @@ export class SessionStore extends EventEmitter {
       if (meta.contextSummary !== undefined && !session.contextSummary) session.contextSummary = meta.contextSummary;
       if (meta.nextSteps !== undefined && !session.nextSteps) session.nextSteps = meta.nextSteps;
     }
-    this.sessions.set(session.sessionId, session);
+    this.sessions.set(sessionIdentity(session), session);
     this.emit('session-added', session);
     logger.debug('session-store: registered session', { sessionId: session.sessionId, pid: session.pid });
   }
 
-  unregister(sessionId: string): void {
-    const session = this.sessions.get(sessionId);
+  unregister(identity: string): void {
+    const session = this.sessions.get(identity);
     if (!session) return;
-    this.sessions.delete(sessionId);
+    this.sessions.delete(identity);
     this.emit('session-removed', session);
-    logger.debug('session-store: unregistered session', { sessionId });
+    logger.debug('session-store: unregistered session', { sessionId: session.sessionId });
   }
 
-  update(sessionId: string, patch: Partial<Session>): void {
-    const session = this.sessions.get(sessionId);
+  update(identity: string, patch: Partial<Session>): void {
+    const session = this.sessions.get(identity);
     if (!session) {
-      logger.warn('session-store: update called for unknown session', { sessionId });
+      logger.warn('session-store: update called for unknown session', { identity });
       return;
     }
     Object.assign(session, patch);
     this.emit('session-updated', session);
-    logger.debug('session-store: updated session', { sessionId, patch: Object.keys(patch) });
+    logger.debug('session-store: updated session', { identity, patch: Object.keys(patch) });
 
     // If metadata or summaries changed, schedule persist
     if ('label' in patch || 'tags' in patch || 'favorite' in patch ||
         'goalSummary' in patch || 'contextSummary' in patch || 'nextSteps' in patch) {
       this.persist();
     }
+  }
+
+  updateBySessionId(sessionId: string, patch: Partial<Session>): void {
+    const session = this.getBySessionId(sessionId);
+    if (!session) {
+      logger.warn('session-store: updateBySessionId for unknown session', { sessionId });
+      return;
+    }
+    this.update(sessionIdentity(session), patch);
   }
 
   persist(): void {
@@ -152,8 +183,8 @@ export class SessionStore extends EventEmitter {
       clearTimeout(this.persistTimer);
       this.persistTimer = null;
     }
-    const data: PersistFormat = { sessions: {} };
-    for (const [id, session] of this.sessions) {
+    const data: PersistFormat = { version: 2, sessions: {} };
+    for (const [, session] of this.sessions) {
       if (session.status === 'dead') continue;
       const entry: PersistedEntry = {};
       if (session.label !== undefined) entry.label = session.label;
@@ -170,7 +201,7 @@ export class SessionStore extends EventEmitter {
         entry.sshTarget = session.sshTarget;
         entry.host = session.host;
       }
-      data.sessions[id] = entry;
+      data.sessions[session.sessionId] = entry;
     }
     try {
       mkdirSync(dirname(this.persistPath), { recursive: true });
@@ -179,8 +210,8 @@ export class SessionStore extends EventEmitter {
   }
 
   private async _writePersist(): Promise<void> {
-    const data: PersistFormat = { sessions: {} };
-    for (const [id, session] of this.sessions) {
+    const data: PersistFormat = { version: 2, sessions: {} };
+    for (const [, session] of this.sessions) {
       if (session.status === 'dead') continue;
       const entry: PersistedEntry = {};
       if (session.label !== undefined) entry.label = session.label;
@@ -197,7 +228,7 @@ export class SessionStore extends EventEmitter {
         entry.sshTarget = session.sshTarget;
         entry.host = session.host;
       }
-      data.sessions[id] = entry;
+      data.sessions[session.sessionId] = entry;
     }
 
     try {
@@ -212,7 +243,7 @@ export class SessionStore extends EventEmitter {
   /** Returns persisted sessions matching the given cwd, sorted by startedAt desc. */
   getPastSessionsByCwd(cwd: string): Array<{ sessionId: string; startedAt: number; goalSummary?: string; contextSummary?: string; nextSteps?: string }> {
     const result: Array<{ sessionId: string; startedAt: number; goalSummary?: string; contextSummary?: string; nextSteps?: string }> = [];
-    const activeIds = new Set(this.sessions.keys());
+    const activeIds = new Set(this.getAll().map(s => s.sessionId));
     for (const [sessionId, entry] of this.persistedMeta) {
       if (entry.cwd === cwd && !activeIds.has(sessionId)) {
         result.push({
@@ -233,7 +264,7 @@ export class SessionStore extends EventEmitter {
    * Excludes currently active sessions.
    */
   getPastSessionsByTarget(sshTarget?: string): Array<{ sessionId: string; cwd: string; startedAt: number; goalSummary?: string; contextSummary?: string; sshTarget?: string }> {
-    const activeIds = new Set(this.sessions.keys());
+    const activeIds = new Set(this.getAll().map(s => s.sessionId));
     const all: Array<{ sessionId: string; cwd: string; startedAt: number; goalSummary?: string; contextSummary?: string; sshTarget?: string }> = [];
     for (const [sessionId, entry] of this.persistedMeta) {
       if (entry.sshTarget !== sshTarget) continue;
@@ -251,7 +282,7 @@ export class SessionStore extends EventEmitter {
 
   /** Returns all past sessions across all hosts, sorted by most recent. */
   getAllPastSessions(): Array<{ sessionId: string; cwd: string; startedAt: number; goalSummary?: string; contextSummary?: string; sshTarget?: string }> {
-    const activeIds = new Set(this.sessions.keys());
+    const activeIds = new Set(this.getAll().map(s => s.sessionId));
     const all: Array<{ sessionId: string; cwd: string; startedAt: number; goalSummary?: string; contextSummary?: string; sshTarget?: string }> = [];
     for (const [sessionId, entry] of this.persistedMeta) {
       if (!entry.cwd) continue;
@@ -310,11 +341,19 @@ export class SessionStore extends EventEmitter {
         logger.warn('session-store: invalid persist format, skipping restore');
         return;
       }
+      const version = (data as { version?: number }).version ?? 1;
+      const now = Date.now();
+      const maxAge = 30 * 24 * 60 * 60 * 1000; // 30 days
+
       for (const [sessionId, entry] of Object.entries(data.sessions)) {
-        // Store for later merge when sessions are registered
+        // v2 TTL eviction: skip old non-favorited entries
+        if (version >= 2 && entry.startedAt && !entry.favorite && (now - entry.startedAt > maxAge)) {
+          logger.debug('session-store: evicting stale entry', { sessionId, age: Math.round((now - entry.startedAt) / 86400000) + 'd' });
+          continue;
+        }
         this.persistedMeta.set(sessionId, entry);
-        // Also apply to already-registered sessions
-        const session = this.sessions.get(sessionId);
+        // Also apply to already-registered sessions (by sessionId scan)
+        const session = this.getBySessionId(sessionId);
         if (session) {
           if (entry.label !== undefined) session.label = entry.label;
           if (entry.tags !== undefined) session.tags = entry.tags;
@@ -324,14 +363,17 @@ export class SessionStore extends EventEmitter {
           if (entry.nextSteps !== undefined) session.nextSteps = entry.nextSteps;
         }
       }
-      logger.debug('session-store: restored state', { path: this.persistPath });
+      logger.debug('session-store: restored state', { path: this.persistPath, version });
     } catch (err) {
-      // Missing file is expected on first run
       const code = (err as NodeJS.ErrnoException).code;
       if (code !== 'ENOENT') {
         logger.warn('session-store: failed to restore state', { err: String(err) });
       }
     }
+  }
+
+  getPersistedEntry(sessionId: string): PersistedEntry | undefined {
+    return this.persistedMeta.get(sessionId);
   }
 }
 

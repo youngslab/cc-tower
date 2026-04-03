@@ -70,6 +70,37 @@ LOG_LEVEL=debug npx tsx /tmp/test-tower.ts 2>/tmp/debug.log
 grep "error\|warn\|fail" /tmp/debug.log
 ```
 
+## Version Strategy
+
+**현재 버전: 1.0.0**
+
+### 규칙: 코드 변경 시 반드시 버전을 올려야 한다.
+
+```bash
+# patch: 버그 수정, 소규모 개선 (1.0.0 → 1.0.1)
+npm version patch
+
+# minor: 새 기능 추가, 하위 호환 (1.0.0 → 1.1.0)
+npm version minor
+
+# major: breaking change, 아키텍처 변경 (1.0.0 → 2.0.0)
+npm version major
+```
+
+### 버전 변경 체크리스트
+
+코드를 변경하고 커밋하기 전에:
+1. `npm version patch|minor|major` 실행 (package.json 자동 업데이트)
+2. CLAUDE.md의 **현재 버전** 줄 업데이트
+3. `npx tsc && npx vitest run` 통과 확인 후 publish
+
+### 버전 이력
+
+| 버전 | 변경 내용 |
+|------|-----------|
+| 1.0.0 | 초기 릴리즈 |
+| 1.1.0 | paneId-primary session identity 리팩토링 — /clear 시 label/tags 보존, state.json v2 TTL eviction |
+
 ## Build & Publish
 
 ```bash

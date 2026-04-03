@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { Config } from '../config/defaults.js';
 import { loadConfig } from '../config/loader.js';
 import { DiscoveryEngine, SessionInfo } from './discovery.js';
-import { SessionStore, Session } from './session-store.js';
+import { SessionStore, Session, sessionIdentity } from './session-store.js';
 import { HookReceiver } from './hook-receiver.js';
 import { JsonlWatcher } from './jsonl-watcher.js';
 import { ProcessMonitor } from './process-monitor.js';
@@ -36,7 +36,8 @@ export class Tower extends EventEmitter {
   summarizer: Summarizer;
   notifier: Notifier;
   private stateMachines: Map<string, SessionStateMachine> = new Map();
-  private hookSidToSessionId: Map<string, string> = new Map(); // CLAUDE_SESSION_ID → internal sessionId
+  private remoteStateMachines: Map<string, SessionStateMachine> = new Map();
+  private hookSidToIdentity: Map<string, string> = new Map(); // CLAUDE_SESSION_ID → identity (paneId ?? String(pid))
   private jsonlPaths: Map<string, string> = new Map(); // sessionId → jsonlPath
   private stopping = false;
   private connectionManager!: ConnectionManager;
@@ -199,37 +200,53 @@ export class Tower extends EventEmitter {
     });
 
     this.discovery.on('session-changed', async ({ prev, next }: { prev: SessionInfo; next: SessionInfo }) => {
-      // Detect /resume vs /clear:
-      // - /resume  → next.sessionId is an old UUID with existing JSONL content
-      // - /clear   → next.sessionId is a new UUID with no JSONL yet
       const claudeDir = this.config.discovery.claude_dir.replace('~', os.homedir());
       const slug = cwdToSlug(next.cwd);
       const nextJsonl = path.join(claudeDir, 'projects', slug, `${next.sessionId}.jsonl`);
-      const isResume = (() => {
-        try { return fs.statSync(nextJsonl).size > 0; } catch { return false; }
-      })();
+      const isResume = (() => { try { return fs.statSync(nextJsonl).size > 0; } catch { return false; } })();
 
       logger.info(`tower: session changed (${isResume ? 'resume' : 'clear'})`, { pid: next.pid, old: prev.sessionId, new: next.sessionId });
 
-      const oldSession = this.store.get(prev.sessionId);
-
-      // Deregister old session immediately (no 30s dead delay for migrations)
-      this.cleanupSession(prev.sessionId);
-
-      // Register new/resumed session — persistedMeta restores its own label/tags/summaries
-      // For /clear: skip JSONL fallback so new session doesn't inherit old session's label/summary
-      await this.registerSession(next, { skipJsonlFallback: !isResume });
-
-      if (!isResume && oldSession) {
-        // /clear: carry over only favorite status from the cleared session
-        const patch: Record<string, unknown> = {};
-        if (oldSession.favorite) { patch['favorite'] = oldSession.favorite; patch['favoritedAt'] = oldSession.favoritedAt; }
-        if (Object.keys(patch).length > 0) {
-          this.store.update(next.sessionId, patch);
-          logger.info('tower: session migrated (clear)', { from: prev.sessionId, to: next.sessionId, keys: Object.keys(patch) });
-        }
+      // Find session by identity (paneId ?? String(pid)) — same pane, just sessionId changed
+      // SessionInfo doesn't carry paneId; look up existing session by prev.sessionId to get paneId
+      const prevSession = this.store.getBySessionId(prev.sessionId);
+      const identity = prevSession ? sessionIdentity(prevSession) : String(next.pid);
+      const session = this.store.get(identity);
+      if (!session) {
+        logger.warn('tower: session-changed but no session found for identity', { identity, pid: next.pid });
+        return;
       }
-      // /resume: persistedMeta already restored label/tags/summaries inside registerSession
+
+      // Swap JSONL path (sessionId-keyed map stays sessionId-keyed)
+      this.jsonlWatcher.unwatch(prev.sessionId);
+      this.jsonlPaths.delete(prev.sessionId);
+
+      // Update sessionId in-place — metadata (label/tags/favorite/summaries) preserved automatically
+      this.store.update(identity, { sessionId: next.sessionId });
+
+      if (isResume) {
+        // Summaries will be regenerated from the resumed JSONL below
+      } else {
+        // /clear: new conversation — clear stale summaries
+        this.store.update(identity, { goalSummary: undefined, contextSummary: undefined, nextSteps: undefined });
+      }
+
+      // Setup new JSONL path
+      if (fs.existsSync(nextJsonl) && fs.statSync(nextJsonl).size > 0) {
+        this.jsonlPaths.set(next.sessionId, nextJsonl);
+        this.jsonlWatcher.watch(next.sessionId, nextJsonl);
+      } else {
+        // /clear: JSONL not yet created — watch for it
+        const projectDir = path.dirname(nextJsonl);
+        const watcher = fs.watch(projectDir, (event, filename) => {
+          if (filename === `${next.sessionId}.jsonl` && fs.existsSync(nextJsonl) && fs.statSync(nextJsonl).size > 0) {
+            this.jsonlPaths.set(next.sessionId, nextJsonl);
+            this.jsonlWatcher.watch(next.sessionId, nextJsonl);
+            watcher.close();
+          }
+        });
+        setTimeout(() => watcher.close(), 60_000);
+      }
     });
 
     // 8. Start periodic discovery
@@ -238,11 +255,12 @@ export class Tower extends EventEmitter {
     // 9. Trigger initial summary for sessions that are already idle
     for (const session of this.store.getAll()) {
       if (session.status !== 'dead') {
+        const identity = sessionIdentity(session);
         const jp = this.jsonlPaths.get(session.sessionId);
         if (jp) {
-          void this.refreshGoalSummary(session.sessionId, jp);
-          if (!session.contextSummary) void this.refreshContextSummary(session.sessionId, jp);
-          if (!session.nextSteps && session.status === 'idle') void this.refreshNextSteps(session.sessionId, jp);
+          void this.refreshGoalSummary(identity, jp);
+          if (!session.contextSummary) void this.refreshContextSummary(identity, jp);
+          if (!session.nextSteps && session.status === 'idle') void this.refreshNextSteps(identity, jp);
         }
       }
     }
@@ -290,7 +308,7 @@ export class Tower extends EventEmitter {
         // Mark all sessions from this host as offline
         for (const session of this.store.getAll()) {
           if (session.host === hostName) {
-            this.store.update(session.sessionId, { hostOnline: false });
+            this.store.updateBySessionId(session.sessionId, { hostOnline: false });
           }
         }
       });
@@ -298,7 +316,7 @@ export class Tower extends EventEmitter {
       this.remoteDiscovery.on('host-online', (hostName: string) => {
         for (const session of this.store.getAll()) {
           if (session.host === hostName) {
-            this.store.update(session.sessionId, { hostOnline: true });
+            this.store.updateBySessionId(session.sessionId, { hostOnline: true });
           }
         }
       });
@@ -349,13 +367,14 @@ export class Tower extends EventEmitter {
 
   /** Full refresh: re-scan discovery, re-register session, then regenerate LLM summaries. */
   async refreshSession(sessionId: string): Promise<void> {
-    const session = this.store.get(sessionId);
+    const session = this.store.getBySessionId(sessionId);
     if (!session) return;
+    const identity = sessionIdentity(session);
     logger.info('tower: refreshSession called', { sessionId, host: session.host, sshTarget: session.sshTarget });
 
     // Clear UI immediately
     clearSummaryCache(sessionId);
-    this.store.update(sessionId, {
+    this.store.update(identity, {
       goalSummary: undefined,
       contextSummary: undefined,
       nextSteps: undefined,
@@ -369,10 +388,11 @@ export class Tower extends EventEmitter {
     if (match && match.sessionId !== sessionId) {
       // Session ID changed (e.g., /clear, /resume) — re-register
       logger.info('tower: refresh detected session change', { old: sessionId, new: match.sessionId });
-      this.cleanupSession(sessionId);
+      this.cleanupSession(identity);
       await this.registerSession(match);
       // Migrate metadata
-      this.store.update(match.sessionId, {
+      const newIdentity = sessionIdentity(match);
+      this.store.update(newIdentity, {
         label: session.label,
         tags: session.tags,
         favorite: session.favorite,
@@ -381,9 +401,9 @@ export class Tower extends EventEmitter {
       });
       const jp = this.jsonlPaths.get(match.sessionId);
       if (jp) {
-        void this.refreshGoalSummary(match.sessionId, jp);
-        void this.refreshContextSummary(match.sessionId, jp);
-        void this.refreshNextSteps(match.sessionId, jp);
+        void this.refreshGoalSummary(newIdentity, jp);
+        void this.refreshContextSummary(newIdentity, jp);
+        void this.refreshNextSteps(newIdentity, jp);
       }
     } else if (session.sshTarget) {
       // Remote session — use SSH-based refresh
@@ -438,12 +458,12 @@ export class Tower extends EventEmitter {
         } catch {}
 
         const updatedJp = this.jsonlPaths.get(sessionId)!;
-        void this.refreshGoalSummary(sessionId, updatedJp);
-        void this.refreshContextSummary(sessionId, updatedJp);
-        void this.refreshNextSteps(sessionId, updatedJp);
+        void this.refreshGoalSummary(identity, updatedJp);
+        void this.refreshContextSummary(identity, updatedJp);
+        void this.refreshNextSteps(identity, updatedJp);
       } else {
         // No JSONL available — clear loading state
-        this.store.update(sessionId, { summaryLoading: false });
+        this.store.update(identity, { summaryLoading: false });
         logger.info('tower: refresh skipped, no JSONL', { sessionId });
       }
     }
@@ -477,7 +497,10 @@ export class Tower extends EventEmitter {
    * session-changed and the FSM stays idle→idle (no state-change). This method detects
    * whether a newer JSONL exists (= new conversation was resumed) and refreshes summaries.
    */
-  private async refreshSessionAfterResume(sessionId: string): Promise<void> {
+  private async refreshSessionAfterResume(identity: string): Promise<void> {
+    const session = this.store.get(identity);
+    if (!session) return;
+    const sessionId = session.sessionId;
     const jp = this.jsonlPaths.get(sessionId);
     if (!jp) return;
 
@@ -491,87 +514,93 @@ export class Tower extends EventEmitter {
       if (files.length > 0) {
         const newest = path.join(dir, files[0]!.name);
         if (newest !== jp) {
-          logger.info('tower: resume detected — switching to newer JSONL', { sessionId, old: path.basename(jp), new: files[0]!.name });
+          logger.info('tower: resume detected — switching to newer JSONL', { identity, old: path.basename(jp), new: files[0]!.name });
           this.jsonlPaths.set(sessionId, newest);
           this.jsonlWatcher.unwatch(sessionId);
           this.jsonlWatcher.watch(sessionId, newest);
           // Clear stale summaries so they are regenerated from the resumed conversation
-          this.store.update(sessionId, { goalSummary: undefined, contextSummary: undefined, nextSteps: undefined });
+          this.store.update(identity, { goalSummary: undefined, contextSummary: undefined, nextSteps: undefined });
         }
       }
     } catch {}
 
     const updatedJp = this.jsonlPaths.get(sessionId)!;
-    void this.refreshGoalSummary(sessionId, updatedJp);
-    void this.refreshContextSummary(sessionId, updatedJp);
+    void this.refreshGoalSummary(identity, updatedJp);
+    void this.refreshContextSummary(identity, updatedJp);
   }
 
-  private async refreshGoalSummary(sessionId: string, jsonlPath: string): Promise<void> {
+  private async refreshGoalSummary(identity: string, jsonlPath: string): Promise<void> {
     try {
-      logger.info('tower: refreshing goal summary', { sessionId, jsonlPath });
+      const session = this.store.get(identity);
+      const sessionId = session?.sessionId ?? identity;
+      logger.info('tower: refreshing goal summary', { identity, jsonlPath });
       const earlyMessages = await this.jsonlWatcher.readRecentContext(jsonlPath, 15);
       if (!earlyMessages) {
-        logger.info('tower: no early messages found for goal', { sessionId });
-        this.store.update(sessionId, { summaryLoading: false });
+        logger.info('tower: no early messages found for goal', { identity });
+        this.store.update(identity, { summaryLoading: false });
         return;
       }
       if (earlyMessages.length < 20) {
-        logger.info('tower: early messages too short for goal summary', { sessionId, len: earlyMessages.length });
+        logger.info('tower: early messages too short for goal summary', { identity, len: earlyMessages.length });
         return;
       }
-      logger.info('tower: calling LLM for goal summary', { sessionId, msgLen: earlyMessages.length });
+      logger.info('tower: calling LLM for goal summary', { identity, msgLen: earlyMessages.length });
       const summary = await generateGoalSummary(sessionId, earlyMessages);
       if (summary) {
-        logger.info('tower: goal summary received', { sessionId, summary });
-        this.store.update(sessionId, { goalSummary: summary });
+        logger.info('tower: goal summary received', { identity, summary });
+        this.store.update(identity, { goalSummary: summary });
       } else {
-        logger.info('tower: LLM returned no goal summary', { sessionId });
+        logger.info('tower: LLM returned no goal summary', { identity });
       }
     } catch (err) {
-      logger.info('tower: goal summary error', { sessionId, error: String(err) });
+      logger.info('tower: goal summary error', { identity, error: String(err) });
     }
   }
 
-  private async refreshContextSummary(sessionId: string, jsonlPath: string): Promise<void> {
+  private async refreshContextSummary(identity: string, jsonlPath: string): Promise<void> {
     try {
-      logger.info('tower: refreshing context summary', { sessionId, jsonlPath });
+      const session = this.store.get(identity);
+      const sessionId = session?.sessionId ?? identity;
+      logger.info('tower: refreshing context summary', { identity, jsonlPath });
       const recentMessages = await this.jsonlWatcher.readRecentContext(jsonlPath, 15);
       if (!recentMessages) {
-        logger.info('tower: no recent messages found', { sessionId });
-        this.store.update(sessionId, { summaryLoading: false });
+        logger.info('tower: no recent messages found', { identity });
+        this.store.update(identity, { summaryLoading: false });
         return;
       }
       // Skip if messages are too short to summarize meaningfully
       if (recentMessages.length < 20) {
-        logger.info('tower: messages too short for LLM summary', { sessionId, len: recentMessages.length });
+        logger.info('tower: messages too short for LLM summary', { identity, len: recentMessages.length });
         return;
       }
-      logger.info('tower: calling LLM for summary', { sessionId, msgLen: recentMessages.length });
-      this.store.update(sessionId, { summaryLoading: true });
+      logger.info('tower: calling LLM for summary', { identity, msgLen: recentMessages.length });
+      this.store.update(identity, { summaryLoading: true });
       const summary = await generateContextSummary(sessionId, recentMessages);
       if (summary) {
-        logger.info('tower: context summary received', { sessionId, summary });
-        this.store.update(sessionId, { contextSummary: summary, summaryLoading: false });
+        logger.info('tower: context summary received', { identity, summary });
+        this.store.update(identity, { contextSummary: summary, summaryLoading: false });
       } else {
-        logger.info('tower: LLM returned no summary', { sessionId });
-        this.store.update(sessionId, { summaryLoading: false });
+        logger.info('tower: LLM returned no summary', { identity });
+        this.store.update(identity, { summaryLoading: false });
       }
     } catch (err) {
-      logger.info('tower: context summary error', { sessionId, error: String(err) });
+      logger.info('tower: context summary error', { identity, error: String(err) });
     }
   }
 
-  private async refreshNextSteps(sessionId: string, jsonlPath: string): Promise<void> {
+  private async refreshNextSteps(identity: string, jsonlPath: string): Promise<void> {
     try {
+      const session = this.store.get(identity);
+      const sessionId = session?.sessionId ?? identity;
       const recentMessages = await this.jsonlWatcher.readRecentContext(jsonlPath, 15);
       if (!recentMessages || recentMessages.length < 20) return;
       const suggestion = await generateNextSteps(sessionId, recentMessages);
       if (suggestion) {
-        logger.info('tower: next steps received', { sessionId, suggestion });
-        this.store.update(sessionId, { nextSteps: suggestion });
+        logger.info('tower: next steps received', { identity, suggestion });
+        this.store.update(identity, { nextSteps: suggestion });
       }
     } catch (err) {
-      logger.info('tower: next steps error', { sessionId, error: String(err) });
+      logger.info('tower: next steps error', { identity, error: String(err) });
     }
   }
 
@@ -773,7 +802,7 @@ export class Tower extends EventEmitter {
 
     // Apply custom title from JSONL (/rename) — always overwrite persisted label
     if (customTitle) {
-      this.store.update(info.sessionId, { label: customTitle });
+      this.store.update(sessionIdentity(session), { label: customTitle });
     }
 
     // f. Rename tmux session to claude-{projectName} for local sessions with a pane
@@ -781,16 +810,17 @@ export class Tower extends EventEmitter {
       void this.ensureTmuxSessionName(mapping.paneId, projectName);
     }
 
-    // f. Create state machine
+    // g. Create state machine
+    const identity = sessionIdentity(session);
     const fsm = new SessionStateMachine(info.sessionId, initialState);
     fsm.on('state-change', (change) => {
-      const currentSession = this.store.get(info.sessionId);
+      const currentSession = this.store.get(identity);
       const summary = this.summarizer.summarize(
         change.to,
         { type: change.to === 'idle' ? 'assistant' : 'user', stopReason: change.to === 'idle' ? 'end_turn' : undefined },
         [],
       );
-      this.store.update(info.sessionId, {
+      this.store.update(identity, {
         status: change.to,
         lastActivity: new Date(),
         currentSummary: {
@@ -805,9 +835,10 @@ export class Tower extends EventEmitter {
 
       // Trigger LLM summary refresh on idle transition
       if (change.to === 'idle') {
-        let jp = this.jsonlPaths.get(info.sessionId);
+        const currentSess = this.store.get(identity);
+        let jp = currentSess ? this.jsonlPaths.get(currentSess.sessionId) : undefined;
         // Re-check: use most recently modified JSONL (conversation ID may differ from session ID)
-        if (jp) {
+        if (jp && currentSess) {
           try {
             const dir = path.dirname(jp);
             const files = fs.readdirSync(dir)
@@ -818,48 +849,49 @@ export class Tower extends EventEmitter {
               const newest = path.join(dir, files[0]!.name);
               if (newest !== jp) {
                 jp = newest;
-                this.jsonlPaths.set(info.sessionId, jp);
-                this.jsonlWatcher.unwatch(info.sessionId);
-                this.jsonlWatcher.watch(info.sessionId, jp);
-                logger.info('tower: JSONL path updated on idle', { sessionId: info.sessionId, newPath: jp });
+                this.jsonlPaths.set(currentSess.sessionId, jp);
+                this.jsonlWatcher.unwatch(currentSess.sessionId);
+                this.jsonlWatcher.watch(currentSess.sessionId, jp);
+                logger.info('tower: JSONL path updated on idle', { identity, newPath: jp });
               }
             }
           } catch {}
         }
         if (jp) {
-          void this.refreshGoalSummary(info.sessionId, jp);
-          void this.refreshContextSummary(info.sessionId, jp);
-          void this.refreshNextSteps(info.sessionId, jp);
+          void this.refreshGoalSummary(identity, jp);
+          void this.refreshContextSummary(identity, jp);
+          void this.refreshNextSteps(identity, jp);
         }
       }
     });
 
     // PID liveness check on inactivity timeout — only go idle if the process is actually dead
     fsm.on('inactivity-check', () => {
-      const session = this.store.get(info.sessionId);
-      if (!session || session.status === 'idle' || session.status === 'dead') return;
-      if (isPidAlive(session.pid)) {
+      const sess = this.store.get(identity);
+      if (!sess || sess.status === 'idle' || sess.status === 'dead') return;
+      if (isPidAlive(sess.pid)) {
         // Process still alive — reset the timer by re-entering current state via a no-op transition
-        logger.debug('tower: inactivity-check — PID alive, resetting timer', { sessionId: info.sessionId, pid: session.pid });
+        logger.debug('tower: inactivity-check — PID alive, resetting timer', { identity, pid: sess.pid });
         fsm.resetInactivityTimer();
       } else {
-        logger.info('tower: inactivity-check — PID dead, transitioning to idle', { sessionId: info.sessionId, pid: session.pid });
+        logger.info('tower: inactivity-check — PID dead, transitioning to idle', { identity, pid: sess.pid });
         fsm.transition({ type: 'stop' });
       }
     });
 
-    this.stateMachines.set(info.sessionId, fsm);
+    this.stateMachines.set(identity, fsm);
 
-    // g. Track JSONL path + start watcher
+    // h. Track JSONL path + start watcher
     this.jsonlPaths.set(info.sessionId, jsonlPath);
     this.jsonlWatcher.watch(info.sessionId, jsonlPath);
 
-    // h. If no tmux, also start process monitor as extra signal
+    // i. If no tmux, also start process monitor as extra signal
     if (!mapping.hasTmux) {
       this.processMonitor.startPolling(info.pid, this.config.tracking.process_scan_interval);
     }
 
     logger.info('tower: session registered', {
+      identity,
       sessionId: info.sessionId,
       pane: mapping.paneId ?? 'none',
       state: initialState,
@@ -987,7 +1019,7 @@ export class Tower extends EventEmitter {
         void this.refreshAllRemoteSummaries(compositeId, remoteConfig, jsonlPath);
       }
     });
-    this.stateMachines.set(compositeId, fsm);
+    this.remoteStateMachines.set(compositeId, fsm);
 
     // Initial summary for idle sessions — skip if already summarized (Tower restart)
     if (initialState === 'idle') {
@@ -1019,7 +1051,7 @@ export class Tower extends EventEmitter {
       try {
         const tail = await remoteReadJsonlTail(config, jsonlPath);
         const lines = tail.split('\n').filter(l => l.trim());
-        const fsm = this.stateMachines.get(compositeId);
+        const fsm = this.remoteStateMachines.get(compositeId);
         if (!fsm) return;
 
         // Find the most recent state-determining message
@@ -1055,31 +1087,34 @@ export class Tower extends EventEmitter {
   }
 
   /** Immediate cleanup — no dead state, no 30s delay. Used for session migration (clear/resume). */
-  private cleanupSession(sessionId: string): void {
-    const session = this.store.get(sessionId);
+  private cleanupSession(identity: string): void {
+    const session = this.store.get(identity);
     if (!session) return;
-    const fsm = this.stateMachines.get(sessionId);
-    if (fsm) { fsm.destroy(); fsm.removeAllListeners(); this.stateMachines.delete(sessionId); }
-    this.jsonlWatcher.unwatch(sessionId);
+    const sessionId = session.sessionId;
+    const fsm = this.stateMachines.get(identity);
+    if (fsm) { fsm.destroy(); fsm.removeAllListeners(); this.stateMachines.delete(identity); }
     this.jsonlPaths.delete(sessionId);
+    this.jsonlWatcher.unwatch(sessionId);
     this.processMonitor.stopPolling(session.pid);
     const remoteTimer = this.remotePollers.get(sessionId);
     if (remoteTimer) { clearInterval(remoteTimer); this.remotePollers.delete(sessionId); }
-    this.hookSidToSessionId.delete(sessionId);
-    this.store.unregister(sessionId);
+    this.store.unregister(identity);
   }
 
   private deregisterSession(sessionId: string): void {
-    const session = this.store.get(sessionId);
+    // Accept sessionId (from discovery events) — resolve to identity via store
+    const session = this.store.getBySessionId(sessionId);
     if (!session) return;
+    const identity = sessionIdentity(session);
 
-    // Clean up state machine
-    const fsm = this.stateMachines.get(sessionId);
+    // Clean up state machine (try local then remote)
+    const fsm = this.stateMachines.get(identity) ?? this.remoteStateMachines.get(sessionId);
     if (fsm) {
       fsm.transition({ type: 'session-end' });
       fsm.destroy();
       fsm.removeAllListeners();
-      this.stateMachines.delete(sessionId);
+      this.stateMachines.delete(identity);
+      this.remoteStateMachines.delete(sessionId);
     }
 
     // Clean up watchers
@@ -1095,40 +1130,37 @@ export class Tower extends EventEmitter {
     }
 
     // Mark as dead, auto-remove after 30 seconds
-    this.store.update(sessionId, { status: 'dead', currentActivity: 'Session ended' });
+    this.store.update(identity, { status: 'dead', currentActivity: 'Session ended' });
     setTimeout(() => {
-      this.store.unregister(sessionId);
+      this.store.unregister(identity);
     }, 30000);
   }
 
-  private resolveSessionId(hookSid: string, hookCwd: string | undefined, hookPid?: number): string | null {
-    // 1. Direct match (hook sid === internal sessionId)
-    if (this.stateMachines.has(hookSid)) return hookSid;
-
-    // 2. Cached reverse mapping from previous resolution (O(1) fast path)
-    const cached = this.hookSidToSessionId.get(hookSid);
+  private resolveIdentity(hookSid: string, hookCwd: string | undefined, hookPid?: number): string | null {
+    // 1. Cached reverse mapping from previous resolution (O(1) fast path)
+    const cached = this.hookSidToIdentity.get(hookSid);
     if (cached && this.stateMachines.has(cached)) return cached;
 
-    // 3. Composite key match: stateMachines stores "host::bareId", hook sends bare id.
-    //    With multiple matches, first-match-wins is intentional (most recently added key wins).
-    for (const key of this.stateMachines.keys()) {
+    // 2. Composite key match: remoteStateMachines stores "host::bareId", hook sends bare id.
+    for (const key of this.remoteStateMachines.keys()) {
       if (key.endsWith(`::${hookSid}`)) {
-        this.hookSidToSessionId.set(hookSid, key);
+        this.hookSidToIdentity.set(hookSid, key);
         logger.debug('tower: hook sid matched via composite key', { hookSid, compositeId: key });
         return key;
       }
     }
 
-    // 4. PID-ancestry match: walk ppid chain from hookPid to find session whose pid is an ancestor
+    // 3. PID-ancestry match: walk ppid chain from hookPid to find session whose pid is an ancestor
     if (hookPid && hookPid > 0) {
       let current = hookPid;
       let depth = 0;
       while (current > 1 && depth < 15) {
         for (const session of this.store.getAll()) {
-          if (session.pid && session.pid === current && session.status !== 'dead' && this.stateMachines.has(session.sessionId)) {
-            this.hookSidToSessionId.set(hookSid, session.sessionId);
-            logger.debug('tower: hook sid mapped to session via PID ancestry', { hookSid, sessionId: session.sessionId, hookPid, matchedPid: current });
-            return session.sessionId;
+          const id = sessionIdentity(session);
+          if (session.pid && session.pid === current && session.status !== 'dead' && this.stateMachines.has(id)) {
+            this.hookSidToIdentity.set(hookSid, id);
+            logger.debug('tower: hook sid mapped to session via PID ancestry', { hookSid, identity: id, hookPid, matchedPid: current });
+            return id;
           }
         }
         const ppid = getPpid(current);
@@ -1138,40 +1170,17 @@ export class Tower extends EventEmitter {
       }
     }
 
-    // 5. Fallback: match by CWD across all sessions (last resort — may be wrong with multiple sessions in same cwd)
-    if (hookCwd) {
-      for (const session of this.store.getAll()) {
-        if (session.cwd === hookCwd && session.status !== 'dead' && this.stateMachines.has(session.sessionId)) {
-          this.hookSidToSessionId.set(hookSid, session.sessionId);
-          logger.debug('tower: hook sid mapped to session via CWD', { hookSid, sessionId: session.sessionId, cwd: hookCwd });
-          return session.sessionId;
-        }
-      }
-    }
-
     return null;
   }
 
-  private resolveSessionIdByCwd(hookCwd: string | undefined): string | null {
-    if (!hookCwd) return null;
-    for (const session of this.store.getAll()) {
-      if (session.cwd === hookCwd && session.status !== 'dead' && this.stateMachines.has(session.sessionId)) {
-        logger.debug('tower: hook resolved by CWD (no session ID)', { sessionId: session.sessionId, cwd: hookCwd });
-        return session.sessionId;
-      }
-    }
-    return null;
-  }
 
   private handleHookEvent(event: any): void {
     const hookSid = event.sid;
     if (!hookSid || typeof hookSid !== 'string') return;
 
-    // When CLAUDE_SESSION_ID is not available (sid='unknown'), resolve by CWD only
-    const sessionId = hookSid === 'unknown'
-      ? this.resolveSessionIdByCwd(event.cwd)
-      : this.resolveSessionId(hookSid, event.cwd, event.pid);
-    if (!sessionId) {
+    // When CLAUDE_SESSION_ID is not available (sid='unknown'), resolve by PID ancestry only
+    let identity = this.resolveIdentity(hookSid, event.cwd, event.pid);
+    if (!identity) {
       logger.info('tower: hook event for unknown session', { hookSid, event: event.event, cwd: event.cwd });
       // session-start from unknown session = likely /clear or new session — trigger immediate re-scan
       // Ignore /tmp sessions (LLM summarizer spawns claude --print there)
@@ -1209,7 +1218,7 @@ export class Tower extends EventEmitter {
 
         // Clean up the old session immediately (/clear creates a new session)
         if (dyingSession) {
-          this.cleanupSession(dyingSession.sessionId);
+          this.cleanupSession(sessionIdentity(dyingSession));
         }
 
         logger.info('tower: new session via hook (likely /clear)', { hookSid, cwd: event.cwd, migrateFrom: dyingSession?.sessionId });
@@ -1225,49 +1234,65 @@ export class Tower extends EventEmitter {
             };
             await this.registerSession(info, { skipJsonlFallback: true });
             // Use pane from hook payload if available (more reliable than PID→TTY chain)
+            const newIdentity = event.pane ?? (hookSid !== 'unknown' ? hookSid : String(dyingSession?.pid ?? 0));
             if (event.pane) {
-              this.store.update(hookSid, { paneId: event.pane, hasTmux: true });
+              this.store.update(newIdentity, { paneId: event.pane, hasTmux: true });
             }
             // Migrate only favorite status — label/tags belong to previous conversation
             if (migratedMeta) {
               const patch: Record<string, unknown> = {};
               if (migratedMeta.favorite) { patch['favorite'] = migratedMeta.favorite; patch['favoritedAt'] = migratedMeta.favoritedAt; }
               if (Object.keys(patch).length > 0) {
-                this.store.update(hookSid, patch);
+                this.store.update(newIdentity, patch);
                 logger.info('tower: migrated metadata to new session', { from: dyingSession?.sessionId, to: hookSid, keys: Object.keys(patch) });
               }
             }
-            // Map hookSid to new sessionId for future hook events
-            this.hookSidToSessionId.set(hookSid, hookSid);
+            // Map hookSid to new identity for future hook events
+            this.hookSidToIdentity.set(hookSid, newIdentity);
           })();
         }
       }
       return;
     }
-    // Ignore session-end from subagents: if hookSid doesn't directly match the session,
+    // Ignore session-end from subagents: if hookSid doesn't directly match the session's sessionId,
     // it's likely a subagent ending (same CWD, different session ID).
-    if (event.event === 'session-end' && hookSid !== sessionId && !sessionId.endsWith(`::${hookSid}`)) {
-      logger.info('tower: ignoring session-end from subagent', { hookSid, sessionId });
+    const resolvedSession = this.store.get(identity);
+    if (event.event === 'session-end' && resolvedSession && hookSid !== resolvedSession.sessionId && !identity.endsWith(`::${hookSid}`)) {
+      logger.info('tower: ignoring session-end from subagent', { hookSid, identity });
       return;
     }
 
-    logger.info('tower: hook event received', { event: event.event, sessionId, hookSid });
+    logger.info('tower: hook event received', { event: event.event, identity, hookSid });
 
-    const session = this.store.get(sessionId);
+    const session = this.store.get(identity);
     if (session) {
       const patch: Record<string, unknown> = {};
       // Upgrade to hook mode on first hook event
       if (session.detectionMode !== 'hook') patch['detectionMode'] = 'hook';
       // Use pane ID from hook payload directly — more reliable than PID→TTY chain
       if (event.pane && event.pane !== session.paneId) {
+        // K. paneId upgrade path — rekey all maps if identity changes
+        const oldIdentity = sessionIdentity(session);
         patch['paneId'] = event.pane;
         patch['hasTmux'] = true;
-        logger.debug('tower: pane updated from hook', { sessionId, pane: event.pane });
+        logger.debug('tower: pane updated from hook', { identity, pane: event.pane });
+        if (Object.keys(patch).length > 0) this.store.update(oldIdentity, patch);
+        const newIdentity = sessionIdentity({ ...session, paneId: event.pane });
+        if (oldIdentity !== newIdentity) {
+          this.store.rekey(oldIdentity, newIdentity);
+          const fsm2 = this.stateMachines.get(oldIdentity);
+          if (fsm2) { this.stateMachines.delete(oldIdentity); this.stateMachines.set(newIdentity, fsm2); }
+          for (const [hSid, id] of this.hookSidToIdentity) {
+            if (id === oldIdentity) this.hookSidToIdentity.set(hSid, newIdentity);
+          }
+          identity = newIdentity; // update local var so FSM lookup below uses correct key
+        }
+      } else if (Object.keys(patch).length > 0) {
+        this.store.update(identity, patch);
       }
-      if (Object.keys(patch).length > 0) this.store.update(sessionId, patch);
     }
 
-    const fsm = this.stateMachines.get(sessionId);
+    const fsm = this.stateMachines.get(identity) ?? this.remoteStateMachines.get(identity);
     if (!fsm) return;
 
     // Map hook event to FSM input
@@ -1281,37 +1306,39 @@ export class Tower extends EventEmitter {
     // so the FSM stays idle→idle (no state-change emitted). Without this, the newer JSONL
     // created by /resume would never be detected and summaries would remain stale.
     if (event.event === 'session-start' && fsm.getState() === 'idle') {
-      void this.refreshSessionAfterResume(sessionId);
+      void this.refreshSessionAfterResume(identity);
     }
 
     // Update tool/message counts
     if (event.event === 'user-prompt') {
-      const current = this.store.get(sessionId);
+      const current = this.store.get(identity);
       if (current) {
-        this.store.update(sessionId, { messageCount: current.messageCount + 1 });
+        this.store.update(identity, { messageCount: current.messageCount + 1 });
       }
       // Refresh summaries on user input — captures new task context immediately
-      const jp = this.jsonlPaths.get(sessionId);
+      const jp = current ? this.jsonlPaths.get(current.sessionId) : undefined;
       if (jp) {
-        void this.refreshGoalSummary(sessionId, jp);
-        void this.refreshContextSummary(sessionId, jp);
+        void this.refreshGoalSummary(identity, jp);
+        void this.refreshContextSummary(identity, jp);
       }
     }
     if (event.event === 'pre-tool') {
-      const current = this.store.get(sessionId);
+      const current = this.store.get(identity);
       if (current) {
-        this.store.update(sessionId, { toolCallCount: current.toolCallCount + 1 });
+        this.store.update(identity, { toolCallCount: current.toolCallCount + 1 });
       }
     }
   }
 
   private handleJsonlEvent(sessionId: string, parsed: any): void {
-    const session = this.store.get(sessionId);
+    // sessionId here is the key used in jsonlPaths/jsonlWatcher — resolve to identity via store
+    const session = this.store.getBySessionId(sessionId);
     if (!session) return;
+    const identity = sessionIdentity(session);
 
     // Handle metadata events regardless of detection mode
     if (parsed.type === 'custom-title' && parsed.customTitle) {
-      this.store.update(sessionId, { label: parsed.customTitle });
+      this.store.update(identity, { label: parsed.customTitle });
       this.store.persist();
       return;
     }
@@ -1319,7 +1346,7 @@ export class Tower extends EventEmitter {
     // Skip JSONL-driven transitions if session is in hook mode
     if (session.detectionMode === 'hook') return;
 
-    const fsm = this.stateMachines.get(sessionId);
+    const fsm = this.stateMachines.get(identity);
     if (!fsm) return;
 
     // Map JSONL parsed message to FSM input + update live summary
@@ -1328,7 +1355,7 @@ export class Tower extends EventEmitter {
       if (!isInternalMessage(rawText)) {
         fsm.transition({ type: 'user-prompt' } as InputEvent);
         const cleaned = cleanDisplayText(rawText);
-        this.store.update(sessionId, {
+        this.store.update(identity, {
           messageCount: session.messageCount + 1,
           currentTask: cleaned.slice(0, 80),
           currentActivity: cleaned.slice(0, 60),
@@ -1341,7 +1368,7 @@ export class Tower extends EventEmitter {
         const toolDesc = parsed.toolInput
           ? `${parsed.toolName}: ${parsed.toolInput}`
           : parsed.toolName;
-        this.store.update(sessionId, {
+        this.store.update(identity, {
           toolCallCount: session.toolCallCount + 1,
           currentActivity: toolDesc,
         });
@@ -1350,13 +1377,13 @@ export class Tower extends EventEmitter {
         const summary = parsed.assistantText
           ? `✓ ${cleanDisplayText(parsed.assistantText).split('.')[0]?.slice(0, 60) ?? 'Done'}`
           : '✓ Done';
-        this.store.update(sessionId, { currentActivity: summary });
+        this.store.update(identity, { currentActivity: summary });
       } else if (parsed.stopReason === null) {
         fsm.transition({ type: 'jsonl', stopReason: null } as InputEvent);
       }
     } else if (parsed.type === 'progress' && parsed.progressType === 'agent_progress') {
       fsm.transition({ type: 'agent-start' } as InputEvent);
-      this.store.update(sessionId, { currentTask: 'Subagent running...' });
+      this.store.update(identity, { currentTask: 'Subagent running...' });
     }
   }
 
@@ -1375,6 +1402,12 @@ export class Tower extends EventEmitter {
   }
 
   getStateMachine(sessionId: string): SessionStateMachine | undefined {
-    return this.stateMachines.get(sessionId);
+    // Try identity lookup first, fallback to sessionId (remote composite key)
+    const session = this.store.getBySessionId(sessionId);
+    if (session) {
+      const id = sessionIdentity(session);
+      return this.stateMachines.get(id) ?? this.remoteStateMachines.get(sessionId);
+    }
+    return this.stateMachines.get(sessionId) ?? this.remoteStateMachines.get(sessionId);
   }
 }

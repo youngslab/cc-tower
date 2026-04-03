@@ -8,7 +8,7 @@ SID=$(printf '%s' "$CONTEXT" | sed -n 's/.*"session_id" *: *"\([^"]*\)".*/\1/p' 
 SID="${SID:-unknown}"
 PANE="${TMUX_PANE:-}"
 
-PAYLOAD="{\"event\":\"$1\",\"sid\":\"$SID\",\"cwd\":\"$PWD\",\"pane\":\"$PANE\",\"pid\":$$,\"ts\":$(date +%s%3N)}"
+PAYLOAD="{\"event\":\"$1\",\"sid\":\"$SID\",\"cwd\":\"$PWD\",\"pane\":\"$PANE\",\"pid\":$PPID,\"ts\":$(date +%s%3N)}"
 
 if command -v socat >/dev/null 2>&1; then
   printf '%s\n' "$PAYLOAD" | socat - UNIX-CONNECT:"$SOCKET" 2>/dev/null

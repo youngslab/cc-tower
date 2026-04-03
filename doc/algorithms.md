@@ -1211,3 +1211,75 @@ Local sessions rely on the LLM hash cache — if JSONL content hasn't changed, `
 
 **Parser:** `src/utils/jsonl-parser.ts:parseJsonlLine()`
 
+
+---
+
+## TODO: Instance vs Session 분리 리팩토링
+
+### 배경
+
+현재 `SessionStore`는 두 가지 개념을 하나의 객체(`Session` 타입)에 혼재하고 있다.
+
+### 개념 정의
+
+**Instance** — Claude Code 실행 프로세스 그 자체
+- Key: `paneId ?? String(pid)` (불변, 프로세스 수명과 동일)
+- Data: `pid`, `paneId`, `status`, `currentTask`, `messageCount`, `toolCallCount`, `hasTmux`, ...
+- Lifecycle: 프로세스 시작/종료와 함께 생성/소멸 (in-memory only)
+
+**Session** — Instance가 실행 중 변경할 수 있는 논리적 단위
+- Key: `sessionId` (UUID, `/clear`·`/resume`로 변경 가능)
+- Data: `label`, `tags`, `favorite`, `goalSummary`, `contextSummary`, `nextSteps`, `cwd`, `startedAt`
+- Lifecycle: TTL 30일, `favorite`이면 영구 보존 (`state.json`에 persist)
+
+### 현재 문제
+
+- `SessionStore.register()`은 instance 등록이지만 session metadata도 같은 객체에 포함
+- persist(`state.json`)는 `sessionId` key로 저장 — session 개념
+- runtime store는 `identity(paneId/pid)` key — instance 개념
+- 두 개념이 `Session` 타입 하나에 섞여 있어 책임 불명확
+
+### 목표 구조
+
+```
+InstanceStore (in-memory)
+  key: identity = paneId ?? String(pid)
+  type: Instance
+
+SessionMetaStore (persistent, state.json)
+  key: sessionId
+  type: SessionMeta
+```
+
+`Instance`가 `currentSessionId`를 참조해 `SessionMeta`를 조회하는 방식으로 분리.
+
+### 핵심 문제: 새 instance에 이전 session 메타데이터 오염
+
+현재 `restore()`는 같은 cwd를 가진 이전 sessionId의 label/tags/goalSummary를 새 instance에 자동 병합한다.
+결과: 완전히 새로운 instance(새 pid, 새 sessionId)인데 이전 session 정보가 표기됨.
+
+**올바른 동작 (분리 후):**
+- 새 instance 시작 → Instance는 항상 clean state
+- SessionMeta는 sessionId 일치 시에만 적용 (새 sessionId → 빈 메타)
+- 이전 session 정보는 "과거 세션 목록"(`getPastSessionsByCwd`)에서만 조회
+- `/resume` 시에만 명시적으로 이전 SessionMeta를 현재 instance에 연결
+
+### 목표 아키텍처 상세
+
+**Instance (no cache, in-memory only)**
+- Discovery가 live 상태 관리 (pid alive 여부로 판단)
+- peek/go/detail 등 요청 시 on-demand validate → 없으면 dead 처리
+- persist 없음 — 재시작 시 항상 fresh discovery
+
+**Session Cache (state.json)**
+- key: `sessionId` (UUID)
+- data: `label`, `tags`, `favorite`, `goalSummary`, `contextSummary`, `nextSteps`
+- Instance의 현재 `sessionId`로 lookup → 있으면 표시, 없으면 빈 상태 (clean start)
+- `/clear` → 새 sessionId → 빈 메타로 시작, 이전 건 archive에 보존
+- `/resume` → 이전 sessionId 복원 → 해당 캐시 load
+- label 편집 = session cache 업데이트, instance와 무관
+
+**변경 사항**
+- `restore()`의 cwd 기반 자동 병합 제거 → 새 instance는 항상 clean
+- `SessionStore`가 instance lifecycle을 관리하지 않음 → discovery/tower 담당
+- TUI 구독 구조 변경: discovery 이벤트 → instance list 갱신, session cache 변경 → 표시 데이터 갱신
