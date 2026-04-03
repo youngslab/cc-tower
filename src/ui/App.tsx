@@ -28,6 +28,7 @@ export function App({ tower }: Props) {
   const [view, setView] = useState<View>('dashboard');
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
+  const [cursorSessionId, setCursorSessionId] = useState<string | null>(null);
 
   const handleSelect = useCallback((session: Session) => {
     setSelectedSession(session);
@@ -323,6 +324,8 @@ export function App({ tower }: Props) {
             sessions={sessions}
             tmuxCount={tmuxCount}
             maxTaskWidth={Math.max(10, boxWidth - 35)}
+            cursorSessionId={cursorSessionId}
+            onCursorChange={setCursorSessionId}
             onSelect={handleSelect}
             onSend={handleSend}
             onPeek={handlePeek}
