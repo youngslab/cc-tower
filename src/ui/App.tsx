@@ -57,6 +57,15 @@ export function App({ tower }: Props) {
     setSelectedSession(null);
   }, []);
 
+  const handleSwapFavoriteOrder = useCallback((idA: string, idB: string) => {
+    const all = tower.store.getAll();
+    const a = all.find(s => s.sessionId === idA);
+    const b = all.find(s => s.sessionId === idB);
+    if (!a || !b) return;
+    tower.store.updateBySessionId(idA, { favoritedAt: b.favoritedAt });
+    tower.store.updateBySessionId(idB, { favoritedAt: a.favoritedAt });
+  }, [tower]);
+
   const handleToggleFavorite = useCallback((session: Session) => {
     const nowFav = !session.favorite;
     tower.store.updateBySessionId(session.sessionId, { favorite: nowFav, favoritedAt: nowFav ? Date.now() : undefined });
@@ -326,6 +335,7 @@ export function App({ tower }: Props) {
             maxTaskWidth={Math.max(10, boxWidth - 35)}
             cursorSessionId={cursorSessionId}
             onCursorChange={setCursorSessionId}
+            onSwapFavoriteOrder={handleSwapFavoriteOrder}
             onSelect={handleSelect}
             onSend={handleSend}
             onPeek={handlePeek}

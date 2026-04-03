@@ -9,6 +9,7 @@ interface Props {
   maxTaskWidth: number;
   cursorSessionId: string | null;
   onCursorChange: (sessionId: string | null) => void;
+  onSwapFavoriteOrder: (idA: string, idB: string) => void;
   onSelect: (session: Session) => void;
   onSend: (session: Session) => void;
   onPeek: (session: Session) => void;
@@ -28,7 +29,7 @@ const STATUS_ICONS: Record<string, { icon: string; color: string }> = {
   dead: { icon: '✕', color: 'red' },
 };
 
-export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorSessionId, onCursorChange, onSelect, onSend, onPeek, onToggleFavorite, onNewSession, onRefresh, onKill, onGo, onQuit }: Props) {
+export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorSessionId, onCursorChange, onSwapFavoriteOrder, onSelect, onSend, onPeek, onToggleFavorite, onNewSession, onRefresh, onKill, onGo, onQuit }: Props) {
   const [confirmQuit, setConfirmQuit] = useState(false);
   const [confirmKill, setConfirmKill] = useState(false);
 
@@ -86,23 +87,35 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorSessionId, 
     if (key.upArrow || input === 'k') moveCursor(Math.max(0, cursor - 1));
     if (key.downArrow || input === 'j') moveCursor(Math.min(sorted.length - 1, cursor + 1));
 
-    // Group jump: [ = jump to prev group start, ] = jump to next group start
-    if (input === ']') {
-      if (favGroupEnd > 0 && cursor < favGroupEnd) {
-        // In favorites → jump to non-favorites start
-        moveCursor(Math.min(favGroupEnd, sorted.length - 1));
-      } else {
-        // Already in non-favorites or no favorites → wrap to top
-        moveCursor(0);
+    // [ / ] = move current session up/down within its group (no cross-group movement)
+    if (input === '[' && sorted[cursor]) {
+      const inFav = cursor < favGroupEnd;
+      if (inFav && cursor > 0) {
+        // Swap favoritedAt with the session above
+        onSwapFavoriteOrder(sorted[cursor]!.sessionId, sorted[cursor - 1]!.sessionId);
+        moveCursor(cursor - 1);
+      } else if (!inFav && cursor > favGroupEnd) {
+        // Swap positions in nonFavOrderRef
+        const a = nonFavOrderRef.current[cursor - favGroupEnd]!;
+        const b = nonFavOrderRef.current[cursor - favGroupEnd - 1]!;
+        nonFavOrderRef.current[cursor - favGroupEnd] = b;
+        nonFavOrderRef.current[cursor - favGroupEnd - 1] = a;
+        moveCursor(cursor - 1);
       }
     }
-    if (input === '[') {
-      if (favGroupEnd > 0 && cursor >= favGroupEnd) {
-        // In non-favorites → jump to favorites start
-        moveCursor(0);
-      } else {
-        // Already at favorites start → wrap to non-favorites start
-        moveCursor(Math.min(favGroupEnd, sorted.length - 1));
+    if (input === ']' && sorted[cursor]) {
+      const inFav = cursor < favGroupEnd;
+      if (inFav && cursor < favGroupEnd - 1) {
+        // Swap favoritedAt with the session below
+        onSwapFavoriteOrder(sorted[cursor]!.sessionId, sorted[cursor + 1]!.sessionId);
+        moveCursor(cursor + 1);
+      } else if (!inFav && cursor < sorted.length - 1) {
+        // Swap positions in nonFavOrderRef
+        const a = nonFavOrderRef.current[cursor - favGroupEnd]!;
+        const b = nonFavOrderRef.current[cursor - favGroupEnd + 1]!;
+        nonFavOrderRef.current[cursor - favGroupEnd] = b;
+        nonFavOrderRef.current[cursor - favGroupEnd + 1] = a;
+        moveCursor(cursor + 1);
       }
     }
 
@@ -214,7 +227,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorSessionId, 
             <Text color="red">✕</Text><Text dimColor> Dead</Text>
           </Box>
           <Box>
-            <Text dimColor>  [j/k] Nav  [{`[/]`}] Group  [1-9] Jump  │  [Enter] Detail  [p] Peek  [g] Go  [/] Send  │  [f] Fav  [n] New  [r] Refresh  [x] Kill  [q] Quit</Text>
+            <Text dimColor>  [j/k] Nav  [1-9] Jump  [{`[/]`}] Reorder  │  [Enter] Detail  [p] Peek  [g] Go  [/] Send  │  [f] Fav  [n] New  [r] Refresh  [x] Kill  [q] Quit</Text>
           </Box>
         </Box>
       )}
