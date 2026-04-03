@@ -380,7 +380,7 @@ program
     const sessions = tower.store.getAll();
     const s = sessions.find(s => s.sessionId.startsWith(sessionArg) || s.paneId === sessionArg);
     if (s) {
-      tower.store.update(s.sessionId, { label: name });
+      tower.store.updateBySessionId(s.sessionId, { label: name });
       tower.store.persist();
       console.log(`Labeled ${s.paneId ?? s.sessionId.slice(0, 8)} as "${name}"`);
     } else {

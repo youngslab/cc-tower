@@ -82,6 +82,11 @@ export class DiscoveryEngine extends EventEmitter {
           logger.debug('discovery: malformed session file', { filePath });
           continue;
         }
+        // Skip sdk-cli sessions (headless subprocesses spawned by user code, not interactive terminals)
+        if ((parsed as unknown as Record<string, unknown>)['entrypoint'] === 'sdk-cli') {
+          logger.debug('discovery: skipping sdk-cli session', { filePath });
+          continue;
+        }
         info = parsed;
       } catch (err) {
         logger.debug('discovery: failed to read/parse session file', { filePath, err: String(err) });
