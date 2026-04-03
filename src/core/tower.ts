@@ -221,15 +221,13 @@ export class Tower extends EventEmitter {
       this.jsonlWatcher.unwatch(prev.sessionId);
       this.jsonlPaths.delete(prev.sessionId);
 
-      // Update sessionId in-place — metadata (label/tags/favorite/summaries) preserved automatically
-      this.store.update(identity, { sessionId: next.sessionId });
-
+      // Update sessionId in-place
+      // /clear: new sessionId has no meta entry → clean start (label/tags/summaries empty)
+      // /resume: explicitly reassociate meta from old sessionId to new sessionId
       if (isResume) {
-        // Summaries will be regenerated from the resumed JSONL below
-      } else {
-        // /clear: new conversation — clear stale summaries
-        this.store.update(identity, { goalSummary: undefined, contextSummary: undefined, nextSteps: undefined });
+        this.store.reassociateMeta(prev.sessionId, next.sessionId);
       }
+      this.store.update(identity, { sessionId: next.sessionId });
 
       // Setup new JSONL path
       if (fs.existsSync(nextJsonl) && fs.statSync(nextJsonl).size > 0) {
@@ -374,12 +372,8 @@ export class Tower extends EventEmitter {
 
     // Clear UI immediately
     clearSummaryCache(sessionId);
-    this.store.update(identity, {
-      goalSummary: undefined,
-      contextSummary: undefined,
-      nextSteps: undefined,
-      summaryLoading: true,
-    });
+    this.store.updateMeta(identity, { goalSummary: undefined, contextSummary: undefined, nextSteps: undefined });
+    this.store.update(identity, { summaryLoading: true });
 
     // Re-scan discovery to pick up any changes (new PID, session file changes)
     const discovered = await this.discovery.scanOnce();
@@ -392,13 +386,8 @@ export class Tower extends EventEmitter {
       await this.registerSession(match);
       // Migrate metadata
       const newIdentity = sessionIdentity(match);
-      this.store.update(newIdentity, {
-        label: session.label,
-        tags: session.tags,
-        favorite: session.favorite,
-        favoritedAt: session.favoritedAt,
-        summaryLoading: true,
-      });
+      this.store.updateMeta(newIdentity, { label: session.label, tags: session.tags, favorite: session.favorite, favoritedAt: session.favoritedAt });
+      this.store.update(newIdentity, { summaryLoading: true });
       const jp = this.jsonlPaths.get(match.sessionId);
       if (jp) {
         void this.refreshGoalSummary(newIdentity, jp);
@@ -519,7 +508,7 @@ export class Tower extends EventEmitter {
           this.jsonlWatcher.unwatch(sessionId);
           this.jsonlWatcher.watch(sessionId, newest);
           // Clear stale summaries so they are regenerated from the resumed conversation
-          this.store.update(identity, { goalSummary: undefined, contextSummary: undefined, nextSteps: undefined });
+          this.store.updateMeta(identity, { goalSummary: undefined, contextSummary: undefined, nextSteps: undefined });
         }
       }
     } catch {}
@@ -548,7 +537,7 @@ export class Tower extends EventEmitter {
       const summary = await generateGoalSummary(sessionId, earlyMessages);
       if (summary) {
         logger.info('tower: goal summary received', { identity, summary });
-        this.store.update(identity, { goalSummary: summary });
+        this.store.updateMeta(identity, { goalSummary: summary });
       } else {
         logger.info('tower: LLM returned no goal summary', { identity });
       }
@@ -578,7 +567,8 @@ export class Tower extends EventEmitter {
       const summary = await generateContextSummary(sessionId, recentMessages);
       if (summary) {
         logger.info('tower: context summary received', { identity, summary });
-        this.store.update(identity, { contextSummary: summary, summaryLoading: false });
+        this.store.updateMeta(identity, { contextSummary: summary });
+        this.store.update(identity, { summaryLoading: false });
       } else {
         logger.info('tower: LLM returned no summary', { identity });
         this.store.update(identity, { summaryLoading: false });
@@ -597,7 +587,7 @@ export class Tower extends EventEmitter {
       const suggestion = await generateNextSteps(sessionId, recentMessages);
       if (suggestion) {
         logger.info('tower: next steps received', { identity, suggestion });
-        this.store.update(identity, { nextSteps: suggestion });
+        this.store.updateMeta(identity, { nextSteps: suggestion });
       }
     } catch (err) {
       logger.info('tower: next steps error', { identity, error: String(err) });
@@ -621,7 +611,7 @@ export class Tower extends EventEmitter {
       const suggestion = await generateNextSteps(compositeId, recentText);
       if (suggestion) {
         logger.info('tower: remote next steps received', { compositeId, suggestion });
-        this.store.update(compositeId, { nextSteps: suggestion });
+        this.store.updateMeta(compositeId, { nextSteps: suggestion });
       }
     } catch (err) {
       logger.debug('tower: remote next steps error', { compositeId, error: String(err) });
@@ -659,7 +649,7 @@ export class Tower extends EventEmitter {
       const summary = await generateGoalSummary(compositeId, earlyText);
       if (summary) {
         logger.info('tower: remote goal summary received', { compositeId, summary });
-        this.store.update(compositeId, { goalSummary: summary });
+        this.store.updateMeta(compositeId, { goalSummary: summary });
       }
     } catch (err) {
       logger.debug('tower: remote goal summary error', { compositeId, error: String(err) });
@@ -683,7 +673,7 @@ export class Tower extends EventEmitter {
       const summary = await generateContextSummary(compositeId, recentText);
       if (summary) {
         logger.info('tower: remote context summary received', { compositeId, summary });
-        this.store.update(compositeId, { contextSummary: summary });
+        this.store.updateMeta(compositeId, { contextSummary: summary });
       }
     } catch (err) {
       logger.debug('tower: remote context summary error', { compositeId, error: String(err) });
@@ -802,7 +792,7 @@ export class Tower extends EventEmitter {
 
     // Apply custom title from JSONL (/rename) — always overwrite persisted label
     if (customTitle) {
-      this.store.update(sessionIdentity(session), { label: customTitle });
+      this.store.updateMeta(sessionIdentity(session), { label: customTitle });
     }
 
     // f. Rename tmux session to claude-{projectName} for local sessions with a pane
@@ -1238,14 +1228,10 @@ export class Tower extends EventEmitter {
             if (event.pane) {
               this.store.update(newIdentity, { paneId: event.pane, hasTmux: true });
             }
-            // Migrate only favorite status — label/tags belong to previous conversation
-            if (migratedMeta) {
-              const patch: Record<string, unknown> = {};
-              if (migratedMeta.favorite) { patch['favorite'] = migratedMeta.favorite; patch['favoritedAt'] = migratedMeta.favoritedAt; }
-              if (Object.keys(patch).length > 0) {
-                this.store.update(newIdentity, patch);
-                logger.info('tower: migrated metadata to new session', { from: dyingSession?.sessionId, to: hookSid, keys: Object.keys(patch) });
-              }
+            // Intentional: /clear preserves only favorite status — label/tags/summaries start fresh
+            if (migratedMeta && migratedMeta.favorite) {
+              this.store.updateMeta(newIdentity, { favorite: migratedMeta.favorite, favoritedAt: migratedMeta.favoritedAt });
+              logger.info('tower: migrated favorite to new session', { from: dyingSession?.sessionId, to: hookSid });
             }
             // Map hookSid to new identity for future hook events
             this.hookSidToIdentity.set(hookSid, newIdentity);
@@ -1338,7 +1324,7 @@ export class Tower extends EventEmitter {
 
     // Handle metadata events regardless of detection mode
     if (parsed.type === 'custom-title' && parsed.customTitle) {
-      this.store.update(identity, { label: parsed.customTitle });
+      this.store.updateMeta(identity, { label: parsed.customTitle });
       this.store.persist();
       return;
     }
