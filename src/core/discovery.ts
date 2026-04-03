@@ -69,7 +69,15 @@ export class DiscoveryEngine extends EventEmitter {
 
       try {
         const raw = await readFile(filePath, 'utf8');
-        const parsed = JSON.parse(raw) as unknown;
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          // File may have trailing garbage after the JSON object — extract the first object
+          const end = raw.indexOf('}');
+          if (end === -1) throw new Error('no closing brace found');
+          parsed = JSON.parse(raw.slice(0, end + 1));
+        }
         if (!isSessionInfo(parsed)) {
           logger.debug('discovery: malformed session file', { filePath });
           continue;
