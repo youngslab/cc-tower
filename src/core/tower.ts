@@ -1172,78 +1172,9 @@ export class Tower extends EventEmitter {
     // When CLAUDE_SESSION_ID is not available (sid='unknown'), resolve by PID ancestry only
     let identity = this.resolveIdentity(hookSid, event.cwd, event.pid, event.event);
     if (!identity) {
-      logger.info('tower: hook event for unknown session', { hookSid, event: event.event, cwd: event.cwd });
-      // session-start from unknown session = likely /clear or new session — trigger immediate re-scan
-      // Ignore /tmp sessions (LLM summarizer spawns claude --print there)
-      if (event.event === 'session-start' && event.cwd && !event.cwd.startsWith('/tmp')) {
-        // If an active instance already exists at this CWD, this is likely a headless subprocess
-        // (sdk-cli, subagent, etc.) — don't create a new instance for it
-        const existingAtCwd = this.store.getAll().find(s => s.cwd === event.cwd && s.status !== 'dead');
-        if (existingAtCwd) {
-          logger.debug('tower: ignoring unknown session-start — active instance already at CWD', { hookSid, cwd: event.cwd, existingIdentity: sessionIdentity(existingAtCwd) });
-          return;
-        }
-        // No active instance at CWD — check if this is a headless/sdk-cli session before registering
-        try {
-          const sessionsDir = this.config.discovery.claude_dir.replace('~', os.homedir()) + '/sessions';
-          const files = fs.readdirSync(sessionsDir).filter(f => f.endsWith('.json'));
-          for (const f of files) {
-            try {
-              const raw = fs.readFileSync(path.join(sessionsDir, f), 'utf8');
-              const parsed = JSON.parse(raw) as { sessionId?: string; pid?: number; entrypoint?: string };
-              if (parsed.sessionId === hookSid && parsed.pid) {
-                if (isHeadlessProcess(parsed.pid) || parsed.entrypoint === 'sdk-cli') {
-                  logger.debug('tower: ignoring session-start from headless/sdk-cli process', { hookSid, pid: parsed.pid, entrypoint: parsed.entrypoint });
-                  return;
-                }
-                break;
-              }
-            } catch {}
-          }
-        } catch {}
-
-        // Find the dead/dying session with same CWD for metadata migration.
-        // Only match if the hook pid matches the session pid (same claude process = /clear).
-        // A different pid means a new parallel session (e.g. sdk-cli) — not a /clear.
-        const dyingSession = event.cwd
-          ? this.store.getAll().find(s => s.cwd === event.cwd && (!event.pid || s.pid === event.pid))
-          : undefined;
-        const migratedMeta = dyingSession ? {
-          label: dyingSession.label,
-          tags: dyingSession.tags,
-          favorite: dyingSession.favorite,
-          favoritedAt: dyingSession.favoritedAt,
-        } : undefined;
-
-        // Clean up the old session immediately (/clear creates a new session)
-        if (dyingSession) {
-          this.cleanupSession(sessionIdentity(dyingSession));
-        }
-
-        logger.info('tower: new session via hook (likely /clear)', { hookSid, cwd: event.cwd, migrateFrom: dyingSession?.sessionId });
-
-        // Register directly using hookSid — sessions/{pid}.json is stale after /clear
-        // Skip if we have no reliable identity anchor (no dyingSession pid and no pane)
-        if (event.cwd && hookSid !== 'unknown' && (dyingSession?.pid || event.pane)) {
-          void (async () => {
-            const info: SessionInfo = {
-              pid: dyingSession?.pid ?? event.pid ?? 0,
-              sessionId: hookSid,
-              cwd: event.cwd!,
-              startedAt: Date.now(),
-            };
-            await this.registerSession(info, { skipJsonlFallback: true });
-            // Use pane from hook payload if available (more reliable than PID→TTY chain)
-            const newIdentity = event.pane ?? (hookSid !== 'unknown' ? hookSid : String(dyingSession?.pid ?? 0));
-            if (event.pane) {
-              this.store.update(newIdentity, { paneId: event.pane, hasTmux: true });
-            }
-            // favorite is instance-level — no migration needed on session change
-            // Map hookSid to new identity for future hook events
-            this.hookSidToIdentity.set(hookSid, newIdentity);
-          })();
-        }
-      }
+      // Can't resolve PID to a registered instance — ignore.
+      // Discovery handles registration; hooks only correct/update existing instances.
+      logger.debug('tower: ignoring hook for unresolved PID', { hookSid, event: event.event, cwd: event.cwd });
       return;
     }
     // Ignore session-end from subagents: if hookSid doesn't directly match the session's sessionId,
