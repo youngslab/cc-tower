@@ -62,13 +62,16 @@ export function App({ tower }: Props) {
     const a = all.find(s => s.sessionId === idA);
     const b = all.find(s => s.sessionId === idB);
     if (!a || !b) return;
-    tower.store.updateBySessionId(idA, { favoritedAt: b.favoritedAt });
-    tower.store.updateBySessionId(idB, { favoritedAt: a.favoritedAt });
+    const identityA = a.paneId ?? String(a.pid);
+    const identityB = b.paneId ?? String(b.pid);
+    tower.store.update(identityA, { favoritedAt: b.favoritedAt });
+    tower.store.update(identityB, { favoritedAt: a.favoritedAt });
   }, [tower]);
 
   const handleToggleFavorite = useCallback((session: Session) => {
     const nowFav = !session.favorite;
-    tower.store.updateBySessionId(session.sessionId, { favorite: nowFav, favoritedAt: nowFav ? Date.now() : undefined });
+    const identity = session.paneId ?? String(session.pid);
+    tower.store.update(identity, { favorite: nowFav, favoritedAt: nowFav ? Date.now() : undefined });
   }, [tower]);
 
   const handleRefresh = useCallback((session: Session) => {

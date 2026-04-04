@@ -274,7 +274,7 @@ describe('SessionStore', () => {
     const data = JSON.parse(raw);
     expect(data.sessions['uuid-persist']).toBeDefined();
     expect(data.sessions['%7']).toBeUndefined();
-    expect(data.version).toBe(2);
+    expect(data.version).toBe(3);
   });
 
   // --- state.json v2 TTL eviction ---

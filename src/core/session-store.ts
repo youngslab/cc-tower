@@ -36,6 +36,8 @@ export interface Instance {
   toolCallCount: number;
   estimatedCost?: number;
   summaryLoading?: boolean;    // LLM 요약 대기 중
+  favorite?: boolean;          // instance-level: survives session changes
+  favoritedAt?: number;        // timestamp when favorited, for stable sort order
   host?: string;               // 'local' | host name from config
   sshTarget?: string;          // e.g., 'user@192.168.1.10' — undefined for local
   commandPrefix?: string;      // e.g., 'docker exec devenv' — wraps remote commands
@@ -45,8 +47,6 @@ export interface Instance {
 export interface SessionMeta {
   label?: string;
   tags?: string[];
-  favorite?: boolean;
-  favoritedAt?: number;  // timestamp when favorited, for stable sort order
   goalSummary?: string;        // LLM-generated: 세션 전체 목표 (generated once from early messages)
   contextSummary?: string;     // LLM-generated: 최근 작업 방향 (Dashboard TASK)
   nextSteps?: string;          // LLM-generated: suggested next action on idle
@@ -72,22 +72,29 @@ interface PersistedEntry {
   startedAt?: number;
 }
 
+interface PersistedInstance {
+  favorite?: boolean;
+  favoritedAt?: number;
+}
+
 interface PersistFormat {
-  version?: number;  // 1 = legacy (no field), 2 = current
+  version?: number;  // 1 = legacy (no field), 2 = current, 3 = instance-level favorite
   sessions: Record<string, PersistedEntry>;
+  instances?: Record<string, PersistedInstance>;  // v3: keyed by identity (paneId)
 }
 
 export function sessionIdentity(s: { paneId?: string; pid: number }): string {
   return s.paneId ?? String(s.pid);
 }
 
-const META_FIELDS = new Set<string>(['label', 'tags', 'favorite', 'favoritedAt', 'goalSummary', 'contextSummary', 'nextSteps']);
+const META_FIELDS = new Set<string>(['label', 'tags', 'goalSummary', 'contextSummary', 'nextSteps']);
 
 export class SessionStore extends EventEmitter {
   private instances: Map<string, Instance> = new Map();
   private sessionMeta: Map<string, SessionMeta> = new Map();
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private persistedMeta: Map<string, PersistedEntry> = new Map(); // pre-loaded from state.json
+  private persistedInstances: Map<string, PersistedInstance> = new Map(); // v3: keyed by identity (paneId)
 
   constructor(private persistPath: string) {
     super();
@@ -141,25 +148,37 @@ export class SessionStore extends EventEmitter {
     if (!session.projectName) {
       session.projectName = cwdToSlug(session.cwd);
     }
-    // Merge persisted metadata (label, tags, contextSummary) from previous run
+    // Merge persisted session metadata (label, tags, summaries) from previous run
     const persisted = this.persistedMeta.get(session.sessionId);
     if (persisted) {
       const existing = this.sessionMeta.get(session.sessionId) ?? {} as SessionMeta;
       const merged: SessionMeta = { ...existing };
       if (persisted.label !== undefined && !merged.label) merged.label = persisted.label;
       if (persisted.tags !== undefined && !merged.tags) merged.tags = persisted.tags;
-      if (persisted.favorite !== undefined && !merged.favorite) { merged.favorite = persisted.favorite; merged.favoritedAt = persisted.favoritedAt; }
       if (persisted.goalSummary !== undefined) merged.goalSummary = persisted.goalSummary;
       if (persisted.contextSummary !== undefined && !merged.contextSummary) merged.contextSummary = persisted.contextSummary;
       if (persisted.nextSteps !== undefined && !merged.nextSteps) merged.nextSteps = persisted.nextSteps;
       this.sessionMeta.set(session.sessionId, merged);
+    }
+    // Merge persisted instance data (favorite) by identity — survives session changes
+    const identity = sessionIdentity(session);
+    const persistedInst = this.persistedInstances.get(identity);
+    if (persistedInst) {
+      if (persistedInst.favorite !== undefined && !session.favorite) {
+        session.favorite = persistedInst.favorite;
+        session.favoritedAt = persistedInst.favoritedAt;
+      }
+    }
+    // Also try legacy: favorite in persistedMeta (v2 state.json) — migrate to instance-level
+    if (!session.favorite && persisted?.favorite) {
+      session.favorite = persisted.favorite;
+      session.favoritedAt = persisted.favoritedAt;
     }
     // Capture any meta fields passed in the session object into sessionMeta
     const { label: _l, tags: _t, favorite: _f, favoritedAt: _fa, goalSummary: _gs, contextSummary: _cs, nextSteps: _ns, ...instancePart } = session;
     const incomingMeta: Partial<SessionMeta> = {};
     if (session.label !== undefined) incomingMeta.label = session.label;
     if (session.tags !== undefined) incomingMeta.tags = session.tags;
-    if (session.favorite !== undefined) { incomingMeta.favorite = session.favorite; incomingMeta.favoritedAt = session.favoritedAt; }
     if (session.goalSummary !== undefined) incomingMeta.goalSummary = session.goalSummary;
     if (session.contextSummary !== undefined) incomingMeta.contextSummary = session.contextSummary;
     if (session.nextSteps !== undefined) incomingMeta.nextSteps = session.nextSteps;
@@ -255,19 +274,17 @@ export class SessionStore extends EventEmitter {
       clearTimeout(this.persistTimer);
       this.persistTimer = null;
     }
-    const data: PersistFormat = { version: 2, sessions: {} };
+    const data: PersistFormat = { version: 3, sessions: {}, instances: {} };
     const liveSessionIds = new Set<string>();
 
     // (A) Live sessions
-    for (const [, instance] of this.instances) {
+    for (const [identity, instance] of this.instances) {
       if (instance.status === 'dead') continue;
       liveSessionIds.add(instance.sessionId);
       const meta = this.sessionMeta.get(instance.sessionId) ?? {};
       const entry: PersistedEntry = {};
       if ((meta as SessionMeta).label !== undefined) entry.label = (meta as SessionMeta).label;
       if ((meta as SessionMeta).tags !== undefined) entry.tags = (meta as SessionMeta).tags;
-      if ((meta as SessionMeta).favorite !== undefined) entry.favorite = (meta as SessionMeta).favorite;
-      if ((meta as SessionMeta).favoritedAt !== undefined) entry.favoritedAt = (meta as SessionMeta).favoritedAt;
       if ((meta as SessionMeta).goalSummary !== undefined) entry.goalSummary = (meta as SessionMeta).goalSummary;
       if ((meta as SessionMeta).contextSummary !== undefined) entry.contextSummary = (meta as SessionMeta).contextSummary;
       if ((meta as SessionMeta).nextSteps !== undefined) entry.nextSteps = (meta as SessionMeta).nextSteps;
@@ -279,12 +296,22 @@ export class SessionStore extends EventEmitter {
         entry.host = instance.host;
       }
       data.sessions[instance.sessionId] = entry;
+      // Instance-level: favorite (survives session changes)
+      if (instance.favorite) {
+        data.instances![identity] = { favorite: instance.favorite, favoritedAt: instance.favoritedAt };
+      }
     }
 
     // (B) Historical sessions not currently live
     for (const [sessionId, entry] of this.persistedMeta) {
       if (!liveSessionIds.has(sessionId)) {
         data.sessions[sessionId] = entry;
+      }
+    }
+    // (C) Historical instance data not currently live
+    for (const [identity, inst] of this.persistedInstances) {
+      if (!this.instances.has(identity)) {
+        data.instances![identity] = inst;
       }
     }
 
@@ -299,19 +326,17 @@ export class SessionStore extends EventEmitter {
   // 2. Historical metadata: persistedMeta entries for past sessions (sessionIds not currently active)
   // When the same sessionId appears in both, live sessionMeta takes precedence.
   private async _writePersist(): Promise<void> {
-    const data: PersistFormat = { version: 2, sessions: {} };
+    const data: PersistFormat = { version: 3, sessions: {}, instances: {} };
     const liveSessionIds = new Set<string>();
 
     // (A) Live sessions
-    for (const [, instance] of this.instances) {
+    for (const [identity, instance] of this.instances) {
       if (instance.status === 'dead') continue;
       liveSessionIds.add(instance.sessionId);
       const meta = this.sessionMeta.get(instance.sessionId) ?? {};
       const entry: PersistedEntry = {};
       if ((meta as SessionMeta).label !== undefined) entry.label = (meta as SessionMeta).label;
       if ((meta as SessionMeta).tags !== undefined) entry.tags = (meta as SessionMeta).tags;
-      if ((meta as SessionMeta).favorite !== undefined) entry.favorite = (meta as SessionMeta).favorite;
-      if ((meta as SessionMeta).favoritedAt !== undefined) entry.favoritedAt = (meta as SessionMeta).favoritedAt;
       if ((meta as SessionMeta).goalSummary !== undefined) entry.goalSummary = (meta as SessionMeta).goalSummary;
       if ((meta as SessionMeta).contextSummary !== undefined) entry.contextSummary = (meta as SessionMeta).contextSummary;
       if ((meta as SessionMeta).nextSteps !== undefined) entry.nextSteps = (meta as SessionMeta).nextSteps;
@@ -323,12 +348,23 @@ export class SessionStore extends EventEmitter {
         entry.host = instance.host;
       }
       data.sessions[instance.sessionId] = entry;
+      // Instance-level: favorite (survives session changes)
+      if (instance.favorite) {
+        data.instances![identity] = { favorite: instance.favorite, favoritedAt: instance.favoritedAt };
+      }
     }
 
     // (B) Historical sessions not currently live
     for (const [sessionId, entry] of this.persistedMeta) {
       if (!liveSessionIds.has(sessionId)) {
         data.sessions[sessionId] = entry;
+      }
+    }
+
+    // (C) Historical instance data not currently live
+    for (const [identity, inst] of this.persistedInstances) {
+      if (!this.instances.has(identity)) {
+        data.instances![identity] = inst;
       }
     }
 
@@ -454,7 +490,14 @@ export class SessionStore extends EventEmitter {
         }
         this.persistedMeta.set(sessionId, entry);
       }
-      logger.debug('session-store: restored state', { path: this.persistPath, version });
+      // v3: Load instance-level data (favorite keyed by identity/paneId)
+      const instances = (data as { instances?: Record<string, PersistedInstance> }).instances;
+      if (instances) {
+        for (const [identity, inst] of Object.entries(instances)) {
+          this.persistedInstances.set(identity, inst);
+        }
+      }
+      logger.debug('session-store: restored state', { path: this.persistPath, version, instances: this.persistedInstances.size });
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code !== 'ENOENT') {

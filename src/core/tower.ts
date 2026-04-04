@@ -391,7 +391,7 @@ export class Tower extends EventEmitter {
       const migrationMeta: Partial<import('./session-store.js').SessionMeta> = {};
       if (session.label !== undefined) migrationMeta.label = session.label;
       if (session.tags !== undefined) migrationMeta.tags = session.tags;
-      if (session.favorite !== undefined) { migrationMeta.favorite = session.favorite; migrationMeta.favoritedAt = session.favoritedAt; }
+      // favorite is instance-level — migrated via Instance, not SessionMeta
       this.store.updateMeta(newIdentity, migrationMeta);
       this.store.update(newIdentity, { summaryLoading: true });
       const jp = this.jsonlPaths.get(match.sessionId);
@@ -1254,11 +1254,7 @@ export class Tower extends EventEmitter {
             if (event.pane) {
               this.store.update(newIdentity, { paneId: event.pane, hasTmux: true });
             }
-            // Intentional: /clear preserves only favorite status — label/tags/summaries start fresh
-            if (migratedMeta && migratedMeta.favorite) {
-              this.store.updateMeta(newIdentity, { favorite: migratedMeta.favorite, favoritedAt: migratedMeta.favoritedAt });
-              logger.info('tower: migrated favorite to new session', { from: dyingSession?.sessionId, to: hookSid });
-            }
+            // favorite is instance-level — no migration needed on session change
             // Map hookSid to new identity for future hook events
             this.hookSidToIdentity.set(hookSid, newIdentity);
           })();
@@ -1288,9 +1284,7 @@ export class Tower extends EventEmitter {
         const claudeDir = this.config.discovery.claude_dir.replace('~', os.homedir());
         const slug = cwdToSlug(session.cwd);
         const newJsonl = path.join(claudeDir, 'projects', slug, `${hookSid}.jsonl`);
-        // Migrate favorite before sessionId change (/clear preserves favorite only)
-        const oldFavorite = session.favorite;
-        const oldFavoritedAt = session.favoritedAt;
+        // favorite is now instance-level (not session-level), no migration needed
         // Remove stale hookSid cache entry to prevent old sessionId re-matching
         this.hookSidToIdentity.delete(session.sessionId);
         // Unwatch old JSONL
@@ -1298,10 +1292,6 @@ export class Tower extends EventEmitter {
         this.jsonlPaths.delete(session.sessionId);
         // Update sessionId in store (this switches sessionMeta key — old meta is orphaned)
         this.store.update(identity, { sessionId: hookSid });
-        // Restore favorite on new sessionMeta
-        if (oldFavorite) {
-          this.store.updateMeta(identity, { favorite: oldFavorite, favoritedAt: oldFavoritedAt });
-        }
         // Watch new JSONL if it exists, or wait for it to appear
         if (fs.existsSync(newJsonl)) {
           this.jsonlPaths.set(hookSid, newJsonl);
