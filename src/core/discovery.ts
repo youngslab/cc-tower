@@ -23,6 +23,7 @@ export interface DiscoveryConfig {
 export class DiscoveryEngine extends EventEmitter {
   private interval: ReturnType<typeof setInterval> | null = null;
   private known: Map<number, SessionInfo> = new Map();
+  private hookLocked: Set<number> = new Set(); // PIDs whose sessionId was corrected by hook — don't override from pid.json
 
   constructor(private config: DiscoveryConfig) {
     super();
@@ -41,7 +42,8 @@ export class DiscoveryEngine extends EventEmitter {
     const existing = this.known.get(pid);
     if (existing) {
       existing.sessionId = sessionId;
-      logger.debug('discovery: updateKnown', { pid, sessionId: sessionId.slice(0, 12) });
+      this.hookLocked.add(pid);
+      logger.debug('discovery: updateKnown (hook-locked)', { pid, sessionId: sessionId.slice(0, 12) });
     }
   }
 
@@ -127,6 +129,11 @@ export class DiscoveryEngine extends EventEmitter {
         // Detect sessionId change (e.g., /resume, /clear)
         const prev = this.known.get(info.pid)!;
         if (prev.sessionId !== info.sessionId) {
+          // If hook-locked, pid.json is stale — ignore this change
+          if (this.hookLocked.has(info.pid)) {
+            logger.debug('discovery: ignoring pid.json change for hook-locked session', { pid: info.pid, pidJson: info.sessionId, hookCorrected: prev.sessionId });
+            continue;
+          }
           logger.debug('discovery: session-changed', { pid: info.pid, old: prev.sessionId, new: info.sessionId });
           this.known.set(info.pid, info);
           this.emit('session-changed', { prev, next: info });
