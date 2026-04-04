@@ -1132,7 +1132,7 @@ export class Tower extends EventEmitter {
     }, 30000);
   }
 
-  private resolveIdentity(hookSid: string, hookCwd: string | undefined, hookPid?: number): string | null {
+  private resolveIdentity(hookSid: string, hookCwd: string | undefined, hookPid?: number, hookEvent?: string): string | null {
     // 1. Cached reverse mapping from previous resolution (O(1) fast path)
     const cached = this.hookSidToIdentity.get(hookSid);
     if (cached && this.stateMachines.has(cached)) return cached;
@@ -1153,7 +1153,8 @@ export class Tower extends EventEmitter {
       while (current > 1 && depth < 15) {
         for (const session of this.store.getAll()) {
           const id = sessionIdentity(session);
-          if (session.pid && session.pid === current && session.status !== 'dead' && this.stateMachines.has(id)) {
+          const allowDead = hookEvent === 'session-start';
+          if (session.pid && session.pid === current && (allowDead || (session.status !== 'dead' && this.stateMachines.has(id)))) {
             this.hookSidToIdentity.set(hookSid, id);
             logger.debug('tower: hook sid mapped to session via PID ancestry', { hookSid, identity: id, hookPid, matchedPid: current });
             return id;
@@ -1191,7 +1192,7 @@ export class Tower extends EventEmitter {
     }
 
     // When CLAUDE_SESSION_ID is not available (sid='unknown'), resolve by PID ancestry only
-    let identity = this.resolveIdentity(hookSid, event.cwd, event.pid);
+    let identity = this.resolveIdentity(hookSid, event.cwd, event.pid, event.event);
     if (!identity) {
       logger.info('tower: hook event for unknown session', { hookSid, event: event.event, cwd: event.cwd });
       // session-start from unknown session = likely /clear or new session — trigger immediate re-scan
