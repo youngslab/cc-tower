@@ -97,34 +97,30 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorSessionId, 
     if (key.downArrow || input === 'j') moveCursor(Math.min(sorted.length - 1, cursor + 1));
 
     // [ / ] = move current session up/down within its group (no cross-group movement)
+    // [ / ] = reorder within group. Cursor follows the moved session automatically
+    // (cursorSessionId stays the same, position updates after re-render)
     if (input === '[' && sorted[cursor]) {
       const inFav = cursor < favGroupEnd;
       if (inFav && cursor > 0) {
-        // Swap favoritedAt with the session above
         onSwapFavoriteOrder(sorted[cursor]!.sessionId, sorted[cursor - 1]!.sessionId);
-        moveCursor(cursor - 1);
       } else if (!inFav && cursor > favGroupEnd) {
-        // Swap positions in nonFavOrderRef
-        const a = nonFavOrderRef.current[cursor - favGroupEnd]!;
-        const b = nonFavOrderRef.current[cursor - favGroupEnd - 1]!;
-        nonFavOrderRef.current[cursor - favGroupEnd] = b;
-        nonFavOrderRef.current[cursor - favGroupEnd - 1] = a;
-        moveCursor(cursor - 1);
+        const idx = cursor - favGroupEnd;
+        const a = nonFavOrderRef.current[idx]!;
+        const b = nonFavOrderRef.current[idx - 1]!;
+        nonFavOrderRef.current[idx] = b;
+        nonFavOrderRef.current[idx - 1] = a;
       }
     }
     if (input === ']' && sorted[cursor]) {
       const inFav = cursor < favGroupEnd;
       if (inFav && cursor < favGroupEnd - 1) {
-        // Swap favoritedAt with the session below
         onSwapFavoriteOrder(sorted[cursor]!.sessionId, sorted[cursor + 1]!.sessionId);
-        moveCursor(cursor + 1);
       } else if (!inFav && cursor < sorted.length - 1) {
-        // Swap positions in nonFavOrderRef
-        const a = nonFavOrderRef.current[cursor - favGroupEnd]!;
-        const b = nonFavOrderRef.current[cursor - favGroupEnd + 1]!;
-        nonFavOrderRef.current[cursor - favGroupEnd] = b;
-        nonFavOrderRef.current[cursor - favGroupEnd + 1] = a;
-        moveCursor(cursor + 1);
+        const idx = cursor - favGroupEnd;
+        const a = nonFavOrderRef.current[idx]!;
+        const b = nonFavOrderRef.current[idx + 1]!;
+        nonFavOrderRef.current[idx] = b;
+        nonFavOrderRef.current[idx + 1] = a;
       }
     }
 
