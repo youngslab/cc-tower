@@ -499,29 +499,11 @@ export class Tower extends EventEmitter {
     const jp = this.jsonlPaths.get(sessionId);
     if (!jp) return;
 
-    try {
-      const dir = path.dirname(jp);
-      const files = fs.readdirSync(dir)
-        .filter(f => f.endsWith('.jsonl') && !f.includes('/'))
-        .map(f => ({ name: f, mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
-        .sort((a, b) => b.mtime - a.mtime);
-
-      if (files.length > 0) {
-        const newest = path.join(dir, files[0]!.name);
-        if (newest !== jp) {
-          logger.info('tower: resume detected — switching to newer JSONL', { identity, old: path.basename(jp), new: files[0]!.name });
-          this.jsonlPaths.set(sessionId, newest);
-          this.jsonlWatcher.unwatch(sessionId);
-          this.jsonlWatcher.watch(sessionId, newest);
-          // Clear stale summaries so they are regenerated from the resumed conversation
-          this.store.updateMeta(identity, { goalSummary: undefined, contextSummary: undefined, nextSteps: undefined });
-        }
-      }
-    } catch {}
-
-    const updatedJp = this.jsonlPaths.get(sessionId)!;
-    void this.refreshGoalSummary(identity, updatedJp);
-    void this.refreshContextSummary(identity, updatedJp);
+    // Hook-based correction already switched the sessionId and JSONL watcher.
+    // Just refresh summaries from the current (hook-corrected) JSONL.
+    this.store.updateMeta(identity, { goalSummary: undefined, contextSummary: undefined, nextSteps: undefined });
+    void this.refreshGoalSummary(identity, jp);
+    void this.refreshContextSummary(identity, jp);
   }
 
   private async refreshGoalSummary(identity: string, jsonlPath: string): Promise<void> {
