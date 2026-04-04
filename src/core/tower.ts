@@ -144,7 +144,7 @@ export class Tower extends EventEmitter {
       const sessions = execSync('tmux list-sessions -F "#{session_name}" 2>/dev/null', { encoding: 'utf8' });
       for (const name of sessions.split('\n')) {
         if (name.startsWith('_cctower_peek_')) {
-          try { execSync(`tmux kill-session -t ${name} 2>/dev/null`); } catch {}
+          try { const { execFileSync } = await import('node:child_process'); execFileSync('tmux', ['kill-session', '-t', name], { stdio: 'ignore' }); } catch {}
         }
       }
     } catch {}
@@ -1110,19 +1110,17 @@ export class Tower extends EventEmitter {
     }, 30000);
   }
 
-  private lastResolveDepth = 0; // PID ancestry depth of last resolution
-
-  private resolveIdentity(hookSid: string, hookCwd: string | undefined, hookPid?: number, hookEvent?: string): string | null {
+  private resolveIdentity(hookSid: string, hookCwd: string | undefined, hookPid?: number, hookEvent?: string): { identity: string; depth: number } | null {
     // 1. Cached reverse mapping from previous resolution (O(1) fast path)
     const cached = this.hookSidToIdentity.get(hookSid);
-    if (cached && this.stateMachines.has(cached)) return cached;
+    if (cached && this.stateMachines.has(cached)) return { identity: cached, depth: 0 };
 
     // 2. Composite key match: remoteStateMachines stores "host::bareId", hook sends bare id.
     for (const key of this.remoteStateMachines.keys()) {
       if (key.endsWith(`::${hookSid}`)) {
         this.hookSidToIdentity.set(hookSid, key);
         logger.debug('tower: hook sid matched via composite key', { hookSid, compositeId: key });
-        return key;
+        return { identity: key, depth: 0 };
       }
     }
 
@@ -1136,9 +1134,8 @@ export class Tower extends EventEmitter {
           const allowDead = hookEvent === 'session-start';
           if (session.pid && session.pid === current && (allowDead || (session.status !== 'dead' && this.stateMachines.has(id)))) {
             this.hookSidToIdentity.set(hookSid, id);
-            this.lastResolveDepth = depth;
             logger.debug('tower: hook sid mapped to session via PID ancestry', { hookSid, identity: id, hookPid, matchedPid: current, depth });
-            return id;
+            return { identity: id, depth };
           }
         }
         const ppid = getPpid(current);
@@ -1153,8 +1150,13 @@ export class Tower extends EventEmitter {
 
 
   private handleHookEvent(event: any): void {
+    // Validate hook event fields
+    if (typeof event !== 'object' || event === null) return;
+    if (typeof event.event !== 'string') return;
     const hookSid = event.sid;
     if (!hookSid || typeof hookSid !== 'string') return;
+    if (event.pid !== undefined && (typeof event.pid !== 'number' || event.pid < 0)) return;
+    if (event.pane !== undefined && typeof event.pane !== 'string') return;
 
     // Skip hook events from sdk-cli (headless) sessions — e.g. services that spawn claude
     // programmatically inside the same project. Their events must not be attributed to the
@@ -1173,13 +1175,15 @@ export class Tower extends EventEmitter {
     }
 
     // When CLAUDE_SESSION_ID is not available (sid='unknown'), resolve by PID ancestry only
-    let identity = this.resolveIdentity(hookSid, event.cwd, event.pid, event.event);
-    if (!identity) {
+    const resolved = this.resolveIdentity(hookSid, event.cwd, event.pid, event.event);
+    if (!resolved) {
       // Can't resolve PID to a registered instance — ignore.
       // Discovery handles registration; hooks only correct/update existing instances.
       logger.debug('tower: ignoring hook for unresolved PID', { hookSid, event: event.event, cwd: event.cwd });
       return;
     }
+    let identity = resolved.identity;
+    const resolveDepth = resolved.depth;
     // Ignore session-end from subagents: if hookSid doesn't directly match the session's sessionId,
     // it's likely a subagent ending (same CWD, different session ID).
     const resolvedSession = this.store.get(identity);
@@ -1197,7 +1201,8 @@ export class Tower extends EventEmitter {
       // sessions/{pid}.json wasn't updated. Re-map JSONL watcher to the correct session.
       // Only correct sessionId if the hook came from a direct child (depth ≤ 3).
       // sdk-cli/headless subprocesses resolve via deeper PID ancestry (depth 4+) — skip them.
-      const isDirectChild = this.lastResolveDepth <= 3;
+      const MAX_DIRECT_DEPTH = 3;
+      const isDirectChild = resolveDepth <= MAX_DIRECT_DEPTH;
       if (hookSid !== 'unknown' && hookSid !== session.sessionId && isDirectChild) {
         logger.info('tower: hook detected session change (stale session file)', {
           identity, oldSessionId: session.sessionId, newSessionId: hookSid,

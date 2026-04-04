@@ -115,6 +115,7 @@ export class DiscoveryEngine extends EventEmitter {
         if (this.known.has(info.pid)) {
           const lost = this.known.get(info.pid)!;
           this.known.delete(info.pid);
+          this.hookLocked.delete(info.pid);
           this.emit('session-lost', lost);
           logger.info('discovery: session-lost (PID dead)', { pid: info.pid, sessionId: info.sessionId, cwd: info.cwd });
         }
@@ -151,6 +152,7 @@ export class DiscoveryEngine extends EventEmitter {
       const existing = bySessionId.get(info.sessionId);
       if (!existing || info.startedAt > existing.startedAt || (info.startedAt === existing.startedAt && info.pid > existing.pid)) {
         if (existing) {
+          this.hookLocked.delete(existing.pid);
           logger.debug('discovery: dedup — evicting older PID with same sessionId', {
             evictedPid: existing.pid, keptPid: info.pid, sessionId: info.sessionId,
           });
@@ -169,6 +171,7 @@ export class DiscoveryEngine extends EventEmitter {
       if (!active.find((s) => s.pid === pid)) {
         if (!isPidAlive(pid)) {
           this.known.delete(pid);
+          this.hookLocked.delete(pid);
           this.emit('session-lost', session);
           logger.info('discovery: session-lost (no file, PID dead)', { pid, sessionId: session.sessionId, cwd: session.cwd });
         }

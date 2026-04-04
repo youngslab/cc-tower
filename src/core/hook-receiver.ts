@@ -59,7 +59,10 @@ export class HookReceiver extends EventEmitter {
       });
 
       this.server.on('error', reject);
-      this.server.listen(this.socketPath, () => resolve());
+      this.server.listen(this.socketPath, () => {
+        try { fs.chmodSync(this.socketPath, 0o600); } catch {}
+        resolve();
+      });
     });
   }
 
