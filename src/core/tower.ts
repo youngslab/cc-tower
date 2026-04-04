@@ -1286,11 +1286,18 @@ export class Tower extends EventEmitter {
         const claudeDir = this.config.discovery.claude_dir.replace('~', os.homedir());
         const slug = cwdToSlug(session.cwd);
         const newJsonl = path.join(claudeDir, 'projects', slug, `${hookSid}.jsonl`);
+        // Migrate favorite before sessionId change (/clear preserves favorite only)
+        const oldFavorite = session.favorite;
+        const oldFavoritedAt = session.favoritedAt;
         // Unwatch old JSONL
         this.jsonlWatcher.unwatch(session.sessionId);
         this.jsonlPaths.delete(session.sessionId);
-        // Update sessionId in store
+        // Update sessionId in store (this switches sessionMeta key — old meta is orphaned)
         this.store.update(identity, { sessionId: hookSid });
+        // Restore favorite on new sessionMeta
+        if (oldFavorite) {
+          this.store.updateMeta(identity, { favorite: oldFavorite, favoritedAt: oldFavoritedAt });
+        }
         // Watch new JSONL if it exists
         if (fs.existsSync(newJsonl)) {
           this.jsonlPaths.set(hookSid, newJsonl);
