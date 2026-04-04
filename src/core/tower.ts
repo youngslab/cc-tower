@@ -740,20 +740,20 @@ export class Tower extends EventEmitter {
       const exactExists = fs.existsSync(jsonlPath);
       const exactSize = exactExists ? fs.statSync(jsonlPath).size : 0;
       if (!exactExists && !opts.skipJsonlFallback) {
+        // Skip JSONLs already watched by another active session (prevents same-cwd sessions sharing a JSONL)
+        const watchedJsonls = new Set(this.jsonlPaths.values());
         const files = fs.readdirSync(projectDir)
           .filter(f => f.endsWith('.jsonl') && !f.includes('/'))
-          .map(f => ({ name: f, mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
+          .map(f => ({ name: f, path: path.join(projectDir, f), mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
           .sort((a, b) => b.mtime - a.mtime);
-        if (files.length > 0) {
-          const newest = path.join(projectDir, files[0]!.name);
-          if (newest !== jsonlPath) {
-            logger.debug('tower: using newer JSONL (exact missing — stale discovery)', {
-              sessionId: info.sessionId,
-              exact: path.basename(jsonlPath),
-              newest: files[0]!.name,
-            });
-            jsonlPath = newest;
-          }
+        const candidate = files.find(f => f.path !== jsonlPath && !watchedJsonls.has(f.path));
+        if (candidate) {
+          logger.debug('tower: using fallback JSONL (exact missing — stale discovery)', {
+            sessionId: info.sessionId,
+            exact: path.basename(jsonlPath),
+            fallback: candidate.name,
+          });
+          jsonlPath = candidate.path;
         }
       } else {
         logger.debug('tower: using exact JSONL', {
