@@ -43,22 +43,23 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorSessionId, 
   const favorites = sessions.filter(s => s.favorite).sort((a, b) => (a.favoritedAt ?? 0) - (b.favoritedAt ?? 0));
   const nonFavorites = sessions.filter(s => !s.favorite);
 
-  // Update stable non-favorite order: keep existing positions, remove gone, append new
-  const currentNonFavIds = new Set(nonFavorites.map(s => s.sessionId));
+  // Update stable non-favorite order: keyed by identity (paneId/pid) — survives session changes
+  const identityOf = (s: Session) => s.paneId ?? String(s.pid);
+  const currentNonFavIdentities = new Set(nonFavorites.map(identityOf));
   const existingInOrder = new Set(nonFavOrderRef.current);
-  const stableNonFavIds = nonFavOrderRef.current.filter(id => currentNonFavIds.has(id));
+  const stableNonFavOrder = nonFavOrderRef.current.filter(id => currentNonFavIdentities.has(id));
   for (const s of nonFavorites) {
-    if (!existingInOrder.has(s.sessionId)) stableNonFavIds.push(s.sessionId);
+    if (!existingInOrder.has(identityOf(s))) stableNonFavOrder.push(identityOf(s));
   }
-  if (stableNonFavIds.join(',') !== nonFavOrderRef.current.join(',')) {
-    nonFavOrderRef.current = stableNonFavIds;
-    onDisplayOrderChange(stableNonFavIds);
+  if (stableNonFavOrder.join(',') !== nonFavOrderRef.current.join(',')) {
+    nonFavOrderRef.current = stableNonFavOrder;
+    onDisplayOrderChange(stableNonFavOrder);
   } else {
-    nonFavOrderRef.current = stableNonFavIds;
+    nonFavOrderRef.current = stableNonFavOrder;
   }
 
-  const sessionMap = new Map(sessions.map(s => [s.sessionId, s]));
-  const stableNonFavorites = stableNonFavIds.map(id => sessionMap.get(id)!).filter(Boolean);
+  const identityMap = new Map(sessions.map(s => [identityOf(s), s]));
+  const stableNonFavorites = stableNonFavOrder.map(id => identityMap.get(id)!).filter(Boolean);
   const sorted = [...favorites, ...stableNonFavorites];
 
   // Resolve cursor index from tracked sessionId (go to 0 if session is gone)
