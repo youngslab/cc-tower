@@ -18,6 +18,8 @@ interface Props {
   onRefresh: (session: Session) => void;
   onKill: (session: Session) => void;
   onGo: (session: Session) => void;
+  onDisplayOrderChange: (order: string[]) => void;
+  initialDisplayOrder: string[];
   onQuit: () => void;
 }
 
@@ -29,12 +31,13 @@ const STATUS_ICONS: Record<string, { icon: string; color: string }> = {
   dead: { icon: '✕', color: 'red' },
 };
 
-export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorSessionId, onCursorChange, onSwapFavoriteOrder, onSelect, onSend, onPeek, onToggleFavorite, onNewSession, onRefresh, onKill, onGo, onQuit }: Props) {
+export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorSessionId, onCursorChange, onSwapFavoriteOrder, onSelect, onSend, onPeek, onToggleFavorite, onNewSession, onRefresh, onKill, onGo, onQuit, onDisplayOrderChange, initialDisplayOrder }: Props) {
   const [confirmQuit, setConfirmQuit] = useState(false);
   const [confirmKill, setConfirmKill] = useState(false);
 
   // Stable order ref for non-favorites — order doesn't change on status updates
-  const nonFavOrderRef = useRef<string[]>([]);
+  // Initialize from persisted displayOrder on first mount
+  const nonFavOrderRef = useRef<string[]>(initialDisplayOrder);
 
   // Favorites: sorted by favoritedAt (stable, time-based)
   const favorites = sessions.filter(s => s.favorite).sort((a, b) => (a.favoritedAt ?? 0) - (b.favoritedAt ?? 0));
@@ -47,7 +50,12 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorSessionId, 
   for (const s of nonFavorites) {
     if (!existingInOrder.has(s.sessionId)) stableNonFavIds.push(s.sessionId);
   }
-  nonFavOrderRef.current = stableNonFavIds;
+  if (stableNonFavIds.join(',') !== nonFavOrderRef.current.join(',')) {
+    nonFavOrderRef.current = stableNonFavIds;
+    onDisplayOrderChange(stableNonFavIds);
+  } else {
+    nonFavOrderRef.current = stableNonFavIds;
+  }
 
   const sessionMap = new Map(sessions.map(s => [s.sessionId, s]));
   const stableNonFavorites = stableNonFavIds.map(id => sessionMap.get(id)!).filter(Boolean);

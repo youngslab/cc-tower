@@ -758,6 +758,29 @@ export class Tower extends EventEmitter {
           jsonlPath = candidate.path;
         }
       } else {
+        // Cold start staleness check: if exact JSONL hasn't been modified in > 1 hour,
+        // the session file may be stale (/resume or /clear changed session but pid.json wasn't updated).
+        // Prefer a newer unclaimed JSONL if available.
+        if (exactExists && exactSize > 0 && !opts.skipJsonlFallback) {
+          const exactMtime = fs.statSync(jsonlPath).mtimeMs;
+          const STALE_THRESHOLD = 60 * 60 * 1000; // 1 hour
+          if (Date.now() - exactMtime > STALE_THRESHOLD) {
+            const watchedJsonls = new Set(this.jsonlPaths.values());
+            const files = fs.readdirSync(projectDir)
+              .filter(f => f.endsWith('.jsonl') && !f.includes('/'))
+              .map(f => ({ name: f, path: path.join(projectDir, f), mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
+              .sort((a, b) => b.mtime - a.mtime);
+            const newer = files.find(f => f.path !== jsonlPath && !watchedJsonls.has(f.path) && f.mtime > exactMtime);
+            if (newer) {
+              const newSessionId = newer.name.replace('.jsonl', '');
+              logger.info('tower: cold start stale correction — exact JSONL idle > 1h, using newer', {
+                pid: info.pid, staleSessionId: info.sessionId, actualSessionId: newSessionId,
+              });
+              jsonlPath = newer.path;
+              info.sessionId = newSessionId;
+            }
+          }
+        }
         logger.debug('tower: using exact JSONL', {
           sessionId: info.sessionId,
           file: path.basename(jsonlPath),

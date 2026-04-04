@@ -78,9 +78,10 @@ interface PersistedInstance {
 }
 
 interface PersistFormat {
-  version?: number;  // 1 = legacy (no field), 2 = current, 3 = instance-level favorite
+  version?: number;  // 1 = legacy (no field), 2 = current, 3 = instance-level favorite + displayOrder
   sessions: Record<string, PersistedEntry>;
   instances?: Record<string, PersistedInstance>;  // v3: keyed by identity (paneId)
+  displayOrder?: string[];  // v3: ordered list of sessionIds for stable TUI ordering
 }
 
 export function sessionIdentity(s: { paneId?: string; pid: number }): string {
@@ -95,6 +96,7 @@ export class SessionStore extends EventEmitter {
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private persistedMeta: Map<string, PersistedEntry> = new Map(); // pre-loaded from state.json
   private persistedInstances: Map<string, PersistedInstance> = new Map(); // v3: keyed by identity (paneId)
+  private _displayOrder: string[] = []; // persisted display order (sessionIds)
 
   constructor(private persistPath: string) {
     super();
@@ -274,100 +276,15 @@ export class SessionStore extends EventEmitter {
       clearTimeout(this.persistTimer);
       this.persistTimer = null;
     }
-    const data: PersistFormat = { version: 3, sessions: {}, instances: {} };
-    const liveSessionIds = new Set<string>();
-
-    // (A) Live sessions
-    for (const [identity, instance] of this.instances) {
-      if (instance.status === 'dead') continue;
-      liveSessionIds.add(instance.sessionId);
-      const meta = this.sessionMeta.get(instance.sessionId) ?? {};
-      const entry: PersistedEntry = {};
-      if ((meta as SessionMeta).label !== undefined) entry.label = (meta as SessionMeta).label;
-      if ((meta as SessionMeta).tags !== undefined) entry.tags = (meta as SessionMeta).tags;
-      if ((meta as SessionMeta).goalSummary !== undefined) entry.goalSummary = (meta as SessionMeta).goalSummary;
-      if ((meta as SessionMeta).contextSummary !== undefined) entry.contextSummary = (meta as SessionMeta).contextSummary;
-      if ((meta as SessionMeta).nextSteps !== undefined) entry.nextSteps = (meta as SessionMeta).nextSteps;
-      if (instance.cwd) entry.cwd = instance.cwd;
-      if (instance.startedAt) entry.startedAt = instance.startedAt.getTime();
-      if (instance.sshTarget !== undefined) {
-        entry.pid = instance.pid;
-        entry.sshTarget = instance.sshTarget;
-        entry.host = instance.host;
-      }
-      data.sessions[instance.sessionId] = entry;
-      // Instance-level: favorite (survives session changes)
-      if (instance.favorite) {
-        data.instances![identity] = { favorite: instance.favorite, favoritedAt: instance.favoritedAt };
-      }
-    }
-
-    // (B) Historical sessions not currently live
-    for (const [sessionId, entry] of this.persistedMeta) {
-      if (!liveSessionIds.has(sessionId)) {
-        data.sessions[sessionId] = entry;
-      }
-    }
-    // (C) Historical instance data not currently live
-    for (const [identity, inst] of this.persistedInstances) {
-      if (!this.instances.has(identity)) {
-        data.instances![identity] = inst;
-      }
-    }
-
+    const data = this._buildPersistData();
     try {
       mkdirSync(dirname(this.persistPath), { recursive: true });
       writeFileSync(this.persistPath, JSON.stringify(data, null, 2));
     } catch {}
   }
 
-  // _writePersist() unions two sources:
-  // 1. Live session metadata: sessionMeta entries for currently active instances (keyed by instance.sessionId)
-  // 2. Historical metadata: persistedMeta entries for past sessions (sessionIds not currently active)
-  // When the same sessionId appears in both, live sessionMeta takes precedence.
   private async _writePersist(): Promise<void> {
-    const data: PersistFormat = { version: 3, sessions: {}, instances: {} };
-    const liveSessionIds = new Set<string>();
-
-    // (A) Live sessions
-    for (const [identity, instance] of this.instances) {
-      if (instance.status === 'dead') continue;
-      liveSessionIds.add(instance.sessionId);
-      const meta = this.sessionMeta.get(instance.sessionId) ?? {};
-      const entry: PersistedEntry = {};
-      if ((meta as SessionMeta).label !== undefined) entry.label = (meta as SessionMeta).label;
-      if ((meta as SessionMeta).tags !== undefined) entry.tags = (meta as SessionMeta).tags;
-      if ((meta as SessionMeta).goalSummary !== undefined) entry.goalSummary = (meta as SessionMeta).goalSummary;
-      if ((meta as SessionMeta).contextSummary !== undefined) entry.contextSummary = (meta as SessionMeta).contextSummary;
-      if ((meta as SessionMeta).nextSteps !== undefined) entry.nextSteps = (meta as SessionMeta).nextSteps;
-      if (instance.cwd) entry.cwd = instance.cwd;
-      if (instance.startedAt) entry.startedAt = instance.startedAt.getTime();
-      if (instance.sshTarget !== undefined) {
-        entry.pid = instance.pid;
-        entry.sshTarget = instance.sshTarget;
-        entry.host = instance.host;
-      }
-      data.sessions[instance.sessionId] = entry;
-      // Instance-level: favorite (survives session changes)
-      if (instance.favorite) {
-        data.instances![identity] = { favorite: instance.favorite, favoritedAt: instance.favoritedAt };
-      }
-    }
-
-    // (B) Historical sessions not currently live
-    for (const [sessionId, entry] of this.persistedMeta) {
-      if (!liveSessionIds.has(sessionId)) {
-        data.sessions[sessionId] = entry;
-      }
-    }
-
-    // (C) Historical instance data not currently live
-    for (const [identity, inst] of this.persistedInstances) {
-      if (!this.instances.has(identity)) {
-        data.instances![identity] = inst;
-      }
-    }
-
+    const data = this._buildPersistData();
     try {
       await mkdir(dirname(this.persistPath), { recursive: true });
       await writeFile(this.persistPath, JSON.stringify(data, null, 2), 'utf8');
@@ -375,6 +292,40 @@ export class SessionStore extends EventEmitter {
     } catch (err) {
       logger.error('session-store: failed to persist state', { err: String(err) });
     }
+  }
+
+  private _buildPersistData(): PersistFormat {
+    const data: PersistFormat = { version: 3, sessions: {}, instances: {}, displayOrder: this._displayOrder };
+    const liveSessionIds = new Set<string>();
+    for (const [identity, instance] of this.instances) {
+      if (instance.status === 'dead') continue;
+      liveSessionIds.add(instance.sessionId);
+      const meta = this.sessionMeta.get(instance.sessionId) ?? {};
+      const entry: PersistedEntry = {};
+      if ((meta as SessionMeta).label !== undefined) entry.label = (meta as SessionMeta).label;
+      if ((meta as SessionMeta).tags !== undefined) entry.tags = (meta as SessionMeta).tags;
+      if ((meta as SessionMeta).goalSummary !== undefined) entry.goalSummary = (meta as SessionMeta).goalSummary;
+      if ((meta as SessionMeta).contextSummary !== undefined) entry.contextSummary = (meta as SessionMeta).contextSummary;
+      if ((meta as SessionMeta).nextSteps !== undefined) entry.nextSteps = (meta as SessionMeta).nextSteps;
+      if (instance.cwd) entry.cwd = instance.cwd;
+      if (instance.startedAt) entry.startedAt = instance.startedAt.getTime();
+      if (instance.sshTarget !== undefined) {
+        entry.pid = instance.pid;
+        entry.sshTarget = instance.sshTarget;
+        entry.host = instance.host;
+      }
+      data.sessions[instance.sessionId] = entry;
+      if (instance.favorite) {
+        data.instances![identity] = { favorite: instance.favorite, favoritedAt: instance.favoritedAt };
+      }
+    }
+    for (const [sessionId, entry] of this.persistedMeta) {
+      if (!liveSessionIds.has(sessionId)) data.sessions[sessionId] = entry;
+    }
+    for (const [identity, inst] of this.persistedInstances) {
+      if (!this.instances.has(identity)) data.instances![identity] = inst;
+    }
+    return data;
   }
 
   /** Returns persisted sessions matching the given cwd, sorted by startedAt desc. */
@@ -497,7 +448,10 @@ export class SessionStore extends EventEmitter {
           this.persistedInstances.set(identity, inst);
         }
       }
-      logger.debug('session-store: restored state', { path: this.persistPath, version, instances: this.persistedInstances.size });
+      // v3: Load display order
+      const displayOrder = (data as { displayOrder?: string[] }).displayOrder;
+      if (displayOrder) this._displayOrder = displayOrder;
+      logger.debug('session-store: restored state', { path: this.persistPath, version, instances: this.persistedInstances.size, displayOrder: this._displayOrder.length });
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code !== 'ENOENT') {
@@ -509,6 +463,9 @@ export class SessionStore extends EventEmitter {
   getPersistedEntry(sessionId: string): PersistedEntry | undefined {
     return this.persistedMeta.get(sessionId);
   }
+
+  get displayOrder(): string[] { return this._displayOrder; }
+  set displayOrder(order: string[]) { this._displayOrder = order; this.persist(); }
 }
 
 function isPersistFormat(val: unknown): val is PersistFormat {

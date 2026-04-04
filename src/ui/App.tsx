@@ -348,6 +348,8 @@ export function App({ tower }: Props) {
             onGo={handleGo}
             onNewSession={handleOpenNewSession}
             onQuit={handleQuit}
+            initialDisplayOrder={tower.store.displayOrder}
+            onDisplayOrderChange={(order) => { tower.store.displayOrder = order; }}
           />
         )}
 
