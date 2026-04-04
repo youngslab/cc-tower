@@ -758,29 +758,6 @@ export class Tower extends EventEmitter {
           jsonlPath = candidate.path;
         }
       } else {
-        // Cold start staleness check: if exact JSONL hasn't been modified in > 1 hour,
-        // the session file may be stale (/resume or /clear changed session but pid.json wasn't updated).
-        // Prefer a newer unclaimed JSONL if available.
-        if (exactExists && exactSize > 0 && !opts.skipJsonlFallback) {
-          const exactMtime = fs.statSync(jsonlPath).mtimeMs;
-          const STALE_THRESHOLD = 60 * 60 * 1000; // 1 hour
-          if (Date.now() - exactMtime > STALE_THRESHOLD) {
-            const watchedJsonls = new Set(this.jsonlPaths.values());
-            const files = fs.readdirSync(projectDir)
-              .filter(f => f.endsWith('.jsonl') && !f.includes('/'))
-              .map(f => ({ name: f, path: path.join(projectDir, f), mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
-              .sort((a, b) => b.mtime - a.mtime);
-            const newer = files.find(f => f.path !== jsonlPath && !watchedJsonls.has(f.path) && f.mtime > exactMtime);
-            if (newer) {
-              const newSessionId = newer.name.replace('.jsonl', '');
-              logger.info('tower: cold start stale correction — exact JSONL idle > 1h, using newer', {
-                pid: info.pid, staleSessionId: info.sessionId, actualSessionId: newSessionId,
-              });
-              jsonlPath = newer.path;
-              info.sessionId = newSessionId;
-            }
-          }
-        }
         logger.debug('tower: using exact JSONL', {
           sessionId: info.sessionId,
           file: path.basename(jsonlPath),
@@ -793,7 +770,7 @@ export class Tower extends EventEmitter {
     // c. Cold start: determine current state + last task from JSONL
     const initialState = this.jsonlWatcher.coldStartScan(jsonlPath);
     const lastTask = this.jsonlWatcher.coldStartLastTask(jsonlPath);
-    const customTitle = this.jsonlWatcher.coldStartCustomTitle(jsonlPath);
+    let customTitle = this.jsonlWatcher.coldStartCustomTitle(jsonlPath);
 
     // d. Determine detection mode
     const detectionMode = 'jsonl' as const;
@@ -818,6 +795,21 @@ export class Tower extends EventEmitter {
       sshTarget: info.sshTarget,
     };
     this.store.register(session);
+
+    // register() may have corrected sessionId via cache — update JSONL path if changed
+    const registeredSession = this.store.get(sessionIdentity(session));
+    if (registeredSession && registeredSession.sessionId !== info.sessionId) {
+      const correctedJsonl = path.join(projectDir, `${registeredSession.sessionId}.jsonl`);
+      if (fs.existsSync(correctedJsonl)) {
+        logger.info('tower: sessionId corrected by cache, switching JSONL', {
+          identity: sessionIdentity(session), old: info.sessionId.slice(0, 12), corrected: registeredSession.sessionId.slice(0, 12),
+        });
+        jsonlPath = correctedJsonl;
+        info.sessionId = registeredSession.sessionId;
+        // Re-read cold start data from corrected JSONL
+        customTitle = this.jsonlWatcher.coldStartCustomTitle(jsonlPath);
+      }
+    }
 
     // Apply custom title from JSONL (/rename) — always overwrite persisted label
     if (customTitle) {

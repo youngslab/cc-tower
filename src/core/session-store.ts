@@ -75,6 +75,7 @@ interface PersistedEntry {
 interface PersistedInstance {
   favorite?: boolean;
   favoritedAt?: number;
+  lastSessionId?: string;  // hook-confirmed sessionId — used on cold start when pid.json is stale
 }
 
 interface PersistFormat {
@@ -162,13 +163,20 @@ export class SessionStore extends EventEmitter {
       if (persisted.nextSteps !== undefined && !merged.nextSteps) merged.nextSteps = persisted.nextSteps;
       this.sessionMeta.set(session.sessionId, merged);
     }
-    // Merge persisted instance data (favorite) by identity — survives session changes
+    // Merge persisted instance data (favorite + cached sessionId) by identity
     const identity = sessionIdentity(session);
     const persistedInst = this.persistedInstances.get(identity);
     if (persistedInst) {
       if (persistedInst.favorite !== undefined && !session.favorite) {
         session.favorite = persistedInst.favorite;
         session.favoritedAt = persistedInst.favoritedAt;
+      }
+      // Use cached sessionId if pid.json is stale (different from last known)
+      if (persistedInst.lastSessionId && persistedInst.lastSessionId !== session.sessionId) {
+        logger.info('session-store: using cached sessionId (pid.json stale)', {
+          identity, stale: session.sessionId.slice(0, 12), cached: persistedInst.lastSessionId.slice(0, 12),
+        });
+        session.sessionId = persistedInst.lastSessionId;
       }
     }
     // Also try legacy: favorite in persistedMeta (v2 state.json) — migrate to instance-level
@@ -315,9 +323,10 @@ export class SessionStore extends EventEmitter {
         entry.host = instance.host;
       }
       data.sessions[instance.sessionId] = entry;
-      if (instance.favorite) {
-        data.instances![identity] = { favorite: instance.favorite, favoritedAt: instance.favoritedAt };
-      }
+      const instData: PersistedInstance = {};
+      if (instance.favorite) { instData.favorite = instance.favorite; instData.favoritedAt = instance.favoritedAt; }
+      instData.lastSessionId = instance.sessionId;
+      data.instances![identity] = instData;
     }
     for (const [sessionId, entry] of this.persistedMeta) {
       if (!liveSessionIds.has(sessionId)) data.sessions[sessionId] = entry;
