@@ -1192,7 +1192,10 @@ export class Tower extends EventEmitter {
       // Detect stale sessionId: hook carries the actual current sessionId from Claude Code.
       // If it differs from what we have, the session changed (e.g., /resume, /clear) but
       // sessions/{pid}.json wasn't updated. Re-map JSONL watcher to the correct session.
-      if (hookSid !== 'unknown' && hookSid !== session.sessionId) {
+      // Only correct sessionId if the hook's pane matches the session's pane (or pane is provided).
+      // sdk-cli/headless subprocesses inherit PID ancestry but have no TMUX_PANE — skip them.
+      const paneMatches = !event.pane || !session.paneId || event.pane === session.paneId;
+      if (hookSid !== 'unknown' && hookSid !== session.sessionId && paneMatches) {
         logger.info('tower: hook detected session change (stale session file)', {
           identity, oldSessionId: session.sessionId, newSessionId: hookSid,
         });
