@@ -9,7 +9,7 @@ import os from 'node:os';
 import { Tower } from './core/tower.js';
 import { App } from './ui/App.js';
 import { tmux } from './tmux/commands.js';
-import { setTuiMode } from './utils/logger.js';
+import { logger, setTuiMode } from './utils/logger.js';
 import { loadConfig } from './config/loader.js';
 
 program
@@ -77,6 +77,12 @@ program
       throw err;
     }
 
+    // Redirect React/ink console warnings to logger (prevents TUI corruption)
+    const origConsoleError = console.error;
+    const origConsoleWarn = console.warn;
+    console.error = (...args: unknown[]) => logger.warn('console.error: ' + args.map(String).join(' '));
+    console.warn = (...args: unknown[]) => logger.warn('console.warn: ' + args.map(String).join(' '));
+
     // Enter alternate screen (like vim/htop)
     process.stdout.write('\x1b[?1049h'); // enter alt screen
     process.stdout.write('\x1b[H');      // move cursor to top-left
@@ -84,6 +90,10 @@ program
     const { waitUntilExit } = render(React.createElement(App, { tower }));
 
     await waitUntilExit();
+
+    // Restore console
+    console.error = origConsoleError;
+    console.warn = origConsoleWarn;
 
     // Leave alternate screen (restore original terminal content)
     process.stdout.write('\x1b[?1049l');
