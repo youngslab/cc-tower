@@ -1176,25 +1176,13 @@ export class Tower extends EventEmitter {
       // session-start from unknown session = likely /clear or new session — trigger immediate re-scan
       // Ignore /tmp sessions (LLM summarizer spawns claude --print there)
       if (event.event === 'session-start' && event.cwd && !event.cwd.startsWith('/tmp')) {
-        // Check if the new session is headless (claude --print) by finding its PID
-        // from ~/.claude/sessions/{pid}.json — skip if headless to avoid evicting interactive sessions
-        try {
-          const sessionsDir = this.config.discovery.claude_dir.replace('~', os.homedir()) + '/sessions';
-          const files = fs.readdirSync(sessionsDir).filter(f => f.endsWith('.json'));
-          for (const f of files) {
-            try {
-              const raw = fs.readFileSync(path.join(sessionsDir, f), 'utf8');
-              const parsed = JSON.parse(raw) as { sessionId?: string; pid?: number; entrypoint?: string };
-              if (parsed.sessionId === hookSid && parsed.pid) {
-                if (isHeadlessProcess(parsed.pid) || parsed.entrypoint === 'sdk-cli') {
-                  logger.debug('tower: ignoring session-start from headless/sdk-cli process', { hookSid, pid: parsed.pid, entrypoint: parsed.entrypoint, cwd: event.cwd });
-                  return;
-                }
-                break;
-              }
-            } catch {}
-          }
-        } catch {}
+        // If an active instance already exists at this CWD, this is likely a headless subprocess
+        // (sdk-cli, subagent, etc.) — don't create a new instance for it
+        const existingAtCwd = this.store.getAll().find(s => s.cwd === event.cwd && s.status !== 'dead');
+        if (existingAtCwd) {
+          logger.debug('tower: ignoring unknown session-start — active instance already at CWD', { hookSid, cwd: event.cwd, existingIdentity: sessionIdentity(existingAtCwd) });
+          return;
+        }
 
         // Find the dead/dying session with same CWD for metadata migration.
         // Only match if the hook pid matches the session pid (same claude process = /clear).
