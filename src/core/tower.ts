@@ -431,31 +431,12 @@ export class Tower extends EventEmitter {
         }
       }
     } else {
-      // Local session — refresh JSONL path and summaries
+      // Local session — refresh summaries from current (hook-corrected) JSONL
       const jp = this.jsonlPaths.get(sessionId);
       if (jp) {
-        // Re-check newest JSONL
-        try {
-          const dir = path.dirname(jp);
-          const files = fs.readdirSync(dir)
-            .filter(f => f.endsWith('.jsonl') && !f.includes('/'))
-            .map(f => ({ name: f, mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
-            .sort((a, b) => b.mtime - a.mtime);
-          if (files.length > 0) {
-            const newest = path.join(dir, files[0]!.name);
-            if (newest !== jp) {
-              this.jsonlPaths.set(sessionId, newest);
-              this.jsonlWatcher.unwatch(sessionId);
-              this.jsonlWatcher.watch(sessionId, newest);
-              logger.info('tower: refresh updated JSONL path', { sessionId, newPath: newest });
-            }
-          }
-        } catch {}
-
-        const updatedJp = this.jsonlPaths.get(sessionId)!;
-        void this.refreshGoalSummary(identity, updatedJp);
-        void this.refreshContextSummary(identity, updatedJp);
-        void this.refreshNextSteps(identity, updatedJp);
+        void this.refreshGoalSummary(identity, jp);
+        void this.refreshContextSummary(identity, jp);
+        void this.refreshNextSteps(identity, jp);
       } else {
         // No JSONL available — clear loading state
         this.store.update(identity, { summaryLoading: false });
