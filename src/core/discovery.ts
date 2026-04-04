@@ -36,6 +36,15 @@ export class DiscoveryEngine extends EventEmitter {
     }, this.config.scan_interval);
   }
 
+  /** Update known sessionId for a PID — prevents discovery from overriding hook corrections */
+  updateKnown(pid: number, sessionId: string): void {
+    const existing = this.known.get(pid);
+    if (existing) {
+      existing.sessionId = sessionId;
+      logger.debug('discovery: updateKnown', { pid, sessionId: sessionId.slice(0, 12) });
+    }
+  }
+
   stop(): void {
     if (this.interval !== null) {
       clearInterval(this.interval);

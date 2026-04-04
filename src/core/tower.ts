@@ -1308,6 +1308,8 @@ export class Tower extends EventEmitter {
         // Update sessionId in store (this switches sessionMeta key — old meta is orphaned)
         // Also revive dead sessions and reset FSM — /resume or /clear means the instance is alive again
         this.store.update(identity!, { sessionId: hookSid, status: 'idle' as const });
+        // Sync discovery's known map so it doesn't override this correction on next scan
+        if (session.pid > 0) this.discovery.updateKnown(session.pid, hookSid);
         // Reset FSM for the revived session
         const oldFsm = this.stateMachines.get(identity!);
         if (oldFsm) { oldFsm.destroy(); oldFsm.removeAllListeners(); this.stateMachines.delete(identity!); }
