@@ -1306,7 +1306,17 @@ export class Tower extends EventEmitter {
         this.jsonlWatcher.unwatch(session.sessionId);
         this.jsonlPaths.delete(session.sessionId);
         // Update sessionId in store (this switches sessionMeta key — old meta is orphaned)
-        this.store.update(identity, { sessionId: hookSid });
+        // Also revive dead sessions and reset FSM — /resume or /clear means the instance is alive again
+        this.store.update(identity!, { sessionId: hookSid, status: 'idle' as const });
+        // Reset FSM for the revived session
+        const oldFsm = this.stateMachines.get(identity!);
+        if (oldFsm) { oldFsm.destroy(); oldFsm.removeAllListeners(); this.stateMachines.delete(identity!); }
+        const newFsm = new SessionStateMachine(hookSid, 'idle');
+        const capturedId = identity!;
+        newFsm.on('state-change', (change: { to: string }) => {
+          this.store.update(capturedId, { status: change.to as Session['status'], lastActivity: new Date() });
+        });
+        this.stateMachines.set(identity!, newFsm);
         // Watch new JSONL if it exists, or wait for it to appear
         if (fs.existsSync(newJsonl)) {
           this.jsonlPaths.set(hookSid, newJsonl);
