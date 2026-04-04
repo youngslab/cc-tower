@@ -1302,7 +1302,7 @@ export class Tower extends EventEmitter {
         if (oldFavorite) {
           this.store.updateMeta(identity, { favorite: oldFavorite, favoritedAt: oldFavoritedAt });
         }
-        // Watch new JSONL if it exists
+        // Watch new JSONL if it exists, or wait for it to appear
         if (fs.existsSync(newJsonl)) {
           this.jsonlPaths.set(hookSid, newJsonl);
           this.jsonlWatcher.watch(hookSid, newJsonl);
@@ -1311,6 +1311,28 @@ export class Tower extends EventEmitter {
           if (customTitle) {
             this.store.updateMeta(identity, { label: customTitle });
           }
+        } else {
+          // JSONL not yet created (/clear fires session-start before first write).
+          // Watch the project directory for the file to appear.
+          const dir = path.dirname(newJsonl);
+          const expectedFile = path.basename(newJsonl);
+          const capturedIdentity = identity;
+          try {
+            const dirWatcher = fs.watch(dir, (evt, filename) => {
+              if (filename === expectedFile && fs.existsSync(newJsonl)) {
+                dirWatcher.close();
+                this.jsonlPaths.set(hookSid, newJsonl);
+                this.jsonlWatcher.watch(hookSid, newJsonl);
+                const customTitle = this.jsonlWatcher.coldStartCustomTitle(newJsonl);
+                if (customTitle) {
+                  this.store.updateMeta(capturedIdentity, { label: customTitle });
+                }
+                logger.debug('tower: deferred JSONL watch setup after session change', { hookSid, jsonlPath: newJsonl });
+              }
+            });
+            // Auto-close after 60s to avoid leaking watchers
+            setTimeout(() => dirWatcher.close(), 60000);
+          } catch {}
         }
         this.hookSidToIdentity.set(hookSid, identity);
       }
