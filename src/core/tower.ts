@@ -758,6 +758,30 @@ export class Tower extends EventEmitter {
           jsonlPath = candidate.path;
         }
       } else {
+        // Staleness check: if exact JSONL exists but a newer unclaimed JSONL is available,
+        // the session file may be stale (e.g., /resume changed the session but sessions/{pid}.json wasn't updated).
+        // Prefer the newer JSONL and correct the sessionId.
+        if (exactExists && exactSize > 0 && !opts.skipJsonlFallback) {
+          const exactMtime = fs.statSync(jsonlPath).mtimeMs;
+          const watchedJsonls = new Set(this.jsonlPaths.values());
+          const files = fs.readdirSync(projectDir)
+            .filter(f => f.endsWith('.jsonl') && !f.includes('/'))
+            .map(f => ({ name: f, path: path.join(projectDir, f), mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
+            .sort((a, b) => b.mtime - a.mtime);
+          const newer = files.find(f => f.path !== jsonlPath && !watchedJsonls.has(f.path) && f.mtime > exactMtime);
+          if (newer) {
+            const newSessionId = newer.name.replace('.jsonl', '');
+            logger.info('tower: stale session file detected — newer JSONL found', {
+              pid: info.pid,
+              staleSessionId: info.sessionId,
+              actualSessionId: newSessionId,
+              staleMtime: new Date(exactMtime).toISOString(),
+              newerMtime: new Date(newer.mtime).toISOString(),
+            });
+            jsonlPath = newer.path;
+            info.sessionId = newSessionId;
+          }
+        }
         logger.debug('tower: using exact JSONL', {
           sessionId: info.sessionId,
           file: path.basename(jsonlPath),
@@ -1276,6 +1300,34 @@ export class Tower extends EventEmitter {
 
     const session = this.store.get(identity);
     if (session) {
+      // Detect stale sessionId: hook carries the actual current sessionId from Claude Code.
+      // If it differs from what we have, the session changed (e.g., /resume, /clear) but
+      // sessions/{pid}.json wasn't updated. Re-map JSONL watcher to the correct session.
+      if (hookSid !== 'unknown' && hookSid !== session.sessionId) {
+        logger.info('tower: hook detected session change (stale session file)', {
+          identity, oldSessionId: session.sessionId, newSessionId: hookSid,
+        });
+        const claudeDir = this.config.discovery.claude_dir.replace('~', os.homedir());
+        const slug = cwdToSlug(session.cwd);
+        const newJsonl = path.join(claudeDir, 'projects', slug, `${hookSid}.jsonl`);
+        // Unwatch old JSONL
+        this.jsonlWatcher.unwatch(session.sessionId);
+        this.jsonlPaths.delete(session.sessionId);
+        // Update sessionId in store
+        this.store.update(identity, { sessionId: hookSid });
+        // Watch new JSONL if it exists
+        if (fs.existsSync(newJsonl)) {
+          this.jsonlPaths.set(hookSid, newJsonl);
+          this.jsonlWatcher.watch(hookSid, newJsonl);
+          // Read custom title from new JSONL
+          const customTitle = this.jsonlWatcher.coldStartCustomTitle(newJsonl);
+          if (customTitle) {
+            this.store.updateMeta(identity, { label: customTitle });
+          }
+        }
+        this.hookSidToIdentity.set(hookSid, identity);
+      }
+
       const patch: Record<string, unknown> = {};
       // Upgrade to hook mode on first hook event
       if (session.detectionMode !== 'hook') patch['detectionMode'] = 'hook';
