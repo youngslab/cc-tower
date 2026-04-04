@@ -203,7 +203,7 @@ export class SessionStore extends EventEmitter {
       session.favoritedAt = persisted.favoritedAt;
     }
     // Capture any meta fields passed in the session object into sessionMeta
-    const { label: _l, tags: _t, favorite: _f, favoritedAt: _fa, goalSummary: _gs, contextSummary: _cs, nextSteps: _ns, ...instancePart } = session;
+    const { label: _l, tags: _t, goalSummary: _gs, contextSummary: _cs, nextSteps: _ns, ...instancePart } = session;
     const incomingMeta: Partial<SessionMeta> = {};
     if (session.label !== undefined) incomingMeta.label = session.label;
     if (session.tags !== undefined) incomingMeta.tags = session.tags;
