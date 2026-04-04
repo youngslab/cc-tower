@@ -172,11 +172,19 @@ export class SessionStore extends EventEmitter {
         session.favoritedAt = persistedInst.favoritedAt;
       }
       // Use cached sessionId if pid.json is stale (different from last known)
+      // But skip if another active instance already claims this sessionId (collision from /resume)
       if (persistedInst.lastSessionId && persistedInst.lastSessionId !== session.sessionId) {
-        logger.info('session-store: using cached sessionId (pid.json stale)', {
-          identity, stale: session.sessionId.slice(0, 12), cached: persistedInst.lastSessionId.slice(0, 12),
-        });
-        session.sessionId = persistedInst.lastSessionId;
+        const alreadyClaimed = Array.from(this.instances.values()).some(i => i.sessionId === persistedInst.lastSessionId);
+        if (!alreadyClaimed) {
+          logger.info('session-store: using cached sessionId (pid.json stale)', {
+            identity, stale: session.sessionId.slice(0, 12), cached: persistedInst.lastSessionId!.slice(0, 12),
+          });
+          session.sessionId = persistedInst.lastSessionId;
+        } else {
+          logger.info('session-store: cached sessionId already claimed by another instance, skipping', {
+            identity, cached: persistedInst.lastSessionId!.slice(0, 12),
+          });
+        }
       }
     }
     // Also try legacy: favorite in persistedMeta (v2 state.json) — migrate to instance-level
