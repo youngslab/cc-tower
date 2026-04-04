@@ -148,6 +148,16 @@ export class SessionStore extends EventEmitter {
   }
 
   register(session: Session): void {
+    // Skip duplicate registration (same PID already registered under a different identity)
+    const existingByPid = Array.from(this.instances.values()).find(i => i.pid === session.pid && i.pid > 0);
+    if (existingByPid) {
+      const existingIdentity = sessionIdentity(existingByPid);
+      const newIdentity = sessionIdentity(session);
+      if (existingIdentity !== newIdentity) {
+        logger.warn('session-store: skipping duplicate PID registration', { pid: session.pid, existing: existingIdentity, new: newIdentity });
+        return;
+      }
+    }
     if (!session.projectName) {
       session.projectName = cwdToSlug(session.cwd);
     }
