@@ -166,8 +166,10 @@ export class Tower extends EventEmitter {
     const sessions = await this.discovery.scanOnce();
     logger.info('tower: discovered sessions', { count: sessions.length });
 
-    // 4. For each session: resolve pane, cold start JSONL, register (parallel)
-    await Promise.all(sessions.map(info => this.registerSession(info)));
+    // 4. For each session: resolve pane, cold start JSONL, register (sequential to avoid JSONL fallback races)
+    for (const info of sessions) {
+      await this.registerSession(info);
+    }
 
     // 5. Wire up hook events
     this.hookReceiver.on('hook-event', (event) => {
