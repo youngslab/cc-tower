@@ -1183,6 +1183,24 @@ export class Tower extends EventEmitter {
           logger.debug('tower: ignoring unknown session-start — active instance already at CWD', { hookSid, cwd: event.cwd, existingIdentity: sessionIdentity(existingAtCwd) });
           return;
         }
+        // No active instance at CWD — check if this is a headless/sdk-cli session before registering
+        try {
+          const sessionsDir = this.config.discovery.claude_dir.replace('~', os.homedir()) + '/sessions';
+          const files = fs.readdirSync(sessionsDir).filter(f => f.endsWith('.json'));
+          for (const f of files) {
+            try {
+              const raw = fs.readFileSync(path.join(sessionsDir, f), 'utf8');
+              const parsed = JSON.parse(raw) as { sessionId?: string; pid?: number; entrypoint?: string };
+              if (parsed.sessionId === hookSid && parsed.pid) {
+                if (isHeadlessProcess(parsed.pid) || parsed.entrypoint === 'sdk-cli') {
+                  logger.debug('tower: ignoring session-start from headless/sdk-cli process', { hookSid, pid: parsed.pid, entrypoint: parsed.entrypoint });
+                  return;
+                }
+                break;
+              }
+            } catch {}
+          }
+        } catch {}
 
         // Find the dead/dying session with same CWD for metadata migration.
         // Only match if the hook pid matches the session pid (same claude process = /clear).
