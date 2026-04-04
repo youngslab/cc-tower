@@ -61,7 +61,7 @@ export class DiscoveryEngine extends EventEmitter {
       return this.scanProcesses();
     }
 
-    const active: SessionInfo[] = [];
+    let active: SessionInfo[] = [];
 
     for (const file of jsonFiles) {
       const filePath = join(sessionsDir, file);
@@ -126,6 +126,27 @@ export class DiscoveryEngine extends EventEmitter {
 
       active.push(info);
     }
+
+    // Deduplicate: when multiple PIDs share the same sessionId (e.g., Claude Code reused
+    // session file after /resume), keep only the most recently started PID as the session owner.
+    // The older PID likely moved to a different session but its file wasn't updated.
+    const bySessionId = new Map<string, SessionInfo>();
+    for (const info of active) {
+      const existing = bySessionId.get(info.sessionId);
+      if (!existing || info.startedAt > existing.startedAt || (info.startedAt === existing.startedAt && info.pid > existing.pid)) {
+        if (existing) {
+          logger.info('discovery: dedup — evicting older PID with same sessionId', {
+            evictedPid: existing.pid, keptPid: info.pid, sessionId: info.sessionId,
+          });
+        }
+        bySessionId.set(info.sessionId, info);
+      } else {
+        logger.info('discovery: dedup — skipping newer-file PID with older startedAt', {
+          skippedPid: info.pid, keptPid: existing.pid, sessionId: info.sessionId,
+        });
+      }
+    }
+    active = Array.from(bySessionId.values());
 
     // Check known PIDs that are no longer in any file
     for (const [pid, session] of this.known) {
