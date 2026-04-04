@@ -1110,6 +1110,8 @@ export class Tower extends EventEmitter {
     }, 30000);
   }
 
+  private lastResolveDepth = 0; // PID ancestry depth of last resolution
+
   private resolveIdentity(hookSid: string, hookCwd: string | undefined, hookPid?: number, hookEvent?: string): string | null {
     // 1. Cached reverse mapping from previous resolution (O(1) fast path)
     const cached = this.hookSidToIdentity.get(hookSid);
@@ -1134,7 +1136,8 @@ export class Tower extends EventEmitter {
           const allowDead = hookEvent === 'session-start';
           if (session.pid && session.pid === current && (allowDead || (session.status !== 'dead' && this.stateMachines.has(id)))) {
             this.hookSidToIdentity.set(hookSid, id);
-            logger.debug('tower: hook sid mapped to session via PID ancestry', { hookSid, identity: id, hookPid, matchedPid: current });
+            this.lastResolveDepth = depth;
+            logger.debug('tower: hook sid mapped to session via PID ancestry', { hookSid, identity: id, hookPid, matchedPid: current, depth });
             return id;
           }
         }
@@ -1192,10 +1195,10 @@ export class Tower extends EventEmitter {
       // Detect stale sessionId: hook carries the actual current sessionId from Claude Code.
       // If it differs from what we have, the session changed (e.g., /resume, /clear) but
       // sessions/{pid}.json wasn't updated. Re-map JSONL watcher to the correct session.
-      // Only correct sessionId if the hook's pane matches the session's pane (or pane is provided).
-      // sdk-cli/headless subprocesses inherit PID ancestry but have no TMUX_PANE — skip them.
-      const paneMatches = !event.pane || !session.paneId || event.pane === session.paneId;
-      if (hookSid !== 'unknown' && hookSid !== session.sessionId && paneMatches) {
+      // Only correct sessionId if the hook came from a direct child (depth ≤ 3).
+      // sdk-cli/headless subprocesses resolve via deeper PID ancestry (depth 4+) — skip them.
+      const isDirectChild = this.lastResolveDepth <= 3;
+      if (hookSid !== 'unknown' && hookSid !== session.sessionId && isDirectChild) {
         logger.info('tower: hook detected session change (stale session file)', {
           identity, oldSessionId: session.sessionId, newSessionId: hookSid,
         });
