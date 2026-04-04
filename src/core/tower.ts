@@ -1239,10 +1239,11 @@ export class Tower extends EventEmitter {
         logger.info('tower: new session via hook (likely /clear)', { hookSid, cwd: event.cwd, migrateFrom: dyingSession?.sessionId });
 
         // Register directly using hookSid — sessions/{pid}.json is stale after /clear
-        if (event.cwd && hookSid !== 'unknown') {
+        // Skip if we have no reliable identity anchor (no dyingSession pid and no pane)
+        if (event.cwd && hookSid !== 'unknown' && (dyingSession?.pid || event.pane)) {
           void (async () => {
             const info: SessionInfo = {
-              pid: dyingSession?.pid ?? 0,
+              pid: dyingSession?.pid ?? event.pid ?? 0,
               sessionId: hookSid,
               cwd: event.cwd!,
               startedAt: Date.now(),
@@ -1290,6 +1291,8 @@ export class Tower extends EventEmitter {
         // Migrate favorite before sessionId change (/clear preserves favorite only)
         const oldFavorite = session.favorite;
         const oldFavoritedAt = session.favoritedAt;
+        // Remove stale hookSid cache entry to prevent old sessionId re-matching
+        this.hookSidToIdentity.delete(session.sessionId);
         // Unwatch old JSONL
         this.jsonlWatcher.unwatch(session.sessionId);
         this.jsonlPaths.delete(session.sessionId);

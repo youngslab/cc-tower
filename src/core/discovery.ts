@@ -135,14 +135,14 @@ export class DiscoveryEngine extends EventEmitter {
       const existing = bySessionId.get(info.sessionId);
       if (!existing || info.startedAt > existing.startedAt || (info.startedAt === existing.startedAt && info.pid > existing.pid)) {
         if (existing) {
-          logger.info('discovery: dedup — evicting older PID with same sessionId', {
+          logger.debug('discovery: dedup — evicting older PID with same sessionId', {
             evictedPid: existing.pid, keptPid: info.pid, sessionId: info.sessionId,
           });
         }
         bySessionId.set(info.sessionId, info);
       } else {
-        logger.info('discovery: dedup — skipping newer-file PID with older startedAt', {
-          skippedPid: info.pid, keptPid: existing.pid, sessionId: info.sessionId,
+        logger.debug('discovery: dedup — skipping PID with older startedAt', {
+          skippedPid: info.pid, keptPid: existing!.pid, sessionId: info.sessionId,
         });
       }
     }
@@ -261,6 +261,7 @@ export class DiscoveryEngine extends EventEmitter {
 }
 
 function isPidAlive(pid: number): boolean {
+  if (pid <= 0) return false; // PID 0 sends signal to process group — treat as not alive
   try {
     process.kill(pid, 0);
     return true;

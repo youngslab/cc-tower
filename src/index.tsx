@@ -80,7 +80,7 @@ program
     // Redirect React/ink console warnings to logger (prevents TUI corruption)
     const origConsoleError = console.error;
     const origConsoleWarn = console.warn;
-    console.error = (...args: unknown[]) => logger.warn('console.error: ' + args.map(String).join(' '));
+    console.error = (...args: unknown[]) => logger.error('console.error: ' + args.map(a => a instanceof Error ? a.stack ?? String(a) : String(a)).join(' '));
     console.warn = (...args: unknown[]) => logger.warn('console.warn: ' + args.map(String).join(' '));
 
     // Enter alternate screen (like vim/htop)
