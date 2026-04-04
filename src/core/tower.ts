@@ -758,30 +758,6 @@ export class Tower extends EventEmitter {
           jsonlPath = candidate.path;
         }
       } else {
-        // Staleness check: if exact JSONL exists but a newer unclaimed JSONL is available,
-        // the session file may be stale (e.g., /resume changed the session but sessions/{pid}.json wasn't updated).
-        // Prefer the newer JSONL and correct the sessionId.
-        if (exactExists && exactSize > 0 && !opts.skipJsonlFallback) {
-          const exactMtime = fs.statSync(jsonlPath).mtimeMs;
-          const watchedJsonls = new Set(this.jsonlPaths.values());
-          const files = fs.readdirSync(projectDir)
-            .filter(f => f.endsWith('.jsonl') && !f.includes('/'))
-            .map(f => ({ name: f, path: path.join(projectDir, f), mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
-            .sort((a, b) => b.mtime - a.mtime);
-          const newer = files.find(f => f.path !== jsonlPath && !watchedJsonls.has(f.path) && f.mtime > exactMtime);
-          if (newer) {
-            const newSessionId = newer.name.replace('.jsonl', '');
-            logger.info('tower: stale session file detected — newer JSONL found', {
-              pid: info.pid,
-              staleSessionId: info.sessionId,
-              actualSessionId: newSessionId,
-              staleMtime: new Date(exactMtime).toISOString(),
-              newerMtime: new Date(newer.mtime).toISOString(),
-            });
-            jsonlPath = newer.path;
-            info.sessionId = newSessionId;
-          }
-        }
         logger.debug('tower: using exact JSONL', {
           sessionId: info.sessionId,
           file: path.basename(jsonlPath),

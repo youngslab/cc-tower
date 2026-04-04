@@ -150,6 +150,8 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorSessionId, 
         <Text bold dimColor>{centerPad('', 4)}</Text>
         <Text bold dimColor>{centerPad('LABEL', 22)}</Text>
         <Text bold dimColor>{centerPad('', 3)}</Text>
+        <Text bold dimColor>{pad('PID', 10)}</Text>
+        <Text bold dimColor>{pad('SESSION', 10)}</Text>
         <Text bold dimColor>{centerPad('GOAL', maxTaskWidth)}</Text>
       </Box>
 
@@ -177,6 +179,8 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorSessionId, 
               <Text inverse={isCursor} color={isCursor ? 'cyan' : undefined} dimColor={!isCursor}>{pad(`${i + 1}`, 3)}</Text>
               <Text inverse={isCursor} color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{pad(labelText, 22)}</Text>
               <Text inverse={isCursor} color={isCursor ? 'cyan' : (isDim ? 'gray' : color)}>{pad(icon, 3)}</Text>
+              <Text inverse={isCursor} dimColor={!isCursor}>{pad(String(session.pid), 10)}</Text>
+              <Text inverse={isCursor} dimColor={!isCursor}>{pad(session.label ?? session.sessionId.slice(0, 8), 10)}</Text>
               {session.label && <Text inverse={isCursor} color={isCursor ? 'cyan' : 'blue'} bold>[{session.label}] </Text>}<Text inverse={isCursor} color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{truncate(session.summaryLoading ? '⟳ summarizing...' : (session.goalSummary ?? session.contextSummary ?? session.currentTask ?? 'New session'), maxTaskWidth - (session.label ? session.label.length + 3 : 0))}</Text>
             </Box>
             {session.status === 'idle' && session.nextSteps && (
@@ -185,6 +189,8 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorSessionId, 
                 <Text>{pad('', 3)}</Text>
                 <Text>{pad('', 22)}</Text>
                 <Text>{pad('', 3)}</Text>
+                <Text>{pad('', 10)}</Text>
+                <Text>{pad('', 10)}</Text>
                 <Text color="yellow">↳ {truncate(session.nextSteps, maxTaskWidth)}</Text>
               </Box>
             )}
