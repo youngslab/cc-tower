@@ -188,14 +188,24 @@ export class DiscoveryEngine extends EventEmitter {
         } catch {}
 
         // 2. Fallback: use JSONL filename if CLAUDE_SESSION_ID not found
+        // Skip JSONLs already claimed by another known session (same CWD, different PID)
         if (sessionId.startsWith('proc-')) {
           try {
+            const usedSessionIds = new Set(
+              Array.from(this.known.values())
+                .filter(s => s.cwd === cwd && s.pid !== pid)
+                .map(s => s.sessionId),
+            );
             const jsonls = readdirSync(projectDir)
               .filter(f => f.endsWith('.jsonl'))
               .map(f => { try { return { name: f, mtime: statSync(join(projectDir, f)).mtimeMs }; } catch { return { name: f, mtime: 0 }; } })
               .sort((a, b) => b.mtime - a.mtime);
-            if (jsonls.length > 0) {
-              sessionId = jsonls[0]!.name.replace('.jsonl', '');
+            for (const j of jsonls) {
+              const candidate = j.name.replace('.jsonl', '');
+              if (!usedSessionIds.has(candidate)) {
+                sessionId = candidate;
+                break;
+              }
             }
           } catch {}
         }
