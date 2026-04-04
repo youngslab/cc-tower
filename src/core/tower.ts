@@ -1318,8 +1318,13 @@ export class Tower extends EventEmitter {
           const expectedFile = path.basename(newJsonl);
           const capturedIdentity = identity;
           try {
+            let settled = false;
+            const timeout = setTimeout(() => { if (!settled) dirWatcher.close(); }, 60000);
             const dirWatcher = fs.watch(dir, (evt, filename) => {
+              if (settled) return;
               if (filename === expectedFile && fs.existsSync(newJsonl)) {
+                settled = true;
+                clearTimeout(timeout);
                 dirWatcher.close();
                 this.jsonlPaths.set(hookSid, newJsonl);
                 this.jsonlWatcher.watch(hookSid, newJsonl);
@@ -1330,9 +1335,9 @@ export class Tower extends EventEmitter {
                 logger.debug('tower: deferred JSONL watch setup after session change', { hookSid, jsonlPath: newJsonl });
               }
             });
-            // Auto-close after 60s to avoid leaking watchers
-            setTimeout(() => dirWatcher.close(), 60000);
-          } catch {}
+          } catch (err) {
+            logger.debug('tower: cannot watch dir for deferred JSONL', { dir, error: String(err) });
+          }
         }
         this.hookSidToIdentity.set(hookSid, identity);
       }
