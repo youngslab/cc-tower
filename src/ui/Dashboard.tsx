@@ -193,7 +193,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorSessionId, 
                 <Text>{pad('', 16)}</Text>
                 <Text>{pad('', 2)}</Text>
                 <Text>{pad('', 14)}</Text>
-                <Text color="yellow">↳ {truncate(session.nextSteps, maxTaskWidth)}</Text>
+                <Text color="yellow">↳ {truncate(session.nextSteps, maxTaskWidth - 2)}</Text>
               </Box>
             )}
             <Box height={1} />
