@@ -153,8 +153,8 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorSessionId, 
       {/* Header */}
       <Box>
         <Text bold dimColor>{pad('', 4)}</Text>
-        <Text bold dimColor>{pad('LABEL', 22)}</Text>
-        <Text bold dimColor>{pad('', 3)}</Text>
+        <Text bold dimColor>{pad('LABEL', 16)}</Text>
+        <Text bold dimColor>{pad('', 2)}</Text>
         <Text bold dimColor>{pad('SESSION', 14)}</Text>
         <Text bold dimColor>{pad('GOAL', maxTaskWidth)}</Text>
       </Box>
@@ -181,8 +181,8 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorSessionId, 
             <Box>
               <Text inverse={isCursor} color={isCursor ? 'cyan' : undefined} bold={isCursor}>{isCursor ? '▸' : ' '}</Text>
               <Text inverse={isCursor} color={isCursor ? 'cyan' : undefined} dimColor={!isCursor}>{pad(`${i + 1}`, 3)}</Text>
-              <Text inverse={isCursor} color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{pad(labelText, 22)}</Text>
-              <Text inverse={isCursor} color={isCursor ? 'cyan' : (isDim ? 'gray' : color)}>{pad(icon, 3)}</Text>
+              <Text inverse={isCursor} color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{pad(labelText, 16)}</Text>
+              <Text inverse={isCursor} color={isCursor ? 'cyan' : (isDim ? 'gray' : color)}>{pad(icon, 2)}</Text>
               <Text inverse={isCursor} dimColor={!isCursor}>{pad(truncate(session.label ?? session.sessionId.slice(0, 8), 12), 14)}</Text>
               <Text inverse={isCursor} color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{truncate(session.summaryLoading ? '⟳ summarizing...' : (session.goalSummary ?? session.contextSummary ?? session.currentTask ?? 'New session'), maxTaskWidth)}</Text>
             </Box>
@@ -190,8 +190,8 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorSessionId, 
               <Box>
                 <Text>{' '}</Text>
                 <Text>{pad('', 3)}</Text>
-                <Text>{pad('', 22)}</Text>
-                <Text>{pad('', 3)}</Text>
+                <Text>{pad('', 16)}</Text>
+                <Text>{pad('', 2)}</Text>
                 <Text>{pad('', 14)}</Text>
                 <Text color="yellow">↳ {truncate(session.nextSteps, maxTaskWidth)}</Text>
               </Box>
