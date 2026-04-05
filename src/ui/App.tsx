@@ -234,15 +234,29 @@ export function App({ tower }: Props) {
           windowIndex = stdout.trim();
         }
 
-        // Open in popup (peek) so user stays in tower after closing
-        const paneTarget = `${hiveSession}:${windowIndex}`;
-        await tmux.displayPopup({
-          width: '80%',
-          height: '80%',
-          title: ` ${name}${resumeSessionId ? ' (resume)' : ' (new)'} | ${closeKey} to close `,
-          command: `tmux attach -t ${hiveSession} \\; select-window -t ${windowIndex}`,
-          closeOnExit: true,
-        });
+        // Open in popup (peek) — reuse the peek function with a minimal Session-like object
+        // Get the pane ID of the newly created window
+        const { stdout: paneInfo } = await ex('tmux', [
+          'list-panes', '-t', `${hiveSession}:${windowIndex}`, '-F', '#{pane_id}',
+        ]);
+        const newPaneId = paneInfo.trim();
+        if (newPaneId) {
+          await peek({
+            paneId: newPaneId,
+            pid: 0,
+            sessionId: resumeSessionId ?? '',
+            cwd: projectPath,
+            projectName: name,
+            host: 'local',
+            hasTmux: true,
+            detectionMode: 'jsonl',
+            status: 'idle',
+            lastActivity: new Date(),
+            startedAt: new Date(),
+            messageCount: 0,
+            toolCallCount: 0,
+          } as Session);
+        }
       } catch {}
     }
   }, [tower]);
