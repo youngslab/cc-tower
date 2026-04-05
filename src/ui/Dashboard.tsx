@@ -183,7 +183,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorSessionId, 
               <Text inverse={isCursor} color={isCursor ? 'cyan' : undefined} dimColor={!isCursor}>{pad(`${i + 1}`, 3)}</Text>
               <Text inverse={isCursor} color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{pad(labelText, 22)}</Text>
               <Text inverse={isCursor} color={isCursor ? 'cyan' : (isDim ? 'gray' : color)}>{pad(icon, 3)}</Text>
-              <Text inverse={isCursor} dimColor={!isCursor}>{pad(session.label ?? session.sessionId.slice(0, 8), 14)}</Text>
+              <Text inverse={isCursor} dimColor={!isCursor}>{pad(truncate(session.label ?? session.sessionId.slice(0, 8), 12), 14)}</Text>
               <Text inverse={isCursor} color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{truncate(session.summaryLoading ? '⟳ summarizing...' : (session.goalSummary ?? session.contextSummary ?? session.currentTask ?? 'New session'), maxTaskWidth)}</Text>
             </Box>
             {session.status === 'idle' && session.nextSteps && (
