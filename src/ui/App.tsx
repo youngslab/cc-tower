@@ -234,14 +234,15 @@ export function App({ tower }: Props) {
           windowIndex = stdout.trim();
         }
 
-        // switch-client to the new window (like `go`, not popup) so only that window is shown
-        const { stdout: homeInfo } = await ex('tmux', ['display-message', '-p', '#{session_name}:#{window_index}']);
-        const [homeSession, homeWindow] = homeInfo.trim().split(':');
-        await ex('tmux', ['bind-key', '-T', 'cctower-go', closeKey,
-          'run-shell', `tmux switch-client -t '${homeSession}:${homeWindow}' && tmux set-option -t ${hiveSession} key-table root`,
-        ]);
-        await ex('tmux', ['switch-client', '-t', `${hiveSession}:${windowIndex}`]);
-        await ex('tmux', ['set-option', '-t', hiveSession, 'key-table', 'cctower-go']);
+        // Open in popup (peek) so user stays in tower after closing
+        const paneTarget = `${hiveSession}:${windowIndex}`;
+        await tmux.displayPopup({
+          width: '80%',
+          height: '80%',
+          title: ` ${name}${resumeSessionId ? ' (resume)' : ' (new)'} | ${closeKey} to close `,
+          command: `tmux attach -t ${hiveSession} \\; select-window -t ${windowIndex}`,
+          closeOnExit: true,
+        });
       } catch {}
     }
   }, [tower]);
