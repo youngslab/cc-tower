@@ -35,13 +35,27 @@ export function DetailView({ session, onBack, onSend, onPeek }: Props) {
         {session.favorite && <Text color="yellow">  ★ Favorite</Text>}
       </Box>
 
-      <Box flexDirection="column" paddingX={2}>
-        <Text>Project:  {session.cwd}</Text>
-        <Text>Host:     {session.host}{session.sshTarget ? ` (${session.sshTarget})` : ''}</Text>
-        <Text>PID:      {session.pid}  │  Pane: {session.paneId ?? '—'}  │  Mode: {session.detectionMode}</Text>
-        <Text>Status:   <Text color={color}>{icon} {session.status.toUpperCase()}</Text></Text>
-        <Text>Started:  {elapsed} ago</Text>
-        <Text>Messages: {session.messageCount}  │  Tools: {session.toolCallCount}  │  Cost: ~${(session.estimatedCost ?? 0).toFixed(2)}</Text>
+      <Box marginTop={1} paddingX={2} flexDirection="column">
+        <Text bold dimColor>── Instance ──</Text>
+        <Text>  PID:      {session.pid}</Text>
+        <Text>  Pane:     {session.paneId ?? '—'}</Text>
+        <Text>  Identity: {session.paneId ?? String(session.pid)}</Text>
+        <Text>  Mode:     {session.detectionMode}</Text>
+        <Text>  Status:   <Text color={color}>{icon} {session.status.toUpperCase()}</Text></Text>
+        <Text>  Started:  {elapsed} ago</Text>
+      </Box>
+
+      <Box marginTop={1} paddingX={2} flexDirection="column">
+        <Text bold dimColor>── Session ──</Text>
+        <Text>  ID:      {session.sessionId}</Text>
+        <Text>  Name:    {session.label ?? '(none)'}</Text>
+        <Text>  Project: {session.cwd}</Text>
+        <Text>  Host:    {session.host}{session.sshTarget ? ` (${session.sshTarget})` : ''}</Text>
+      </Box>
+
+      <Box marginTop={1} paddingX={2} flexDirection="column">
+        <Text bold dimColor>── Stats ──</Text>
+        <Text>  Messages: {session.messageCount}  │  Tools: {session.toolCallCount}  │  Cost: ~${(session.estimatedCost ?? 0).toFixed(2)}</Text>
       </Box>
 
       {session.goalSummary && (
