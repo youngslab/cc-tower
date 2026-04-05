@@ -335,7 +335,7 @@ export function App({ tower }: Props) {
           <Dashboard
             sessions={sessions}
             tmuxCount={tmuxCount}
-            maxTaskWidth={Math.max(10, boxWidth - 42)}
+            maxTaskWidth={Math.max(10, boxWidth - 43)}
             cursorSessionId={cursorSessionId}
             onCursorChange={setCursorSessionId}
             onSwapFavoriteOrder={handleSwapFavoriteOrder}
