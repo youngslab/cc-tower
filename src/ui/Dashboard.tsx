@@ -152,11 +152,11 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorSessionId, 
     <Box flexDirection="column">
       {/* Header */}
       <Box>
-        <Text bold dimColor>{centerPad('', 4)}</Text>
-        <Text bold dimColor>{centerPad('LABEL', 22)}</Text>
-        <Text bold dimColor>{centerPad('', 3)}</Text>
+        <Text bold dimColor>{pad('', 4)}</Text>
+        <Text bold dimColor>{pad('LABEL', 22)}</Text>
+        <Text bold dimColor>{pad('', 3)}</Text>
         <Text bold dimColor>{pad('SESSION', 14)}</Text>
-        <Text bold dimColor>{centerPad('GOAL', maxTaskWidth)}</Text>
+        <Text bold dimColor>{pad('GOAL', maxTaskWidth)}</Text>
       </Box>
 
       {/* Session rows */}
