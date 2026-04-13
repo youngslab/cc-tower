@@ -28,7 +28,7 @@ export function App({ tower }: Props) {
   const [view, setView] = useState<View>('dashboard');
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
-  const [cursorSessionId, setCursorSessionId] = useState<string | null>(null);
+  const [cursorIdentity, setCursorIdentity] = useState<string | null>(null);
 
   const handleSelect = useCallback((session: Session) => {
     setSelectedSession(session);
@@ -145,10 +145,10 @@ export function App({ tower }: Props) {
         // Set key table on target session
         await ex('tmux', ['set-option', '-t', `${targetSession}`, 'key-table', 'cctower-go']);
       } catch {
-        // Pane is gone — restart in cc-tower-hive with --resume
+        // Pane is gone — restart in __cct_playground with --resume
         const resumeArg = session.sessionId ? ` --resume ${session.sessionId}` : '';
         const claudeArgs = (tower.config.claude_args ? ` ${tower.config.claude_args}` : '') + resumeArg;
-        const hiveSession = 'cc-tower-hive';
+        const hiveSession = '__cct_playground';
         const windowName = session.projectName.replace(/[^a-zA-Z0-9_-]/g, '-');
         try {
           let sessionExists = false;
@@ -213,7 +213,7 @@ export function App({ tower }: Props) {
       } catch {}
     } else {
       // Local: add a window to the hive session (create hive if needed)
-      const hiveSession = 'cc-tower-hive';
+      const hiveSession = '__cct_playground';
       const windowName = name.replace(/[^a-zA-Z0-9_-]/g, '-');
       try {
         let sessionExists = false;
@@ -351,8 +351,8 @@ export function App({ tower }: Props) {
             sessions={sessions}
             tmuxCount={tmuxCount}
             maxTaskWidth={Math.max(10, boxWidth - 43)}
-            cursorSessionId={cursorSessionId}
-            onCursorChange={setCursorSessionId}
+            cursorIdentity={cursorIdentity}
+            onCursorChange={setCursorIdentity}
             onSwapFavoriteOrder={handleSwapFavoriteOrder}
             onSelect={handleSelect}
             onSend={handleSend}

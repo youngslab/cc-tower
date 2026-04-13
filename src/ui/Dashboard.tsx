@@ -7,8 +7,8 @@ interface Props {
   sessions: Session[];
   tmuxCount: number;
   maxTaskWidth: number;
-  cursorSessionId: string | null;
-  onCursorChange: (sessionId: string | null) => void;
+  cursorIdentity: string | null;
+  onCursorChange: (identity: string | null) => void;
   onSwapFavoriteOrder: (idA: string, idB: string) => void;
   onSelect: (session: Session) => void;
   onSend: (session: Session) => void;
@@ -31,7 +31,7 @@ const STATUS_ICONS: Record<string, { icon: string; color: string }> = {
   dead: { icon: '✕', color: 'red' },
 };
 
-export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorSessionId, onCursorChange, onSwapFavoriteOrder, onSelect, onSend, onPeek, onToggleFavorite, onNewSession, onRefresh, onKill, onGo, onQuit, onDisplayOrderChange, initialDisplayOrder }: Props) {
+export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, onCursorChange, onSwapFavoriteOrder, onSelect, onSend, onPeek, onToggleFavorite, onNewSession, onRefresh, onKill, onGo, onQuit, onDisplayOrderChange, initialDisplayOrder }: Props) {
   const [confirmQuit, setConfirmQuit] = useState(false);
   const [confirmKill, setConfirmKill] = useState(false);
 
@@ -62,16 +62,16 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorSessionId, 
   const stableNonFavorites = stableNonFavOrder.map(id => identityMap.get(id)!).filter(Boolean);
   const sorted = [...favorites, ...stableNonFavorites];
 
-  // Resolve cursor index from tracked sessionId (go to 0 if session is gone)
+  // Resolve cursor index from tracked identity (go to 0 if session is gone)
   const cursor = (() => {
-    if (!cursorSessionId) return 0;
-    const idx = sorted.findIndex(s => s.sessionId === cursorSessionId);
+    if (!cursorIdentity) return 0;
+    const idx = sorted.findIndex(s => identityOf(s) === cursorIdentity);
     return idx >= 0 ? idx : 0;
   })();
 
   const moveCursor = (newIdx: number) => {
     const session = sorted[newIdx];
-    onCursorChange(session?.sessionId ?? null);
+    onCursorChange(session ? identityOf(session) : null);
   };
 
   // Group boundary: index where non-favorites start
@@ -171,7 +171,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorSessionId, 
         const labelText = (session.favorite ? '★ ' : '') + (session.sshTarget ? '⌁ ' : '') + session.projectName;
 
         return (
-          <React.Fragment key={session.sessionId}>
+          <React.Fragment key={identityOf(session)}>
             {showFavSep && (
               <Text dimColor>{'─'.repeat(60)} favorites ↑</Text>
             )}
