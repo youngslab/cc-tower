@@ -123,31 +123,16 @@ export class JsonlWatcher extends EventEmitter {
    */
   coldStartCustomTitle(jsonlPath: string): string | undefined {
     try {
-      const stat = fs.statSync(jsonlPath);
-      // custom-title is written near the start of the file, so read head + tail
-      const fd = fs.openSync(jsonlPath, 'r');
-      const headSize = Math.min(stat.size, 8192); // first 8KB
-      const headBuf = Buffer.alloc(headSize);
-      fs.readSync(fd, headBuf, 0, headSize, 0);
-
-      let tailContent = '';
-      const tailSize = Math.min(stat.size, 65536);
-      if (tailSize < stat.size) {
-        const tailBuf = Buffer.alloc(tailSize);
-        fs.readSync(fd, tailBuf, 0, tailSize, stat.size - tailSize);
-        tailContent = tailBuf.toString('utf8');
-      }
-      fs.closeSync(fd);
-
-      // Search tail first (latest rename wins), then head
-      for (const content of [tailContent, headBuf.toString('utf8')]) {
-        if (!content) continue;
-        const lines = content.split('\n').filter(l => l.trim());
-        for (let i = lines.length - 1; i >= 0; i--) {
-          const parsed = parseJsonlLine(lines[i]!);
-          if (parsed?.type === 'custom-title' && parsed.customTitle) {
-            return parsed.customTitle;
-          }
+      // custom-title lines are tiny (~100 bytes) and rare (1-2 per session).
+      // Read the entire file and grep for "custom-title" to avoid missing entries
+      // that fall in the gap between a small head and a tail-only read.
+      const content = fs.readFileSync(jsonlPath, 'utf8');
+      const lines = content.split('\n').filter(l => l.includes('custom-title'));
+      // Walk backwards — latest rename wins
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const parsed = parseJsonlLine(lines[i]!);
+        if (parsed?.type === 'custom-title' && parsed.customTitle) {
+          return parsed.customTitle;
         }
       }
     } catch {
