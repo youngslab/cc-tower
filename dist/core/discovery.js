@@ -9,6 +9,7 @@ export class DiscoveryEngine extends EventEmitter {
     config;
     interval = null;
     known = new Map();
+    hookLocked = new Set(); // PIDs whose sessionId was corrected by hook — don't override from pid.json
     constructor(config) {
         super();
         this.config = config;
@@ -20,6 +21,15 @@ export class DiscoveryEngine extends EventEmitter {
         this.interval = setInterval(() => {
             void this.scanOnce();
         }, this.config.scan_interval);
+    }
+    /** Update known sessionId for a PID — prevents discovery from overriding hook corrections */
+    updateKnown(pid, sessionId) {
+        const existing = this.known.get(pid);
+        if (existing) {
+            existing.sessionId = sessionId;
+            this.hookLocked.add(pid);
+            logger.debug('discovery: updateKnown (hook-locked)', { pid, sessionId: sessionId.slice(0, 12) });
+        }
     }
     stop() {
         if (this.interval !== null) {
@@ -42,15 +52,30 @@ export class DiscoveryEngine extends EventEmitter {
         if (jsonFiles.length === 0) {
             return this.scanProcesses();
         }
-        const active = [];
+        let active = [];
         for (const file of jsonFiles) {
             const filePath = join(sessionsDir, file);
             let info;
             try {
                 const raw = await readFile(filePath, 'utf8');
-                const parsed = JSON.parse(raw);
+                let parsed;
+                try {
+                    parsed = JSON.parse(raw);
+                }
+                catch {
+                    // File may have trailing garbage after the JSON object — extract the first object
+                    const end = raw.indexOf('}');
+                    if (end === -1)
+                        throw new Error('no closing brace found');
+                    parsed = JSON.parse(raw.slice(0, end + 1));
+                }
                 if (!isSessionInfo(parsed)) {
                     logger.debug('discovery: malformed session file', { filePath });
+                    continue;
+                }
+                // Skip sdk-cli sessions (headless subprocesses spawned by user code, not interactive terminals)
+                if (parsed['entrypoint'] === 'sdk-cli') {
+                    logger.debug('discovery: skipping sdk-cli session', { filePath });
                     continue;
                 }
                 info = parsed;
@@ -69,6 +94,7 @@ export class DiscoveryEngine extends EventEmitter {
                 if (this.known.has(info.pid)) {
                     const lost = this.known.get(info.pid);
                     this.known.delete(info.pid);
+                    this.hookLocked.delete(info.pid);
                     this.emit('session-lost', lost);
                     logger.info('discovery: session-lost (PID dead)', { pid: info.pid, sessionId: info.sessionId, cwd: info.cwd });
                 }
@@ -83,6 +109,11 @@ export class DiscoveryEngine extends EventEmitter {
                 // Detect sessionId change (e.g., /resume, /clear)
                 const prev = this.known.get(info.pid);
                 if (prev.sessionId !== info.sessionId) {
+                    // If hook-locked, pid.json is stale — ignore this change
+                    if (this.hookLocked.has(info.pid)) {
+                        logger.debug('discovery: ignoring pid.json change for hook-locked session', { pid: info.pid, pidJson: info.sessionId, hookCorrected: prev.sessionId });
+                        continue;
+                    }
                     logger.debug('discovery: session-changed', { pid: info.pid, old: prev.sessionId, new: info.sessionId });
                     this.known.set(info.pid, info);
                     this.emit('session-changed', { prev, next: info });
@@ -90,11 +121,34 @@ export class DiscoveryEngine extends EventEmitter {
             }
             active.push(info);
         }
+        // Deduplicate: when multiple PIDs share the same sessionId (e.g., Claude Code reused
+        // session file after /resume), keep only the most recently started PID as the session owner.
+        // The older PID likely moved to a different session but its file wasn't updated.
+        const bySessionId = new Map();
+        for (const info of active) {
+            const existing = bySessionId.get(info.sessionId);
+            if (!existing || info.startedAt > existing.startedAt || (info.startedAt === existing.startedAt && info.pid > existing.pid)) {
+                if (existing) {
+                    this.hookLocked.delete(existing.pid);
+                    logger.debug('discovery: dedup — evicting older PID with same sessionId', {
+                        evictedPid: existing.pid, keptPid: info.pid, sessionId: info.sessionId,
+                    });
+                }
+                bySessionId.set(info.sessionId, info);
+            }
+            else {
+                logger.debug('discovery: dedup — skipping PID with older startedAt', {
+                    skippedPid: info.pid, keptPid: existing.pid, sessionId: info.sessionId,
+                });
+            }
+        }
+        active = Array.from(bySessionId.values());
         // Check known PIDs that are no longer in any file
         for (const [pid, session] of this.known) {
             if (!active.find((s) => s.pid === pid)) {
                 if (!isPidAlive(pid)) {
                     this.known.delete(pid);
+                    this.hookLocked.delete(pid);
                     this.emit('session-lost', session);
                     logger.info('discovery: session-lost (no file, PID dead)', { pid, sessionId: session.sessionId, cwd: session.cwd });
                 }
@@ -152,8 +206,12 @@ export class DiscoveryEngine extends EventEmitter {
                 }
                 catch { }
                 // 2. Fallback: use JSONL filename if CLAUDE_SESSION_ID not found
+                // Skip JSONLs already claimed by another known session (same CWD, different PID)
                 if (sessionId.startsWith('proc-')) {
                     try {
+                        const usedSessionIds = new Set(Array.from(this.known.values())
+                            .filter(s => s.cwd === cwd && s.pid !== pid)
+                            .map(s => s.sessionId));
                         const jsonls = readdirSync(projectDir)
                             .filter(f => f.endsWith('.jsonl'))
                             .map(f => { try {
@@ -163,8 +221,12 @@ export class DiscoveryEngine extends EventEmitter {
                             return { name: f, mtime: 0 };
                         } })
                             .sort((a, b) => b.mtime - a.mtime);
-                        if (jsonls.length > 0) {
-                            sessionId = jsonls[0].name.replace('.jsonl', '');
+                        for (const j of jsonls) {
+                            const candidate = j.name.replace('.jsonl', '');
+                            if (!usedSessionIds.has(candidate)) {
+                                sessionId = candidate;
+                                break;
+                            }
                         }
                     }
                     catch { }
@@ -197,6 +259,8 @@ export class DiscoveryEngine extends EventEmitter {
     }
 }
 function isPidAlive(pid) {
+    if (pid <= 0)
+        return false; // PID 0 sends signal to process group — treat as not alive
     try {
         process.kill(pid, 0);
         return true;

@@ -15,8 +15,11 @@ export declare class DiscoveryEngine extends EventEmitter {
     private config;
     private interval;
     private known;
+    private hookLocked;
     constructor(config: DiscoveryConfig);
     start(): void;
+    /** Update known sessionId for a PID — prevents discovery from overriding hook corrections */
+    updateKnown(pid: number, sessionId: string): void;
     stop(): void;
     scanOnce(): Promise<SessionInfo[]>;
     /**

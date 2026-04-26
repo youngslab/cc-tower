@@ -21,7 +21,7 @@ export class Notifier extends EventEmitter {
     onStateChange(change) {
         if (!this.config.enabled)
             return;
-        const session = this.store.get(change.sessionId);
+        const session = this.store.getBySessionId(change.sessionId);
         if (!session)
             return;
         // Exception alerts: always fire regardless of conditions

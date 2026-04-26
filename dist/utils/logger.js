@@ -54,6 +54,10 @@ function getConfiguredLevel() {
     return 'info';
 }
 function shouldLogStderr(level) {
+    // In TUI mode, never write to stderr — it corrupts the display.
+    // All logs are captured in the log file (~/.config/cc-tower/cc-tower.log).
+    if (tui)
+        return false;
     return LEVELS[level] >= LEVELS[getConfiguredLevel()];
 }
 function log(level, msg, data) {
