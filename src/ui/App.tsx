@@ -80,6 +80,11 @@ export function App({ tower }: Props) {
 
   const handleKill = useCallback(async (session: Session) => {
     if (!session.pid) return;
+    // Remove from favorites on kill
+    if (session.favorite) {
+      const identity = session.paneId ?? String(session.pid);
+      tower.store.update(identity, { favorite: false, favoritedAt: undefined });
+    }
     try {
       if (session.sshTarget) {
         const hostConfig = tower.config.hosts.find(h => h.ssh === session.sshTarget);
@@ -136,14 +141,13 @@ export function App({ tower }: Props) {
         const { stdout: targetInfo } = await ex('tmux', ['display-message', '-t', session.paneId, '-p', '#{session_name}:#{window_index}']);
         const [targetSession, targetWindow] = targetInfo.trim().split(':');
 
-        // Bind close key on TARGET session: switch back to exact tower window + reset key table
-        await ex('tmux', ['bind-key', '-T', 'cctower-go', tmuxKey,
-          'run-shell', `tmux switch-client -t '${homeSession}:${homeWindow}' && tmux set-option -t ${targetSession} key-table root`,
+        // Bind close key in root table: switch back + auto-unbind (preserves custom shortcuts)
+        await ex('tmux', ['bind-key', '-T', 'root', tmuxKey,
+          'switch-client', '-t', `${homeSession}:${homeWindow}`,
+          ';', 'unbind-key', '-T', 'root', tmuxKey,
         ]);
         // Switch to target
         await ex('tmux', ['switch-client', '-t', `${targetSession}:${targetWindow}`]);
-        // Set key table on target session
-        await ex('tmux', ['set-option', '-t', `${targetSession}`, 'key-table', 'cctower-go']);
       } catch {
         // Pane is gone — restart in __cct_playground with --resume
         const resumeArg = session.sessionId ? ` --resume ${session.sessionId}` : '';
@@ -160,11 +164,11 @@ export function App({ tower }: Props) {
 
           const { stdout: homeInfo } = await ex('tmux', ['display-message', '-p', '#{session_name}:#{window_index}']);
           const [homeSession, homeWindow] = homeInfo.trim().split(':');
-          await ex('tmux', ['bind-key', '-T', 'cctower-go', tmuxKey,
-            'run-shell', `tmux switch-client -t '${homeSession}:${homeWindow}' && tmux set-option -t ${hiveSession} key-table root`,
+          await ex('tmux', ['bind-key', '-T', 'root', tmuxKey,
+            'switch-client', '-t', `${homeSession}:${homeWindow}`,
+            ';', 'unbind-key', '-T', 'root', tmuxKey,
           ]);
           await ex('tmux', ['switch-client', '-t', `${hiveSession}:${windowIndex.trim()}`]);
-          await ex('tmux', ['set-option', '-t', hiveSession, 'key-table', 'cctower-go']);
         } catch {}
       }
     }
