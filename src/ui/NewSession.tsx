@@ -13,6 +13,7 @@ export interface HostOption {
 export interface PastSession {
   sessionId: string;
   startedAt: number;
+  label?: string;
   goalSummary?: string;
   contextSummary?: string;
   nextSteps?: string;
@@ -22,6 +23,7 @@ export interface PastSessionByCwd {
   sessionId: string;
   cwd: string;
   startedAt: number;
+  label?: string;
   goalSummary?: string;
   contextSummary?: string;
   sshTarget?: string;
@@ -357,14 +359,15 @@ export function NewSession({ projects, hosts, onSelect, onCancel, getPastSession
           ) : (
             recentSessions.map((s, i) => {
               const sel = i === cursor;
-              const label = s.cwd.split('/').pop() ?? s.cwd;
+              const dirName = s.cwd.split('/').pop() ?? s.cwd;
+              const displayName = s.label ? `${dirName} [${s.label}]` : dirName;
               const summary = s.contextSummary ?? s.goalSummary;
               const hostBadge = s.sshTarget ? `⌁ ${s.sshTarget.split('@').pop() ?? s.sshTarget}` : 'local';
               return (
                 <Box key={s.sessionId} flexDirection="column">
                   <Box>
                     <Text color={sel ? 'cyan' : undefined} bold={sel}>{sel ? '▸ ' : '  '}</Text>
-                    <Text color={sel ? 'cyan' : undefined} bold={sel}>{label}</Text>
+                    <Text color={sel ? 'cyan' : undefined} bold={sel}>{displayName}</Text>
                     <Text dimColor>  [{hostBadge}]  {s.cwd}  ·  {formatAge(s.startedAt)}</Text>
                   </Box>
                   {summary && sel && (
@@ -400,13 +403,14 @@ export function NewSession({ projects, hosts, onSelect, onCancel, getPastSession
           ) : (
             targetSessions.map((s, i) => {
               const sel = i === cursor;
-              const label = s.cwd.split('/').pop() ?? s.cwd;
+              const dirName = s.cwd.split('/').pop() ?? s.cwd;
+              const displayName = s.label ? `${dirName} [${s.label}]` : dirName;
               const summary = s.contextSummary ?? s.goalSummary;
               return (
                 <Box key={s.sessionId} flexDirection="column">
                   <Box>
                     <Text color={sel ? 'cyan' : undefined} bold={sel}>{sel ? '▸ ' : '  '}</Text>
-                    <Text color={sel ? 'cyan' : undefined} bold={sel}>{label}</Text>
+                    <Text color={sel ? 'cyan' : undefined} bold={sel}>{displayName}</Text>
                     <Text dimColor>  {s.cwd}  ·  {formatAge(s.startedAt)}</Text>
                   </Box>
                   {summary && sel && (
@@ -466,7 +470,7 @@ export function NewSession({ projects, hosts, onSelect, onCancel, getPastSession
                   <Text color={isSelected ? 'cyan' : undefined} bold={isSelected}>
                     {isSelected ? '▸ ' : '  '}
                   </Text>
-                  <Text color={isSelected ? 'cyan' : 'white'}>Resume</Text>
+                  <Text color={isSelected ? 'cyan' : 'white'}>Resume{s.label ? ` [${s.label}]` : ''}</Text>
                   <Text dimColor> · {age}</Text>
                 </Box>
                 {summary && (
@@ -503,13 +507,14 @@ export function NewSession({ projects, hosts, onSelect, onCancel, getPastSession
               <Text dimColor>─── Recent ───────────────────────────</Text>
               {targetSessions.map((s, i) => {
                 const sel = i === listCursor;
-                const label = s.cwd.split('/').pop() ?? s.cwd;
+                const dirName = s.cwd.split('/').pop() ?? s.cwd;
+                const displayName = s.label ? `${dirName} [${s.label}]` : dirName;
                 const summary = s.contextSummary ?? s.goalSummary;
                 return (
                   <Box key={s.sessionId} flexDirection="column">
                     <Box>
                       <Text color={sel ? 'cyan' : undefined} bold={sel}>{sel ? '▸ ' : '  '}</Text>
-                      <Text color={sel ? 'cyan' : undefined} bold={sel}>{label}</Text>
+                      <Text color={sel ? 'cyan' : undefined} bold={sel}>{displayName}</Text>
                       <Text dimColor>  {s.cwd}  ·  {formatAge(s.startedAt)}</Text>
                     </Box>
                     {summary && sel && (

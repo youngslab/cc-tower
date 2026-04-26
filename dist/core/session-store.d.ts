@@ -15,20 +15,16 @@ export interface TurnSummary {
     };
     tier: 1 | 2 | 3;
 }
-export interface Session {
+export interface Instance {
     pid: number;
-    sessionId: string;
     paneId?: string;
+    sessionId: string;
     hasTmux: boolean;
     detectionMode: 'hook' | 'jsonl' | 'process';
     cwd: string;
     projectName: string;
     status: 'idle' | 'thinking' | 'executing' | 'agent' | 'dead';
     lastActivity: Date;
-    goalSummary?: string;
-    contextSummary?: string;
-    nextSteps?: string;
-    summaryLoading?: boolean;
     currentActivity?: string;
     currentTask?: string;
     currentSummary?: TurnSummary;
@@ -36,35 +32,70 @@ export interface Session {
     messageCount: number;
     toolCallCount: number;
     estimatedCost?: number;
-    label?: string;
-    tags?: string[];
+    summaryLoading?: boolean;
     favorite?: boolean;
     favoritedAt?: number;
-    host: string;
+    host?: string;
     sshTarget?: string;
     commandPrefix?: string;
     hostOnline?: boolean;
 }
+export interface SessionMeta {
+    label?: string;
+    tags?: string[];
+    goalSummary?: string;
+    contextSummary?: string;
+    nextSteps?: string;
+}
+export type Session = Instance & SessionMeta;
+interface PersistedEntry {
+    label?: string;
+    tags?: string[];
+    favorite?: boolean;
+    favoritedAt?: number;
+    goalSummary?: string;
+    contextSummary?: string;
+    nextSteps?: string;
+    host?: string;
+    pid?: number;
+    sshTarget?: string;
+    cwd?: string;
+    startedAt?: number;
+}
+export declare function sessionIdentity(s: {
+    paneId?: string;
+    pid: number;
+}): string;
 export declare class SessionStore extends EventEmitter {
     private persistPath;
-    private sessions;
+    private instances;
+    private sessionMeta;
     private persistTimer;
     private persistedMeta;
+    private persistedInstances;
+    private _displayOrder;
     constructor(persistPath: string);
     getAll(): Session[];
-    get(sessionId: string): Session | undefined;
+    get(identity: string): Session | undefined;
     getByPid(pid: number): Session | undefined;
+    getBySessionId(sessionId: string): Session | undefined;
+    rekey(oldIdentity: string, newIdentity: string): void;
     register(session: Session): void;
-    unregister(sessionId: string): void;
-    update(sessionId: string, patch: Partial<Session>): void;
+    unregister(identity: string): void;
+    update(identity: string, patch: Partial<Session>): void;
+    updateMeta(identity: string, patch: Partial<SessionMeta>): void;
+    reassociateMeta(oldSessionId: string, newSessionId: string): void;
+    updateBySessionId(sessionId: string, patch: Partial<Session>): void;
     persist(): void;
     /** Synchronous persist — use at shutdown before process.exit() */
     persistSync(): void;
     private _writePersist;
+    private _buildPersistData;
     /** Returns persisted sessions matching the given cwd, sorted by startedAt desc. */
     getPastSessionsByCwd(cwd: string): Array<{
         sessionId: string;
         startedAt: number;
+        label?: string;
         goalSummary?: string;
         contextSummary?: string;
         nextSteps?: string;
@@ -78,6 +109,7 @@ export declare class SessionStore extends EventEmitter {
         sessionId: string;
         cwd: string;
         startedAt: number;
+        label?: string;
         goalSummary?: string;
         contextSummary?: string;
         sshTarget?: string;
@@ -87,6 +119,7 @@ export declare class SessionStore extends EventEmitter {
         sessionId: string;
         cwd: string;
         startedAt: number;
+        label?: string;
         goalSummary?: string;
         contextSummary?: string;
         sshTarget?: string;
@@ -105,4 +138,8 @@ export declare class SessionStore extends EventEmitter {
         host: string;
     }>;
     restore(): void;
+    getPersistedEntry(sessionId: string): PersistedEntry | undefined;
+    get displayOrder(): string[];
+    set displayOrder(order: string[]);
 }
+export {};

@@ -356,14 +356,15 @@ export class SessionStore extends EventEmitter {
   }
 
   /** Returns persisted sessions matching the given cwd, sorted by startedAt desc. */
-  getPastSessionsByCwd(cwd: string): Array<{ sessionId: string; startedAt: number; goalSummary?: string; contextSummary?: string; nextSteps?: string }> {
-    const result: Array<{ sessionId: string; startedAt: number; goalSummary?: string; contextSummary?: string; nextSteps?: string }> = [];
+  getPastSessionsByCwd(cwd: string): Array<{ sessionId: string; startedAt: number; label?: string; goalSummary?: string; contextSummary?: string; nextSteps?: string }> {
+    const result: Array<{ sessionId: string; startedAt: number; label?: string; goalSummary?: string; contextSummary?: string; nextSteps?: string }> = [];
     const activeIds = new Set(this.getAll().map(s => s.sessionId));
     for (const [sessionId, entry] of this.persistedMeta) {
       if (entry.cwd === cwd && !activeIds.has(sessionId)) {
         result.push({
           sessionId,
           startedAt: entry.startedAt ?? 0,
+          label: entry.label,
           goalSummary: entry.goalSummary,
           contextSummary: entry.contextSummary,
           nextSteps: entry.nextSteps,
@@ -378,14 +379,14 @@ export class SessionStore extends EventEmitter {
    * sshTarget undefined = local sessions; sshTarget string = remote sessions for that target.
    * Excludes currently active sessions.
    */
-  getPastSessionsByTarget(sshTarget?: string): Array<{ sessionId: string; cwd: string; startedAt: number; goalSummary?: string; contextSummary?: string; sshTarget?: string }> {
+  getPastSessionsByTarget(sshTarget?: string): Array<{ sessionId: string; cwd: string; startedAt: number; label?: string; goalSummary?: string; contextSummary?: string; sshTarget?: string }> {
     const activeIds = new Set(this.getAll().map(s => s.sessionId));
-    const all: Array<{ sessionId: string; cwd: string; startedAt: number; goalSummary?: string; contextSummary?: string; sshTarget?: string }> = [];
+    const all: Array<{ sessionId: string; cwd: string; startedAt: number; label?: string; goalSummary?: string; contextSummary?: string; sshTarget?: string }> = [];
     for (const [sessionId, entry] of this.persistedMeta) {
       if (entry.sshTarget !== sshTarget) continue;
       if (!entry.cwd) continue;
       if (activeIds.has(sessionId)) continue;
-      all.push({ sessionId, cwd: entry.cwd, startedAt: entry.startedAt ?? 0, goalSummary: entry.goalSummary, contextSummary: entry.contextSummary, sshTarget: entry.sshTarget });
+      all.push({ sessionId, cwd: entry.cwd, startedAt: entry.startedAt ?? 0, label: entry.label, goalSummary: entry.goalSummary, contextSummary: entry.contextSummary, sshTarget: entry.sshTarget });
     }
     all.sort((a, b) => b.startedAt - a.startedAt);
     const byCwd = new Map<string, typeof all[0]>();
@@ -396,13 +397,13 @@ export class SessionStore extends EventEmitter {
   }
 
   /** Returns all past sessions across all hosts, sorted by most recent. */
-  getAllPastSessions(): Array<{ sessionId: string; cwd: string; startedAt: number; goalSummary?: string; contextSummary?: string; sshTarget?: string }> {
+  getAllPastSessions(): Array<{ sessionId: string; cwd: string; startedAt: number; label?: string; goalSummary?: string; contextSummary?: string; sshTarget?: string }> {
     const activeIds = new Set(this.getAll().map(s => s.sessionId));
-    const all: Array<{ sessionId: string; cwd: string; startedAt: number; goalSummary?: string; contextSummary?: string; sshTarget?: string }> = [];
+    const all: Array<{ sessionId: string; cwd: string; startedAt: number; label?: string; goalSummary?: string; contextSummary?: string; sshTarget?: string }> = [];
     for (const [sessionId, entry] of this.persistedMeta) {
       if (!entry.cwd) continue;
       if (activeIds.has(sessionId)) continue;
-      all.push({ sessionId, cwd: entry.cwd, startedAt: entry.startedAt ?? 0, goalSummary: entry.goalSummary, contextSummary: entry.contextSummary, sshTarget: entry.sshTarget });
+      all.push({ sessionId, cwd: entry.cwd, startedAt: entry.startedAt ?? 0, label: entry.label, goalSummary: entry.goalSummary, contextSummary: entry.contextSummary, sshTarget: entry.sshTarget });
     }
     all.sort((a, b) => b.startedAt - a.startedAt);
     // Deduplicate by (sshTarget, cwd) — keep most recent

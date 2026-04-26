@@ -6,6 +6,7 @@ export interface HostOption {
 export interface PastSession {
     sessionId: string;
     startedAt: number;
+    label?: string;
     goalSummary?: string;
     contextSummary?: string;
     nextSteps?: string;
@@ -14,6 +15,7 @@ export interface PastSessionByCwd {
     sessionId: string;
     cwd: string;
     startedAt: number;
+    label?: string;
     goalSummary?: string;
     contextSummary?: string;
     sshTarget?: string;
