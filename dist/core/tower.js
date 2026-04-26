@@ -2,7 +2,7 @@ import { execSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { loadConfig } from '../config/loader.js';
 import { DiscoveryEngine } from './discovery.js';
-import { SessionStore } from './session-store.js';
+import { SessionStore, sessionIdentity } from './session-store.js';
 import { HookReceiver } from './hook-receiver.js';
 import { JsonlWatcher } from './jsonl-watcher.js';
 import { ProcessMonitor } from './process-monitor.js';
@@ -33,7 +33,8 @@ export class Tower extends EventEmitter {
     summarizer;
     notifier;
     stateMachines = new Map();
-    hookSidToSessionId = new Map(); // CLAUDE_SESSION_ID → internal sessionId
+    remoteStateMachines = new Map();
+    hookSidToIdentity = new Map(); // CLAUDE_SESSION_ID → identity (paneId ?? String(pid))
     jsonlPaths = new Map(); // sessionId → jsonlPath
     stopping = false;
     connectionManager;
@@ -143,7 +144,8 @@ export class Tower extends EventEmitter {
             for (const name of sessions.split('\n')) {
                 if (name.startsWith('_cctower_peek_')) {
                     try {
-                        execSync(`tmux kill-session -t ${name} 2>/dev/null`);
+                        const { execFileSync } = await import('node:child_process');
+                        execFileSync('tmux', ['kill-session', '-t', name], { stdio: 'ignore' });
                     }
                     catch { }
                 }
@@ -165,8 +167,10 @@ export class Tower extends EventEmitter {
         // 3. Scan for active sessions
         const sessions = await this.discovery.scanOnce();
         logger.info('tower: discovered sessions', { count: sessions.length });
-        // 4. For each session: resolve pane, cold start JSONL, register (parallel)
-        await Promise.all(sessions.map(info => this.registerSession(info)));
+        // 4. For each session: resolve pane, cold start JSONL, register (sequential to avoid JSONL fallback races)
+        for (const info of sessions) {
+            await this.registerSession(info);
+        }
         // 5. Wire up hook events
         this.hookReceiver.on('hook-event', (event) => {
             this.handleHookEvent(event);
@@ -194,53 +198,66 @@ export class Tower extends EventEmitter {
             this.deregisterSession(info.sessionId);
         });
         this.discovery.on('session-changed', async ({ prev, next }) => {
-            // Detect /resume vs /clear:
-            // - /resume  → next.sessionId is an old UUID with existing JSONL content
-            // - /clear   → next.sessionId is a new UUID with no JSONL yet
             const claudeDir = this.config.discovery.claude_dir.replace('~', os.homedir());
             const slug = cwdToSlug(next.cwd);
             const nextJsonl = path.join(claudeDir, 'projects', slug, `${next.sessionId}.jsonl`);
-            const isResume = (() => {
-                try {
-                    return fs.statSync(nextJsonl).size > 0;
-                }
-                catch {
-                    return false;
-                }
-            })();
-            logger.info(`tower: session changed (${isResume ? 'resume' : 'clear'})`, { pid: next.pid, old: prev.sessionId, new: next.sessionId });
-            const oldSession = this.store.get(prev.sessionId);
-            // Deregister old session immediately (no 30s dead delay for migrations)
-            this.cleanupSession(prev.sessionId);
-            // Register new/resumed session — persistedMeta restores its own label/tags/summaries
-            // For /clear: skip JSONL fallback so new session doesn't inherit old session's label/summary
-            await this.registerSession(next, { skipJsonlFallback: !isResume });
-            if (!isResume && oldSession) {
-                // /clear: carry over only favorite status from the cleared session
-                const patch = {};
-                if (oldSession.favorite) {
-                    patch['favorite'] = oldSession.favorite;
-                    patch['favoritedAt'] = oldSession.favoritedAt;
-                }
-                if (Object.keys(patch).length > 0) {
-                    this.store.update(next.sessionId, patch);
-                    logger.info('tower: session migrated (clear)', { from: prev.sessionId, to: next.sessionId, keys: Object.keys(patch) });
-                }
+            const isResume = (() => { try {
+                return fs.statSync(nextJsonl).size > 0;
             }
-            // /resume: persistedMeta already restored label/tags/summaries inside registerSession
+            catch {
+                return false;
+            } })();
+            logger.info(`tower: session changed (${isResume ? 'resume' : 'clear'})`, { pid: next.pid, old: prev.sessionId, new: next.sessionId });
+            // Find session by identity (paneId ?? String(pid)) — same pane, just sessionId changed
+            // SessionInfo doesn't carry paneId; look up existing session by prev.sessionId to get paneId
+            const prevSession = this.store.getBySessionId(prev.sessionId);
+            const identity = prevSession ? sessionIdentity(prevSession) : String(next.pid);
+            const session = this.store.get(identity);
+            if (!session) {
+                logger.warn('tower: session-changed but no session found for identity', { identity, pid: next.pid });
+                return;
+            }
+            // Swap JSONL path (sessionId-keyed map stays sessionId-keyed)
+            this.jsonlWatcher.unwatch(prev.sessionId);
+            this.jsonlPaths.delete(prev.sessionId);
+            // Update sessionId in-place
+            // /clear: new sessionId has no meta entry → clean start (label/tags/summaries empty)
+            // /resume: explicitly reassociate meta from old sessionId to new sessionId
+            if (isResume) {
+                this.store.reassociateMeta(prev.sessionId, next.sessionId);
+            }
+            this.store.update(identity, { sessionId: next.sessionId });
+            // Setup new JSONL path
+            if (fs.existsSync(nextJsonl) && fs.statSync(nextJsonl).size > 0) {
+                this.jsonlPaths.set(next.sessionId, nextJsonl);
+                this.jsonlWatcher.watch(next.sessionId, nextJsonl);
+            }
+            else {
+                // /clear: JSONL not yet created — watch for it
+                const projectDir = path.dirname(nextJsonl);
+                const watcher = fs.watch(projectDir, (event, filename) => {
+                    if (filename === `${next.sessionId}.jsonl` && fs.existsSync(nextJsonl) && fs.statSync(nextJsonl).size > 0) {
+                        this.jsonlPaths.set(next.sessionId, nextJsonl);
+                        this.jsonlWatcher.watch(next.sessionId, nextJsonl);
+                        watcher.close();
+                    }
+                });
+                setTimeout(() => watcher.close(), 60_000);
+            }
         });
         // 8. Start periodic discovery
         this.discovery.start();
         // 9. Trigger initial summary for sessions that are already idle
         for (const session of this.store.getAll()) {
             if (session.status !== 'dead') {
+                const identity = sessionIdentity(session);
                 const jp = this.jsonlPaths.get(session.sessionId);
                 if (jp) {
-                    void this.refreshGoalSummary(session.sessionId, jp);
+                    void this.refreshGoalSummary(identity, jp);
                     if (!session.contextSummary)
-                        void this.refreshContextSummary(session.sessionId, jp);
+                        void this.refreshContextSummary(identity, jp);
                     if (!session.nextSteps && session.status === 'idle')
-                        void this.refreshNextSteps(session.sessionId, jp);
+                        void this.refreshNextSteps(identity, jp);
                 }
             }
         }
@@ -279,14 +296,14 @@ export class Tower extends EventEmitter {
                 // Mark all sessions from this host as offline
                 for (const session of this.store.getAll()) {
                     if (session.host === hostName) {
-                        this.store.update(session.sessionId, { hostOnline: false });
+                        this.store.updateBySessionId(session.sessionId, { hostOnline: false });
                     }
                 }
             });
             this.remoteDiscovery.on('host-online', (hostName) => {
                 for (const session of this.store.getAll()) {
                     if (session.host === hostName) {
-                        this.store.update(session.sessionId, { hostOnline: true });
+                        this.store.updateBySessionId(session.sessionId, { hostOnline: true });
                     }
                 }
             });
@@ -336,39 +353,38 @@ export class Tower extends EventEmitter {
     }
     /** Full refresh: re-scan discovery, re-register session, then regenerate LLM summaries. */
     async refreshSession(sessionId) {
-        const session = this.store.get(sessionId);
+        const session = this.store.getBySessionId(sessionId);
         if (!session)
             return;
+        const identity = sessionIdentity(session);
         logger.info('tower: refreshSession called', { sessionId, host: session.host, sshTarget: session.sshTarget });
         // Clear UI immediately
         clearSummaryCache(sessionId);
-        this.store.update(sessionId, {
-            goalSummary: undefined,
-            contextSummary: undefined,
-            nextSteps: undefined,
-            summaryLoading: true,
-        });
+        this.store.updateMeta(identity, { goalSummary: undefined, contextSummary: undefined, nextSteps: undefined });
+        this.store.update(identity, { summaryLoading: true });
         // Re-scan discovery to pick up any changes (new PID, session file changes)
         const discovered = await this.discovery.scanOnce();
-        const match = discovered.find(s => s.cwd === session.cwd) ?? discovered.find(s => s.sessionId === sessionId);
+        const match = discovered.find(s => s.sessionId === sessionId) ?? discovered.find(s => s.cwd === session.cwd && s.pid === session.pid);
         if (match && match.sessionId !== sessionId) {
             // Session ID changed (e.g., /clear, /resume) — re-register
             logger.info('tower: refresh detected session change', { old: sessionId, new: match.sessionId });
-            this.cleanupSession(sessionId);
+            this.cleanupSession(identity);
             await this.registerSession(match);
-            // Migrate metadata
-            this.store.update(match.sessionId, {
-                label: session.label,
-                tags: session.tags,
-                favorite: session.favorite,
-                favoritedAt: session.favoritedAt,
-                summaryLoading: true,
-            });
+            // Migrate metadata — only pass defined values to avoid overwriting with undefined
+            const newIdentity = sessionIdentity(match);
+            const migrationMeta = {};
+            if (session.label !== undefined)
+                migrationMeta.label = session.label;
+            if (session.tags !== undefined)
+                migrationMeta.tags = session.tags;
+            // favorite is instance-level — migrated via Instance, not SessionMeta
+            this.store.updateMeta(newIdentity, migrationMeta);
+            this.store.update(newIdentity, { summaryLoading: true });
             const jp = this.jsonlPaths.get(match.sessionId);
             if (jp) {
-                void this.refreshGoalSummary(match.sessionId, jp);
-                void this.refreshContextSummary(match.sessionId, jp);
-                void this.refreshNextSteps(match.sessionId, jp);
+                void this.refreshGoalSummary(newIdentity, jp);
+                void this.refreshContextSummary(newIdentity, jp);
+                void this.refreshNextSteps(newIdentity, jp);
             }
         }
         else if (session.sshTarget) {
@@ -405,35 +421,16 @@ export class Tower extends EventEmitter {
             }
         }
         else {
-            // Local session — refresh JSONL path and summaries
+            // Local session — refresh summaries from current (hook-corrected) JSONL
             const jp = this.jsonlPaths.get(sessionId);
             if (jp) {
-                // Re-check newest JSONL
-                try {
-                    const dir = path.dirname(jp);
-                    const files = fs.readdirSync(dir)
-                        .filter(f => f.endsWith('.jsonl') && !f.includes('/'))
-                        .map(f => ({ name: f, mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
-                        .sort((a, b) => b.mtime - a.mtime);
-                    if (files.length > 0) {
-                        const newest = path.join(dir, files[0].name);
-                        if (newest !== jp) {
-                            this.jsonlPaths.set(sessionId, newest);
-                            this.jsonlWatcher.unwatch(sessionId);
-                            this.jsonlWatcher.watch(sessionId, newest);
-                            logger.info('tower: refresh updated JSONL path', { sessionId, newPath: newest });
-                        }
-                    }
-                }
-                catch { }
-                const updatedJp = this.jsonlPaths.get(sessionId);
-                void this.refreshGoalSummary(sessionId, updatedJp);
-                void this.refreshContextSummary(sessionId, updatedJp);
-                void this.refreshNextSteps(sessionId, updatedJp);
+                void this.refreshGoalSummary(identity, jp);
+                void this.refreshContextSummary(identity, jp);
+                void this.refreshNextSteps(identity, jp);
             }
             else {
                 // No JSONL available — clear loading state
-                this.store.update(sessionId, { summaryLoading: false });
+                this.store.update(identity, { summaryLoading: false });
                 logger.info('tower: refresh skipped, no JSONL', { sessionId });
             }
         }
@@ -470,103 +467,97 @@ export class Tower extends EventEmitter {
      * session-changed and the FSM stays idle→idle (no state-change). This method detects
      * whether a newer JSONL exists (= new conversation was resumed) and refreshes summaries.
      */
-    async refreshSessionAfterResume(sessionId) {
+    async refreshSessionAfterResume(identity) {
+        const session = this.store.get(identity);
+        if (!session)
+            return;
+        const sessionId = session.sessionId;
         const jp = this.jsonlPaths.get(sessionId);
         if (!jp)
             return;
-        try {
-            const dir = path.dirname(jp);
-            const files = fs.readdirSync(dir)
-                .filter(f => f.endsWith('.jsonl') && !f.includes('/'))
-                .map(f => ({ name: f, mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
-                .sort((a, b) => b.mtime - a.mtime);
-            if (files.length > 0) {
-                const newest = path.join(dir, files[0].name);
-                if (newest !== jp) {
-                    logger.info('tower: resume detected — switching to newer JSONL', { sessionId, old: path.basename(jp), new: files[0].name });
-                    this.jsonlPaths.set(sessionId, newest);
-                    this.jsonlWatcher.unwatch(sessionId);
-                    this.jsonlWatcher.watch(sessionId, newest);
-                    // Clear stale summaries so they are regenerated from the resumed conversation
-                    this.store.update(sessionId, { goalSummary: undefined, contextSummary: undefined, nextSteps: undefined });
-                }
-            }
-        }
-        catch { }
-        const updatedJp = this.jsonlPaths.get(sessionId);
-        void this.refreshGoalSummary(sessionId, updatedJp);
-        void this.refreshContextSummary(sessionId, updatedJp);
+        // Hook-based correction already switched the sessionId and JSONL watcher.
+        // Just refresh summaries from the current (hook-corrected) JSONL.
+        this.store.updateMeta(identity, { goalSummary: undefined, contextSummary: undefined, nextSteps: undefined });
+        void this.refreshGoalSummary(identity, jp);
+        void this.refreshContextSummary(identity, jp);
     }
-    async refreshGoalSummary(sessionId, jsonlPath) {
+    async refreshGoalSummary(identity, jsonlPath) {
         try {
-            logger.info('tower: refreshing goal summary', { sessionId, jsonlPath });
+            const session = this.store.get(identity);
+            const sessionId = session?.sessionId ?? identity;
+            logger.info('tower: refreshing goal summary', { identity, jsonlPath });
             const earlyMessages = await this.jsonlWatcher.readRecentContext(jsonlPath, 15);
             if (!earlyMessages) {
-                logger.info('tower: no early messages found for goal', { sessionId });
-                this.store.update(sessionId, { summaryLoading: false });
+                logger.info('tower: no early messages found for goal', { identity });
+                this.store.update(identity, { summaryLoading: false });
                 return;
             }
             if (earlyMessages.length < 20) {
-                logger.info('tower: early messages too short for goal summary', { sessionId, len: earlyMessages.length });
+                logger.info('tower: early messages too short for goal summary', { identity, len: earlyMessages.length });
                 return;
             }
-            logger.info('tower: calling LLM for goal summary', { sessionId, msgLen: earlyMessages.length });
+            logger.info('tower: calling LLM for goal summary', { identity, msgLen: earlyMessages.length });
             const summary = await generateGoalSummary(sessionId, earlyMessages);
             if (summary) {
-                logger.info('tower: goal summary received', { sessionId, summary });
-                this.store.update(sessionId, { goalSummary: summary });
+                logger.info('tower: goal summary received', { identity, summary });
+                this.store.updateMeta(identity, { goalSummary: summary });
             }
             else {
-                logger.info('tower: LLM returned no goal summary', { sessionId });
+                logger.info('tower: LLM returned no goal summary', { identity });
             }
         }
         catch (err) {
-            logger.info('tower: goal summary error', { sessionId, error: String(err) });
+            logger.info('tower: goal summary error', { identity, error: String(err) });
         }
     }
-    async refreshContextSummary(sessionId, jsonlPath) {
+    async refreshContextSummary(identity, jsonlPath) {
         try {
-            logger.info('tower: refreshing context summary', { sessionId, jsonlPath });
+            const session = this.store.get(identity);
+            const sessionId = session?.sessionId ?? identity;
+            logger.info('tower: refreshing context summary', { identity, jsonlPath });
             const recentMessages = await this.jsonlWatcher.readRecentContext(jsonlPath, 15);
             if (!recentMessages) {
-                logger.info('tower: no recent messages found', { sessionId });
-                this.store.update(sessionId, { summaryLoading: false });
+                logger.info('tower: no recent messages found', { identity });
+                this.store.update(identity, { summaryLoading: false });
                 return;
             }
             // Skip if messages are too short to summarize meaningfully
             if (recentMessages.length < 20) {
-                logger.info('tower: messages too short for LLM summary', { sessionId, len: recentMessages.length });
+                logger.info('tower: messages too short for LLM summary', { identity, len: recentMessages.length });
                 return;
             }
-            logger.info('tower: calling LLM for summary', { sessionId, msgLen: recentMessages.length });
-            this.store.update(sessionId, { summaryLoading: true });
+            logger.info('tower: calling LLM for summary', { identity, msgLen: recentMessages.length });
+            this.store.update(identity, { summaryLoading: true });
             const summary = await generateContextSummary(sessionId, recentMessages);
             if (summary) {
-                logger.info('tower: context summary received', { sessionId, summary });
-                this.store.update(sessionId, { contextSummary: summary, summaryLoading: false });
+                logger.info('tower: context summary received', { identity, summary });
+                this.store.updateMeta(identity, { contextSummary: summary });
+                this.store.update(identity, { summaryLoading: false });
             }
             else {
-                logger.info('tower: LLM returned no summary', { sessionId });
-                this.store.update(sessionId, { summaryLoading: false });
+                logger.info('tower: LLM returned no summary', { identity });
+                this.store.update(identity, { summaryLoading: false });
             }
         }
         catch (err) {
-            logger.info('tower: context summary error', { sessionId, error: String(err) });
+            logger.info('tower: context summary error', { identity, error: String(err) });
         }
     }
-    async refreshNextSteps(sessionId, jsonlPath) {
+    async refreshNextSteps(identity, jsonlPath) {
         try {
+            const session = this.store.get(identity);
+            const sessionId = session?.sessionId ?? identity;
             const recentMessages = await this.jsonlWatcher.readRecentContext(jsonlPath, 15);
             if (!recentMessages || recentMessages.length < 20)
                 return;
             const suggestion = await generateNextSteps(sessionId, recentMessages);
             if (suggestion) {
-                logger.info('tower: next steps received', { sessionId, suggestion });
-                this.store.update(sessionId, { nextSteps: suggestion });
+                logger.info('tower: next steps received', { identity, suggestion });
+                this.store.updateMeta(identity, { nextSteps: suggestion });
             }
         }
         catch (err) {
-            logger.info('tower: next steps error', { sessionId, error: String(err) });
+            logger.info('tower: next steps error', { identity, error: String(err) });
         }
     }
     async refreshRemoteNextSteps(compositeId, config, jsonlPath) {
@@ -588,7 +579,7 @@ export class Tower extends EventEmitter {
             const suggestion = await generateNextSteps(compositeId, recentText);
             if (suggestion) {
                 logger.info('tower: remote next steps received', { compositeId, suggestion });
-                this.store.update(compositeId, { nextSteps: suggestion });
+                this.store.updateMeta(compositeId, { nextSteps: suggestion });
             }
         }
         catch (err) {
@@ -628,7 +619,7 @@ export class Tower extends EventEmitter {
             const summary = await generateGoalSummary(compositeId, earlyText);
             if (summary) {
                 logger.info('tower: remote goal summary received', { compositeId, summary });
-                this.store.update(compositeId, { goalSummary: summary });
+                this.store.updateMeta(compositeId, { goalSummary: summary });
             }
         }
         catch (err) {
@@ -654,7 +645,7 @@ export class Tower extends EventEmitter {
             const summary = await generateContextSummary(compositeId, recentText);
             if (summary) {
                 logger.info('tower: remote context summary received', { compositeId, summary });
-                this.store.update(compositeId, { contextSummary: summary });
+                this.store.updateMeta(compositeId, { contextSummary: summary });
             }
         }
         catch (err) {
@@ -696,7 +687,7 @@ export class Tower extends EventEmitter {
             for (const existing of this.store.getAll()) {
                 if (existing.paneId === mapping.paneId && existing.sessionId !== info.sessionId && existing.status !== 'dead') {
                     logger.info('tower: evicting session — same pane taken by new session', { evicted: existing.sessionId, new: info.sessionId, paneId: mapping.paneId });
-                    this.cleanupSession(existing.sessionId);
+                    this.cleanupSession(sessionIdentity(existing));
                 }
             }
         }
@@ -715,20 +706,42 @@ export class Tower extends EventEmitter {
             const exactExists = fs.existsSync(jsonlPath);
             const exactSize = exactExists ? fs.statSync(jsonlPath).size : 0;
             if (!exactExists && !opts.skipJsonlFallback) {
+                // Skip JSONLs already watched by another active session (prevents same-cwd sessions sharing a JSONL)
+                const watchedJsonls = new Set(this.jsonlPaths.values());
                 const files = fs.readdirSync(projectDir)
                     .filter(f => f.endsWith('.jsonl') && !f.includes('/'))
-                    .map(f => ({ name: f, mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
+                    .map(f => ({ name: f, path: path.join(projectDir, f), mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
                     .sort((a, b) => b.mtime - a.mtime);
-                if (files.length > 0) {
-                    const newest = path.join(projectDir, files[0].name);
-                    if (newest !== jsonlPath) {
-                        logger.debug('tower: using newer JSONL (exact missing — stale discovery)', {
-                            sessionId: info.sessionId,
-                            exact: path.basename(jsonlPath),
-                            newest: files[0].name,
-                        });
-                        jsonlPath = newest;
+                const candidate = files.find(f => f.path !== jsonlPath && !watchedJsonls.has(f.path));
+                if (candidate) {
+                    logger.debug('tower: using fallback JSONL (exact missing — stale discovery)', {
+                        sessionId: info.sessionId,
+                        exact: path.basename(jsonlPath),
+                        fallback: candidate.name,
+                    });
+                    jsonlPath = candidate.path;
+                }
+                // Worktree fallback: Claude Code worktrees use a different project slug
+                // (e.g., slug + '--claude-worktrees-branch'). Search sibling project dirs.
+                if (!candidate) {
+                    const projectsDir = path.join(claudeDir, 'projects');
+                    try {
+                        const siblingDirs = fs.readdirSync(projectsDir)
+                            .filter(d => d !== slug && d.startsWith(slug + '-'));
+                        for (const dir of siblingDirs) {
+                            const siblingJsonl = path.join(projectsDir, dir, `${info.sessionId}.jsonl`);
+                            if (fs.existsSync(siblingJsonl)) {
+                                logger.info('tower: found JSONL in worktree project dir', {
+                                    sessionId: info.sessionId,
+                                    baseSlug: slug,
+                                    worktreeDir: dir,
+                                });
+                                jsonlPath = siblingJsonl;
+                                break;
+                            }
+                        }
                     }
+                    catch { }
                 }
             }
             else {
@@ -744,7 +757,7 @@ export class Tower extends EventEmitter {
         // c. Cold start: determine current state + last task from JSONL
         const initialState = this.jsonlWatcher.coldStartScan(jsonlPath);
         const lastTask = this.jsonlWatcher.coldStartLastTask(jsonlPath);
-        const customTitle = this.jsonlWatcher.coldStartCustomTitle(jsonlPath);
+        let customTitle = this.jsonlWatcher.coldStartCustomTitle(jsonlPath);
         // d. Determine detection mode
         const detectionMode = 'jsonl';
         // e. Register in store
@@ -767,20 +780,35 @@ export class Tower extends EventEmitter {
             sshTarget: info.sshTarget,
         };
         this.store.register(session);
+        // register() may have corrected sessionId via cache — update JSONL path if changed
+        const registeredSession = this.store.get(sessionIdentity(session));
+        if (registeredSession && registeredSession.sessionId !== info.sessionId) {
+            const correctedJsonl = path.join(projectDir, `${registeredSession.sessionId}.jsonl`);
+            if (fs.existsSync(correctedJsonl)) {
+                logger.info('tower: sessionId corrected by cache, switching JSONL', {
+                    identity: sessionIdentity(session), old: info.sessionId.slice(0, 12), corrected: registeredSession.sessionId.slice(0, 12),
+                });
+                jsonlPath = correctedJsonl;
+                info.sessionId = registeredSession.sessionId;
+                // Re-read cold start data from corrected JSONL
+                customTitle = this.jsonlWatcher.coldStartCustomTitle(jsonlPath);
+            }
+        }
         // Apply custom title from JSONL (/rename) — always overwrite persisted label
         if (customTitle) {
-            this.store.update(info.sessionId, { label: customTitle });
+            this.store.updateMeta(sessionIdentity(session), { label: customTitle });
         }
         // f. Rename tmux session to claude-{projectName} for local sessions with a pane
         if (mapping.paneId && !info.host) {
             void this.ensureTmuxSessionName(mapping.paneId, projectName);
         }
-        // f. Create state machine
+        // g. Create state machine
+        const identity = sessionIdentity(session);
         const fsm = new SessionStateMachine(info.sessionId, initialState);
         fsm.on('state-change', (change) => {
-            const currentSession = this.store.get(info.sessionId);
+            const currentSession = this.store.get(identity);
             const summary = this.summarizer.summarize(change.to, { type: change.to === 'idle' ? 'assistant' : 'user', stopReason: change.to === 'idle' ? 'end_turn' : undefined }, []);
-            this.store.update(info.sessionId, {
+            this.store.update(identity, {
                 status: change.to,
                 lastActivity: new Date(),
                 currentSummary: {
@@ -794,9 +822,10 @@ export class Tower extends EventEmitter {
             this.notifier.onStateChange(change);
             // Trigger LLM summary refresh on idle transition
             if (change.to === 'idle') {
-                let jp = this.jsonlPaths.get(info.sessionId);
+                const currentSess = this.store.get(identity);
+                let jp = currentSess ? this.jsonlPaths.get(currentSess.sessionId) : undefined;
                 // Re-check: use most recently modified JSONL (conversation ID may differ from session ID)
-                if (jp) {
+                if (jp && currentSess) {
                     try {
                         const dir = path.dirname(jp);
                         const files = fs.readdirSync(dir)
@@ -807,46 +836,47 @@ export class Tower extends EventEmitter {
                             const newest = path.join(dir, files[0].name);
                             if (newest !== jp) {
                                 jp = newest;
-                                this.jsonlPaths.set(info.sessionId, jp);
-                                this.jsonlWatcher.unwatch(info.sessionId);
-                                this.jsonlWatcher.watch(info.sessionId, jp);
-                                logger.info('tower: JSONL path updated on idle', { sessionId: info.sessionId, newPath: jp });
+                                this.jsonlPaths.set(currentSess.sessionId, jp);
+                                this.jsonlWatcher.unwatch(currentSess.sessionId);
+                                this.jsonlWatcher.watch(currentSess.sessionId, jp);
+                                logger.info('tower: JSONL path updated on idle', { identity, newPath: jp });
                             }
                         }
                     }
                     catch { }
                 }
                 if (jp) {
-                    void this.refreshGoalSummary(info.sessionId, jp);
-                    void this.refreshContextSummary(info.sessionId, jp);
-                    void this.refreshNextSteps(info.sessionId, jp);
+                    void this.refreshGoalSummary(identity, jp);
+                    void this.refreshContextSummary(identity, jp);
+                    void this.refreshNextSteps(identity, jp);
                 }
             }
         });
         // PID liveness check on inactivity timeout — only go idle if the process is actually dead
         fsm.on('inactivity-check', () => {
-            const session = this.store.get(info.sessionId);
-            if (!session || session.status === 'idle' || session.status === 'dead')
+            const sess = this.store.get(identity);
+            if (!sess || sess.status === 'idle' || sess.status === 'dead')
                 return;
-            if (isPidAlive(session.pid)) {
+            if (isPidAlive(sess.pid)) {
                 // Process still alive — reset the timer by re-entering current state via a no-op transition
-                logger.debug('tower: inactivity-check — PID alive, resetting timer', { sessionId: info.sessionId, pid: session.pid });
+                logger.debug('tower: inactivity-check — PID alive, resetting timer', { identity, pid: sess.pid });
                 fsm.resetInactivityTimer();
             }
             else {
-                logger.info('tower: inactivity-check — PID dead, transitioning to idle', { sessionId: info.sessionId, pid: session.pid });
+                logger.info('tower: inactivity-check — PID dead, transitioning to idle', { identity, pid: sess.pid });
                 fsm.transition({ type: 'stop' });
             }
         });
-        this.stateMachines.set(info.sessionId, fsm);
-        // g. Track JSONL path + start watcher
+        this.stateMachines.set(identity, fsm);
+        // h. Track JSONL path + start watcher
         this.jsonlPaths.set(info.sessionId, jsonlPath);
         this.jsonlWatcher.watch(info.sessionId, jsonlPath);
-        // h. If no tmux, also start process monitor as extra signal
+        // i. If no tmux, also start process monitor as extra signal
         if (!mapping.hasTmux) {
             this.processMonitor.startPolling(info.pid, this.config.tracking.process_scan_interval);
         }
         logger.info('tower: session registered', {
+            identity,
             sessionId: info.sessionId,
             pane: mapping.paneId ?? 'none',
             state: initialState,
@@ -979,7 +1009,7 @@ export class Tower extends EventEmitter {
                 void this.refreshAllRemoteSummaries(compositeId, remoteConfig, jsonlPath);
             }
         });
-        this.stateMachines.set(compositeId, fsm);
+        this.remoteStateMachines.set(compositeId, fsm);
         // Initial summary for idle sessions — skip if already summarized (Tower restart)
         if (initialState === 'idle') {
             const existing = this.store.get(compositeId);
@@ -1009,7 +1039,7 @@ export class Tower extends EventEmitter {
             try {
                 const tail = await remoteReadJsonlTail(config, jsonlPath);
                 const lines = tail.split('\n').filter(l => l.trim());
-                const fsm = this.stateMachines.get(compositeId);
+                const fsm = this.remoteStateMachines.get(compositeId);
                 if (!fsm)
                     return;
                 // Find the most recent state-determining message
@@ -1043,38 +1073,41 @@ export class Tower extends EventEmitter {
         this.remotePollers.set(compositeId, timer);
     }
     /** Immediate cleanup — no dead state, no 30s delay. Used for session migration (clear/resume). */
-    cleanupSession(sessionId) {
-        const session = this.store.get(sessionId);
+    cleanupSession(identity) {
+        const session = this.store.get(identity);
         if (!session)
             return;
-        const fsm = this.stateMachines.get(sessionId);
+        const sessionId = session.sessionId;
+        const fsm = this.stateMachines.get(identity);
         if (fsm) {
             fsm.destroy();
             fsm.removeAllListeners();
-            this.stateMachines.delete(sessionId);
+            this.stateMachines.delete(identity);
         }
-        this.jsonlWatcher.unwatch(sessionId);
         this.jsonlPaths.delete(sessionId);
+        this.jsonlWatcher.unwatch(sessionId);
         this.processMonitor.stopPolling(session.pid);
         const remoteTimer = this.remotePollers.get(sessionId);
         if (remoteTimer) {
             clearInterval(remoteTimer);
             this.remotePollers.delete(sessionId);
         }
-        this.hookSidToSessionId.delete(sessionId);
-        this.store.unregister(sessionId);
+        this.store.unregister(identity);
     }
     deregisterSession(sessionId) {
-        const session = this.store.get(sessionId);
+        // Accept sessionId (from discovery events) — resolve to identity via store
+        const session = this.store.getBySessionId(sessionId);
         if (!session)
             return;
-        // Clean up state machine
-        const fsm = this.stateMachines.get(sessionId);
+        const identity = sessionIdentity(session);
+        // Clean up state machine (try local then remote)
+        const fsm = this.stateMachines.get(identity) ?? this.remoteStateMachines.get(sessionId);
         if (fsm) {
             fsm.transition({ type: 'session-end' });
             fsm.destroy();
             fsm.removeAllListeners();
-            this.stateMachines.delete(sessionId);
+            this.stateMachines.delete(identity);
+            this.remoteStateMachines.delete(sessionId);
         }
         // Clean up watchers
         this.jsonlWatcher.unwatch(sessionId);
@@ -1087,38 +1120,45 @@ export class Tower extends EventEmitter {
             this.remotePollers.delete(sessionId);
         }
         // Mark as dead, auto-remove after 30 seconds
-        this.store.update(sessionId, { status: 'dead', currentActivity: 'Session ended' });
+        this.store.update(identity, { status: 'dead', currentActivity: 'Session ended' });
         setTimeout(() => {
-            this.store.unregister(sessionId);
+            this.store.unregister(identity);
         }, 30000);
     }
-    resolveSessionId(hookSid, hookCwd, hookPid) {
-        // 1. Direct match (hook sid === internal sessionId)
-        if (this.stateMachines.has(hookSid))
-            return hookSid;
-        // 2. Cached reverse mapping from previous resolution (O(1) fast path)
-        const cached = this.hookSidToSessionId.get(hookSid);
+    resolveIdentity(hookSid, hookCwd, hookPid, hookEvent, hookPane) {
+        // 1. Cached reverse mapping from previous resolution (O(1) fast path)
+        const cached = this.hookSidToIdentity.get(hookSid);
         if (cached && this.stateMachines.has(cached))
-            return cached;
-        // 3. Composite key match: stateMachines stores "host::bareId", hook sends bare id.
-        //    With multiple matches, first-match-wins is intentional (most recently added key wins).
-        for (const key of this.stateMachines.keys()) {
+            return { identity: cached, depth: 0 };
+        // 2. Composite key match: remoteStateMachines stores "host::bareId", hook sends bare id.
+        for (const key of this.remoteStateMachines.keys()) {
             if (key.endsWith(`::${hookSid}`)) {
-                this.hookSidToSessionId.set(hookSid, key);
+                this.hookSidToIdentity.set(hookSid, key);
                 logger.debug('tower: hook sid matched via composite key', { hookSid, compositeId: key });
-                return key;
+                return { identity: key, depth: 0 };
             }
         }
-        // 4. PID-ancestry match: walk ppid chain from hookPid to find session whose pid is an ancestor
+        // 2.5. Pane-based match: hook's TMUX_PANE directly matches session identity (paneId)
+        if (hookPane) {
+            const session = this.store.get(hookPane);
+            if (session && (session.status !== 'dead' || hookEvent === 'session-start')) {
+                this.hookSidToIdentity.set(hookSid, hookPane);
+                logger.debug('tower: hook sid matched via pane', { hookSid, pane: hookPane });
+                return { identity: hookPane, depth: 0 };
+            }
+        }
+        // 3. PID-ancestry match: walk ppid chain from hookPid to find session whose pid is an ancestor
         if (hookPid && hookPid > 0) {
             let current = hookPid;
             let depth = 0;
             while (current > 1 && depth < 15) {
                 for (const session of this.store.getAll()) {
-                    if (session.pid && session.pid === current && session.status !== 'dead' && this.stateMachines.has(session.sessionId)) {
-                        this.hookSidToSessionId.set(hookSid, session.sessionId);
-                        logger.debug('tower: hook sid mapped to session via PID ancestry', { hookSid, sessionId: session.sessionId, hookPid, matchedPid: current });
-                        return session.sessionId;
+                    const id = sessionIdentity(session);
+                    const allowDead = hookEvent === 'session-start';
+                    if (session.pid && session.pid === current && (allowDead || (session.status !== 'dead' && this.stateMachines.has(id)))) {
+                        this.hookSidToIdentity.set(hookSid, id);
+                        logger.debug('tower: hook sid mapped to session via PID ancestry', { hookSid, identity: id, hookPid, matchedPid: current, depth });
+                        return { identity: id, depth };
                     }
                 }
                 const ppid = getPpid(current);
@@ -1128,134 +1168,194 @@ export class Tower extends EventEmitter {
                 depth++;
             }
         }
-        // 5. Fallback: match by CWD across all sessions (last resort — may be wrong with multiple sessions in same cwd)
-        if (hookCwd) {
-            for (const session of this.store.getAll()) {
-                if (session.cwd === hookCwd && session.status !== 'dead' && this.stateMachines.has(session.sessionId)) {
-                    this.hookSidToSessionId.set(hookSid, session.sessionId);
-                    logger.debug('tower: hook sid mapped to session via CWD', { hookSid, sessionId: session.sessionId, cwd: hookCwd });
-                    return session.sessionId;
-                }
-            }
-        }
-        return null;
-    }
-    resolveSessionIdByCwd(hookCwd) {
-        if (!hookCwd)
-            return null;
-        for (const session of this.store.getAll()) {
-            if (session.cwd === hookCwd && session.status !== 'dead' && this.stateMachines.has(session.sessionId)) {
-                logger.debug('tower: hook resolved by CWD (no session ID)', { sessionId: session.sessionId, cwd: hookCwd });
-                return session.sessionId;
-            }
-        }
         return null;
     }
     handleHookEvent(event) {
+        // Validate hook event fields
+        if (typeof event !== 'object' || event === null)
+            return;
+        if (typeof event.event !== 'string')
+            return;
         const hookSid = event.sid;
         if (!hookSid || typeof hookSid !== 'string')
             return;
-        // When CLAUDE_SESSION_ID is not available (sid='unknown'), resolve by CWD only
-        const sessionId = hookSid === 'unknown'
-            ? this.resolveSessionIdByCwd(event.cwd)
-            : this.resolveSessionId(hookSid, event.cwd, event.pid);
-        if (!sessionId) {
-            logger.info('tower: hook event for unknown session', { hookSid, event: event.event, cwd: event.cwd });
-            // session-start from unknown session = likely /clear or new session — trigger immediate re-scan
-            // Ignore /tmp sessions (LLM summarizer spawns claude --print there)
-            if (event.event === 'session-start' && event.cwd && !event.cwd.startsWith('/tmp')) {
-                // Check if the new session is headless (claude --print) by finding its PID
-                // from ~/.claude/sessions/{pid}.json — skip if headless to avoid evicting interactive sessions
-                try {
-                    const sessionsDir = this.config.discovery.claude_dir.replace('~', os.homedir()) + '/sessions';
-                    const files = fs.readdirSync(sessionsDir).filter(f => f.endsWith('.json'));
-                    for (const f of files) {
-                        try {
-                            const raw = fs.readFileSync(path.join(sessionsDir, f), 'utf8');
-                            const parsed = JSON.parse(raw);
-                            if (parsed.sessionId === hookSid && parsed.pid) {
-                                if (isHeadlessProcess(parsed.pid)) {
-                                    logger.debug('tower: ignoring session-start from headless process', { hookSid, pid: parsed.pid, cwd: event.cwd });
-                                    return;
-                                }
+        if (event.pid !== undefined && (typeof event.pid !== 'number' || event.pid < 0))
+            return;
+        if (event.pane !== undefined && typeof event.pane !== 'string')
+            return;
+        // Skip hook events from sdk-cli (headless) sessions — e.g. services that spawn claude
+        // programmatically inside the same project. Their events must not be attributed to the
+        // parent interactive session via PID ancestry.
+        if (event.pid && event.pid > 0) {
+            try {
+                const sessionsDir = this.config.discovery.claude_dir.replace('~', os.homedir()) + '/sessions';
+                const raw = fs.readFileSync(path.join(sessionsDir, `${event.pid}.json`), 'utf8');
+                const end = raw.indexOf('}');
+                const parsed = JSON.parse(end >= 0 ? raw.slice(0, end + 1) : raw);
+                if (parsed.entrypoint === 'sdk-cli') {
+                    logger.debug('tower: ignoring hook event from sdk-cli session', { hookSid, pid: event.pid });
+                    return;
+                }
+            }
+            catch { }
+        }
+        // When CLAUDE_SESSION_ID is not available (sid='unknown'), resolve by PID ancestry only
+        const resolved = this.resolveIdentity(hookSid, event.cwd, event.pid, event.event, event.pane);
+        if (!resolved) {
+            // Can't resolve PID to a registered instance — ignore.
+            // Discovery handles registration; hooks only correct/update existing instances.
+            logger.debug('tower: ignoring hook for unresolved PID', { hookSid, event: event.event, cwd: event.cwd });
+            return;
+        }
+        let identity = resolved.identity;
+        const resolveDepth = resolved.depth;
+        // Ignore session-end from subagents: if hookSid doesn't directly match the session's sessionId,
+        // it's likely a subagent ending (same CWD, different session ID).
+        const resolvedSession = this.store.get(identity);
+        if (event.event === 'session-end' && resolvedSession && hookSid !== resolvedSession.sessionId && !identity.endsWith(`::${hookSid}`)) {
+            logger.info('tower: ignoring session-end from subagent', { hookSid, identity });
+            return;
+        }
+        logger.info('tower: hook event received', { event: event.event, identity, hookSid });
+        const session = this.store.get(identity);
+        if (session) {
+            // Detect stale sessionId: hook carries the actual current sessionId from Claude Code.
+            // If it differs from what we have, the session changed (e.g., /resume, /clear) but
+            // sessions/{pid}.json wasn't updated. Re-map JSONL watcher to the correct session.
+            // Only correct sessionId if the hook came from a direct child (depth ≤ 3).
+            // sdk-cli/headless subprocesses resolve via deeper PID ancestry (depth 4+) — skip them.
+            const MAX_DIRECT_DEPTH = 3;
+            const isDirectChild = resolveDepth <= MAX_DIRECT_DEPTH;
+            if (hookSid !== 'unknown' && hookSid !== session.sessionId && isDirectChild) {
+                logger.info('tower: hook detected session change (stale session file)', {
+                    identity, oldSessionId: session.sessionId, newSessionId: hookSid,
+                });
+                const claudeDir = this.config.discovery.claude_dir.replace('~', os.homedir());
+                const slug = cwdToSlug(session.cwd);
+                let newJsonl = path.join(claudeDir, 'projects', slug, `${hookSid}.jsonl`);
+                // Worktree fallback: if exact path doesn't exist, search sibling project dirs
+                // with the same base slug (e.g., slug + '--claude-worktrees-branch').
+                if (!fs.existsSync(newJsonl)) {
+                    const projectsDir = path.join(claudeDir, 'projects');
+                    try {
+                        const siblingDirs = fs.readdirSync(projectsDir)
+                            .filter(d => d !== slug && d.startsWith(slug + '-'));
+                        for (const dir of siblingDirs) {
+                            const siblingJsonl = path.join(projectsDir, dir, `${hookSid}.jsonl`);
+                            if (fs.existsSync(siblingJsonl)) {
+                                logger.info('tower: found JSONL in worktree project dir (hook session change)', {
+                                    hookSid,
+                                    baseSlug: slug,
+                                    worktreeDir: dir,
+                                });
+                                newJsonl = siblingJsonl;
                                 break;
                             }
                         }
-                        catch { }
+                    }
+                    catch { }
+                }
+                // favorite is now instance-level (not session-level), no migration needed
+                // Remove stale hookSid cache entry to prevent old sessionId re-matching
+                this.hookSidToIdentity.delete(session.sessionId);
+                // Unwatch old JSONL
+                this.jsonlWatcher.unwatch(session.sessionId);
+                this.jsonlPaths.delete(session.sessionId);
+                // Update sessionId in store (this switches sessionMeta key — old meta is orphaned)
+                // Also revive dead sessions and reset FSM — /resume or /clear means the instance is alive again
+                this.store.update(identity, { sessionId: hookSid, status: 'idle' });
+                // Sync discovery's known map so it doesn't override this correction on next scan
+                if (session.pid > 0)
+                    this.discovery.updateKnown(session.pid, hookSid);
+                // Reset FSM for the revived session
+                const oldFsm = this.stateMachines.get(identity);
+                if (oldFsm) {
+                    oldFsm.destroy();
+                    oldFsm.removeAllListeners();
+                    this.stateMachines.delete(identity);
+                }
+                const newFsm = new SessionStateMachine(hookSid, 'idle');
+                const capturedId = identity;
+                newFsm.on('state-change', (change) => {
+                    this.store.update(capturedId, { status: change.to, lastActivity: new Date() });
+                });
+                this.stateMachines.set(identity, newFsm);
+                // Watch new JSONL if it exists, or wait for it to appear
+                if (fs.existsSync(newJsonl)) {
+                    this.jsonlPaths.set(hookSid, newJsonl);
+                    this.jsonlWatcher.watch(hookSid, newJsonl);
+                    // Read custom title from new JSONL
+                    const customTitle = this.jsonlWatcher.coldStartCustomTitle(newJsonl);
+                    if (customTitle) {
+                        this.store.updateMeta(identity, { label: customTitle });
                     }
                 }
-                catch { }
-                // Find the dead/dying session with same CWD for metadata migration
-                const dyingSession = event.cwd
-                    ? this.store.getAll().find(s => s.cwd === event.cwd)
-                    : undefined;
-                const migratedMeta = dyingSession ? {
-                    label: dyingSession.label,
-                    tags: dyingSession.tags,
-                    favorite: dyingSession.favorite,
-                    favoritedAt: dyingSession.favoritedAt,
-                } : undefined;
-                // Clean up the old session immediately (/clear creates a new session)
-                if (dyingSession) {
-                    this.cleanupSession(dyingSession.sessionId);
-                }
-                logger.info('tower: new session via hook (likely /clear)', { hookSid, cwd: event.cwd, migrateFrom: dyingSession?.sessionId });
-                // Register directly using hookSid — sessions/{pid}.json is stale after /clear
-                if (event.cwd && hookSid !== 'unknown') {
-                    void (async () => {
-                        const info = {
-                            pid: dyingSession?.pid ?? 0,
-                            sessionId: hookSid,
-                            cwd: event.cwd,
-                            startedAt: Date.now(),
-                        };
-                        await this.registerSession(info, { skipJsonlFallback: true });
-                        // Use pane from hook payload if available (more reliable than PID→TTY chain)
-                        if (event.pane) {
-                            this.store.update(hookSid, { paneId: event.pane, hasTmux: true });
-                        }
-                        // Migrate only favorite status — label/tags belong to previous conversation
-                        if (migratedMeta) {
-                            const patch = {};
-                            if (migratedMeta.favorite) {
-                                patch['favorite'] = migratedMeta.favorite;
-                                patch['favoritedAt'] = migratedMeta.favoritedAt;
+                else {
+                    // JSONL not yet created (/clear fires session-start before first write).
+                    // Watch the project directory for the file to appear.
+                    const dir = path.dirname(newJsonl);
+                    const expectedFile = path.basename(newJsonl);
+                    const capturedIdentity = identity;
+                    try {
+                        let settled = false;
+                        const timeout = setTimeout(() => { if (!settled)
+                            dirWatcher.close(); }, 60000);
+                        const dirWatcher = fs.watch(dir, (evt, filename) => {
+                            if (settled)
+                                return;
+                            if (filename === expectedFile && fs.existsSync(newJsonl)) {
+                                settled = true;
+                                clearTimeout(timeout);
+                                dirWatcher.close();
+                                this.jsonlPaths.set(hookSid, newJsonl);
+                                this.jsonlWatcher.watch(hookSid, newJsonl);
+                                const customTitle = this.jsonlWatcher.coldStartCustomTitle(newJsonl);
+                                if (customTitle) {
+                                    this.store.updateMeta(capturedIdentity, { label: customTitle });
+                                }
+                                logger.debug('tower: deferred JSONL watch setup after session change', { hookSid, jsonlPath: newJsonl });
                             }
-                            if (Object.keys(patch).length > 0) {
-                                this.store.update(hookSid, patch);
-                                logger.info('tower: migrated metadata to new session', { from: dyingSession?.sessionId, to: hookSid, keys: Object.keys(patch) });
-                            }
-                        }
-                        // Map hookSid to new sessionId for future hook events
-                        this.hookSidToSessionId.set(hookSid, hookSid);
-                    })();
+                        });
+                    }
+                    catch (err) {
+                        logger.debug('tower: cannot watch dir for deferred JSONL', { dir, error: String(err) });
+                    }
                 }
+                this.hookSidToIdentity.set(hookSid, identity);
             }
-            return;
-        }
-        // Ignore session-end from subagents: if hookSid doesn't directly match the session,
-        // it's likely a subagent ending (same CWD, different session ID).
-        if (event.event === 'session-end' && hookSid !== sessionId && !sessionId.endsWith(`::${hookSid}`)) {
-            logger.info('tower: ignoring session-end from subagent', { hookSid, sessionId });
-            return;
-        }
-        logger.info('tower: hook event received', { event: event.event, sessionId, hookSid });
-        const session = this.store.get(sessionId);
-        if (session) {
             const patch = {};
             // Upgrade to hook mode on first hook event
             if (session.detectionMode !== 'hook')
                 patch['detectionMode'] = 'hook';
             // Use pane ID from hook payload directly — more reliable than PID→TTY chain
             if (event.pane && event.pane !== session.paneId) {
+                // K. paneId upgrade path — rekey all maps if identity changes
+                const oldIdentity = sessionIdentity(session);
                 patch['paneId'] = event.pane;
                 patch['hasTmux'] = true;
-                logger.debug('tower: pane updated from hook', { sessionId, pane: event.pane });
+                logger.debug('tower: pane updated from hook', { identity, pane: event.pane });
+                if (Object.keys(patch).length > 0)
+                    this.store.update(oldIdentity, patch);
+                const newIdentity = sessionIdentity({ ...session, paneId: event.pane });
+                if (oldIdentity !== newIdentity) {
+                    this.store.rekey(oldIdentity, newIdentity);
+                    const fsm2 = this.stateMachines.get(oldIdentity);
+                    if (fsm2) {
+                        this.stateMachines.delete(oldIdentity);
+                        this.stateMachines.set(newIdentity, fsm2);
+                    }
+                    for (const [hSid, id] of this.hookSidToIdentity) {
+                        if (id === oldIdentity)
+                            this.hookSidToIdentity.set(hSid, newIdentity);
+                    }
+                    identity = newIdentity; // update local var so FSM lookup below uses correct key
+                }
             }
-            if (Object.keys(patch).length > 0)
-                this.store.update(sessionId, patch);
+            else if (Object.keys(patch).length > 0) {
+                this.store.update(identity, patch);
+            }
         }
-        const fsm = this.stateMachines.get(sessionId);
+        const fsm = this.stateMachines.get(identity) ?? this.remoteStateMachines.get(identity);
         if (!fsm)
             return;
         // Map hook event to FSM input
@@ -1268,42 +1368,44 @@ export class Tower extends EventEmitter {
         // so the FSM stays idle→idle (no state-change emitted). Without this, the newer JSONL
         // created by /resume would never be detected and summaries would remain stale.
         if (event.event === 'session-start' && fsm.getState() === 'idle') {
-            void this.refreshSessionAfterResume(sessionId);
+            void this.refreshSessionAfterResume(identity);
         }
         // Update tool/message counts
         if (event.event === 'user-prompt') {
-            const current = this.store.get(sessionId);
+            const current = this.store.get(identity);
             if (current) {
-                this.store.update(sessionId, { messageCount: current.messageCount + 1 });
+                this.store.update(identity, { messageCount: current.messageCount + 1 });
             }
             // Refresh summaries on user input — captures new task context immediately
-            const jp = this.jsonlPaths.get(sessionId);
+            const jp = current ? this.jsonlPaths.get(current.sessionId) : undefined;
             if (jp) {
-                void this.refreshGoalSummary(sessionId, jp);
-                void this.refreshContextSummary(sessionId, jp);
+                void this.refreshGoalSummary(identity, jp);
+                void this.refreshContextSummary(identity, jp);
             }
         }
         if (event.event === 'pre-tool') {
-            const current = this.store.get(sessionId);
+            const current = this.store.get(identity);
             if (current) {
-                this.store.update(sessionId, { toolCallCount: current.toolCallCount + 1 });
+                this.store.update(identity, { toolCallCount: current.toolCallCount + 1 });
             }
         }
     }
     handleJsonlEvent(sessionId, parsed) {
-        const session = this.store.get(sessionId);
+        // sessionId here is the key used in jsonlPaths/jsonlWatcher — resolve to identity via store
+        const session = this.store.getBySessionId(sessionId);
         if (!session)
             return;
+        const identity = sessionIdentity(session);
         // Handle metadata events regardless of detection mode
         if (parsed.type === 'custom-title' && parsed.customTitle) {
-            this.store.update(sessionId, { label: parsed.customTitle });
+            this.store.updateMeta(identity, { label: parsed.customTitle });
             this.store.persist();
             return;
         }
         // Skip JSONL-driven transitions if session is in hook mode
         if (session.detectionMode === 'hook')
             return;
-        const fsm = this.stateMachines.get(sessionId);
+        const fsm = this.stateMachines.get(identity);
         if (!fsm)
             return;
         // Map JSONL parsed message to FSM input + update live summary
@@ -1312,7 +1414,7 @@ export class Tower extends EventEmitter {
             if (!isInternalMessage(rawText)) {
                 fsm.transition({ type: 'user-prompt' });
                 const cleaned = cleanDisplayText(rawText);
-                this.store.update(sessionId, {
+                this.store.update(identity, {
                     messageCount: session.messageCount + 1,
                     currentTask: cleaned.slice(0, 80),
                     currentActivity: cleaned.slice(0, 60),
@@ -1326,7 +1428,7 @@ export class Tower extends EventEmitter {
                 const toolDesc = parsed.toolInput
                     ? `${parsed.toolName}: ${parsed.toolInput}`
                     : parsed.toolName;
-                this.store.update(sessionId, {
+                this.store.update(identity, {
                     toolCallCount: session.toolCallCount + 1,
                     currentActivity: toolDesc,
                 });
@@ -1336,7 +1438,7 @@ export class Tower extends EventEmitter {
                 const summary = parsed.assistantText
                     ? `✓ ${cleanDisplayText(parsed.assistantText).split('.')[0]?.slice(0, 60) ?? 'Done'}`
                     : '✓ Done';
-                this.store.update(sessionId, { currentActivity: summary });
+                this.store.update(identity, { currentActivity: summary });
             }
             else if (parsed.stopReason === null) {
                 fsm.transition({ type: 'jsonl', stopReason: null });
@@ -1344,7 +1446,7 @@ export class Tower extends EventEmitter {
         }
         else if (parsed.type === 'progress' && parsed.progressType === 'agent_progress') {
             fsm.transition({ type: 'agent-start' });
-            this.store.update(sessionId, { currentTask: 'Subagent running...' });
+            this.store.update(identity, { currentTask: 'Subagent running...' });
         }
     }
     mapHookToInput(event) {
@@ -1361,7 +1463,13 @@ export class Tower extends EventEmitter {
         }
     }
     getStateMachine(sessionId) {
-        return this.stateMachines.get(sessionId);
+        // Try identity lookup first, fallback to sessionId (remote composite key)
+        const session = this.store.getBySessionId(sessionId);
+        if (session) {
+            const id = sessionIdentity(session);
+            return this.stateMachines.get(id) ?? this.remoteStateMachines.get(sessionId);
+        }
+        return this.stateMachines.get(sessionId) ?? this.remoteStateMachines.get(sessionId);
     }
 }
 //# sourceMappingURL=tower.js.map

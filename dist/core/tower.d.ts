@@ -18,7 +18,8 @@ export declare class Tower extends EventEmitter {
     summarizer: Summarizer;
     notifier: Notifier;
     private stateMachines;
-    private hookSidToSessionId;
+    private remoteStateMachines;
+    private hookSidToIdentity;
     private jsonlPaths;
     private stopping;
     private connectionManager;
@@ -63,8 +64,7 @@ export declare class Tower extends EventEmitter {
     /** Immediate cleanup — no dead state, no 30s delay. Used for session migration (clear/resume). */
     private cleanupSession;
     private deregisterSession;
-    private resolveSessionId;
-    private resolveSessionIdByCwd;
+    private resolveIdentity;
     private handleHookEvent;
     private handleJsonlEvent;
     private mapHookToInput;

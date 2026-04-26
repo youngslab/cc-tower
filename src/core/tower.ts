@@ -720,6 +720,27 @@ export class Tower extends EventEmitter {
           });
           jsonlPath = candidate.path;
         }
+        // Worktree fallback: Claude Code worktrees use a different project slug
+        // (e.g., slug + '--claude-worktrees-branch'). Search sibling project dirs.
+        if (!candidate) {
+          const projectsDir = path.join(claudeDir, 'projects');
+          try {
+            const siblingDirs = fs.readdirSync(projectsDir)
+              .filter(d => d !== slug && d.startsWith(slug + '-'));
+            for (const dir of siblingDirs) {
+              const siblingJsonl = path.join(projectsDir, dir, `${info.sessionId}.jsonl`);
+              if (fs.existsSync(siblingJsonl)) {
+                logger.info('tower: found JSONL in worktree project dir', {
+                  sessionId: info.sessionId,
+                  baseSlug: slug,
+                  worktreeDir: dir,
+                });
+                jsonlPath = siblingJsonl;
+                break;
+              }
+            }
+          } catch {}
+        }
       } else {
         logger.debug('tower: using exact JSONL', {
           sessionId: info.sessionId,
@@ -1110,7 +1131,7 @@ export class Tower extends EventEmitter {
     }, 30000);
   }
 
-  private resolveIdentity(hookSid: string, hookCwd: string | undefined, hookPid?: number, hookEvent?: string): { identity: string; depth: number } | null {
+  private resolveIdentity(hookSid: string, hookCwd: string | undefined, hookPid?: number, hookEvent?: string, hookPane?: string): { identity: string; depth: number } | null {
     // 1. Cached reverse mapping from previous resolution (O(1) fast path)
     const cached = this.hookSidToIdentity.get(hookSid);
     if (cached && this.stateMachines.has(cached)) return { identity: cached, depth: 0 };
@@ -1121,6 +1142,16 @@ export class Tower extends EventEmitter {
         this.hookSidToIdentity.set(hookSid, key);
         logger.debug('tower: hook sid matched via composite key', { hookSid, compositeId: key });
         return { identity: key, depth: 0 };
+      }
+    }
+
+    // 2.5. Pane-based match: hook's TMUX_PANE directly matches session identity (paneId)
+    if (hookPane) {
+      const session = this.store.get(hookPane);
+      if (session && (session.status !== 'dead' || hookEvent === 'session-start')) {
+        this.hookSidToIdentity.set(hookSid, hookPane);
+        logger.debug('tower: hook sid matched via pane', { hookSid, pane: hookPane });
+        return { identity: hookPane, depth: 0 };
       }
     }
 
@@ -1175,7 +1206,7 @@ export class Tower extends EventEmitter {
     }
 
     // When CLAUDE_SESSION_ID is not available (sid='unknown'), resolve by PID ancestry only
-    const resolved = this.resolveIdentity(hookSid, event.cwd, event.pid, event.event);
+    const resolved = this.resolveIdentity(hookSid, event.cwd, event.pid, event.event, event.pane);
     if (!resolved) {
       // Can't resolve PID to a registered instance — ignore.
       // Discovery handles registration; hooks only correct/update existing instances.
@@ -1209,7 +1240,28 @@ export class Tower extends EventEmitter {
         });
         const claudeDir = this.config.discovery.claude_dir.replace('~', os.homedir());
         const slug = cwdToSlug(session.cwd);
-        const newJsonl = path.join(claudeDir, 'projects', slug, `${hookSid}.jsonl`);
+        let newJsonl = path.join(claudeDir, 'projects', slug, `${hookSid}.jsonl`);
+        // Worktree fallback: if exact path doesn't exist, search sibling project dirs
+        // with the same base slug (e.g., slug + '--claude-worktrees-branch').
+        if (!fs.existsSync(newJsonl)) {
+          const projectsDir = path.join(claudeDir, 'projects');
+          try {
+            const siblingDirs = fs.readdirSync(projectsDir)
+              .filter(d => d !== slug && d.startsWith(slug + '-'));
+            for (const dir of siblingDirs) {
+              const siblingJsonl = path.join(projectsDir, dir, `${hookSid}.jsonl`);
+              if (fs.existsSync(siblingJsonl)) {
+                logger.info('tower: found JSONL in worktree project dir (hook session change)', {
+                  hookSid,
+                  baseSlug: slug,
+                  worktreeDir: dir,
+                });
+                newJsonl = siblingJsonl;
+                break;
+              }
+            }
+          } catch {}
+        }
         // favorite is now instance-level (not session-level), no migration needed
         // Remove stale hookSid cache entry to prevent old sessionId re-matching
         this.hookSidToIdentity.delete(session.sessionId);
