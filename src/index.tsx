@@ -64,8 +64,10 @@ program
 
       // Route ink output to /dev/tty so stdout stays clean for downstream tools
       // that may capture popmux's stdout independently from the picker tmpfile.
-      // Falls back to process.stdout if /dev/tty is unavailable (e.g. CI without
-      // a controlling terminal). stderr is unchanged (debug + READY signal).
+      // Exit with code 3 if /dev/tty is unavailable — picker MUST run inside a
+      // terminal/popup (tmux display-popup, etc.). A cancel JSON is written so
+      // the wrapper script always finds a parseable result.
+      // Exit code 3 = "no-tty" (wrapper should treat as silent skip/cancel).
       let renderOpts: Parameters<typeof render>[1] = undefined;
       try {
         const ttyFd = fs.openSync('/dev/tty', 'w');
@@ -75,7 +77,10 @@ program
         Object.defineProperty(ttyStream, 'rows', { get: () => process.stdout.rows ?? 24 });
         renderOpts = { stdout: ttyStream };
       } catch {
-        // No tty available — fall back to default stdout
+        // No TTY available — picker must run inside a terminal/popup.
+        process.stderr.write('popmux: --picker requires a TTY (e.g., tmux popup or terminal). Use the dashboard mode instead.\n');
+        try { fs.writeFileSync(opts.output, JSON.stringify({ action: 'cancel' }) + '\n'); } catch {}
+        process.exit(3); // exit code 3 = no-tty (wrapper treats as silent cancel)
       }
 
       // Enter alternate screen on the tty (or stdout) so popup contents don't
