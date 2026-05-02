@@ -12,6 +12,7 @@ import { tmux } from './tmux/commands.js';
 import { logger, setTuiMode } from './utils/logger.js';
 import { loadConfig } from './config/loader.js';
 import { markSpawn } from './picker/protocol.js';
+import { detectLegacy, migrateFromCcTower } from './migrate/from-cc-tower.js';
 
 // Mark spawn time as early as possible — used by --picker --output to compute
 // "READY <ms>" perf SLO for sub-second popup spawn.
@@ -104,6 +105,16 @@ program
     }
 
     // === Default dashboard ================================================
+    // Warn if legacy cc-tower data exists and migration hasn't run yet
+    if (!opts.picker) {
+      const legacy = detectLegacy();
+      if (legacy.hasSrcDir && !legacy.hasMarker) {
+        process.stderr.write(
+          '[migrate] legacy ~/.config/cc-tower detected. Run: cc-tower migrate (or popmux migrate after rename)\n',
+        );
+      }
+    }
+
     // If not inside tmux, launch cc-tower inside a tmux session
     if (!process.env['TMUX']) {
       // Check if session already exists
@@ -587,6 +598,31 @@ program
       const cwd   = (s.cwd ?? '').replace(os.homedir(), '~').slice(0, 28).padEnd(30);
       const goal  = (s.goalSummary ?? s.currentTask ?? '').slice(0, 60);
       console.log(`${sid}${label}${status}${cwd}${goal}`);
+    }
+  });
+
+// Migrate from cc-tower to popmux
+program
+  .command('migrate')
+  .description('Migrate config and state from cc-tower (legacy) to popmux')
+  .option('--force', 'Overwrite destination even if data exists')
+  .option('--dry-run', 'Print what would be done without changing files')
+  .action(async (opts: { force?: boolean; dryRun?: boolean }) => {
+    const result = migrateFromCcTower({ force: opts.force, dryRun: opts.dryRun });
+    console.log(`State:  ${result.migrated.state ? 'migrated' : 'skipped'}`);
+    console.log(`Config: ${result.migrated.config ? 'migrated' : 'skipped'}`);
+    if (result.migrated.agentIdFilled > 0) {
+      console.log(`agentId filled: ${result.migrated.agentIdFilled} entries`);
+    }
+    if (opts.dryRun) {
+      console.log('(dry-run: no files were changed)');
+    }
+    for (const w of result.warnings) {
+      process.stderr.write(`Warning: ${w}\n`);
+    }
+    if (result.skipped.reason) {
+      process.stderr.write(`Skipped: ${result.skipped.reason}\n`);
+      process.exit(1);
     }
   });
 
