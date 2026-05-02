@@ -398,40 +398,6 @@ program
     process.exit(0);
   });
 
-// Peek
-program
-  .command('peek <session>')
-  .action(async (sessionArg: string) => {
-    const tower = new Tower(undefined, { skipHooks: true });
-    await tower.start();
-    const sessions = tower.store.getAll();
-    const s = sessions.find(s => s.sessionId.startsWith(sessionArg) || s.label === sessionArg || s.paneId === sessionArg);
-    if (!s) {
-      console.log(`Session not found: ${sessionArg}`);
-    } else if (s.sshTarget) {
-      await tmux.displayPopup({
-        width: '80%', height: '80%',
-        title: ` ${s.label ? `[${s.label}] ` : ''}${s.projectName} (${s.host})${s.goalSummary ? ` — ${s.goalSummary.slice(0, 60)}` : ''} | prefix+d to close `,
-        command: `ssh -t ${s.sshTarget} "tmux attach"`,
-        closeOnExit: true,
-      });
-    } else if (!s.paneId) {
-      console.log('Session has no tmux pane');
-    } else {
-      const panes = await tmux.listPanes();
-      const targetPane = panes.find(p => p.paneId === s.paneId);
-      if (targetPane) {
-        await tmux.displayPopup({
-          width: '80%', height: '80%',
-          title: ` ${s.label ? `[${s.label}] ` : ''}${s.projectName} (${s.paneId})${s.goalSummary ? ` — ${s.goalSummary.slice(0, 60)}` : ''} | prefix+d to close `,
-          command: `tmux attach -t ${targetPane.sessionName} \\; select-window -t :${targetPane.windowIndex}`,
-          closeOnExit: true,
-        });
-      }
-    }
-    await tower.stop();
-  });
-
 // Watch pane manually
 program
   .command('watch <paneId>')

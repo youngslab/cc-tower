@@ -11,7 +11,7 @@ export function EmptyState({ inTmux, hookInstalled }: Props) {
     <Box flexDirection="column" paddingX={2} paddingY={1}>
       {!inTmux && (
         <Box marginBottom={1}>
-          <Text color="yellow">⚠ Not in tmux. Peek/Send will not work.</Text>
+          <Text color="yellow">⚠ Not in tmux. Send/Go will not work.</Text>
         </Box>
       )}
 

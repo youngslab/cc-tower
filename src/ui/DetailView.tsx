@@ -6,7 +6,6 @@ interface Props {
   session: Session;
   onBack: () => void;
   onSend: (session: Session) => void;
-  onPeek: (session: Session) => void;
 }
 
 const STATUS_ICONS: Record<string, { icon: string; color: string }> = {
@@ -17,11 +16,10 @@ const STATUS_ICONS: Record<string, { icon: string; color: string }> = {
   dead: { icon: '✕', color: 'red' },
 };
 
-export function DetailView({ session, onBack, onSend, onPeek }: Props) {
+export function DetailView({ session, onBack, onSend }: Props) {
   useInput((input, key) => {
     if (input === 'b' || key.escape) onBack();
     if (input === '/') onSend(session);
-    if (input === 'p') onPeek(session);
   });
 
   const elapsed = formatDuration(Date.now() - session.startedAt.getTime());
@@ -111,7 +109,7 @@ export function DetailView({ session, onBack, onSend, onPeek }: Props) {
       )}
 
       <Box marginTop={1}>
-        <Text dimColor>[/] Send  [p] Peek  [b] Back</Text>
+        <Text dimColor>[/] Send  [b] Back</Text>
       </Box>
     </Box>
   );

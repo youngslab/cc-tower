@@ -146,17 +146,6 @@ export class Tower extends EventEmitter {
     }
 
     // === Cold Start Sequence ===
-    // 0. Clean up stale peek sessions from previous runs
-    try {
-      const { execSync } = await import('node:child_process');
-      const sessions = execSync('tmux list-sessions -F "#{session_name}" 2>/dev/null', { encoding: 'utf8' });
-      for (const name of sessions.split('\n')) {
-        if (name.startsWith('_cctower_peek_')) {
-          try { const { execFileSync } = await import('node:child_process'); execFileSync('tmux', ['kill-session', '-t', name], { stdio: 'ignore' }); } catch {}
-        }
-      }
-    } catch {}
-
     // 1. Restore user metadata (labels, tags) from disk
     this.store.restore();
 

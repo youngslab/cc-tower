@@ -8,7 +8,6 @@ import { logger } from '../utils/logger.js';
 export class Notifier extends EventEmitter {
   private lastNotification: Map<string, number> = new Map(); // sessionId → timestamp
   private focused: boolean = true;
-  private peekingSession: string | null = null;
 
   constructor(
     private config: Config['notifications'],
@@ -19,10 +18,6 @@ export class Notifier extends EventEmitter {
 
   setFocused(focused: boolean): void {
     this.focused = focused;
-  }
-
-  setPeeking(sessionId: string | null): void {
-    this.peekingSession = sessionId;
   }
 
 
@@ -57,10 +52,7 @@ export class Notifier extends EventEmitter {
     // 2. Dashboard not focused (suppress_when_focused)
     if (this.config.suppress_when_focused && this.focused) return false;
 
-    // 3. Session not currently being peeked
-    if (this.peekingSession === session.sessionId) return false;
-
-    // 4. Cooldown
+    // 3. Cooldown
     const lastTime = this.lastNotification.get(session.sessionId) ?? 0;
     if (Date.now() - lastTime < this.config.cooldown * 1000) return false;
 

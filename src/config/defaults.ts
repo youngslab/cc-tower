@@ -45,7 +45,7 @@ export interface Config {
     };
   };
   keys: {
-    close: string;                   // key to close peek/back from detail, default 'Escape'
+    close: string;                   // key to back from detail, default 'Escape'
   };
   commands: {
     confirm_before_send: boolean;

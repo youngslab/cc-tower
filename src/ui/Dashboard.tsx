@@ -12,7 +12,6 @@ interface Props {
   onSwapFavoriteOrder: (idA: string, idB: string) => void;
   onSelect: (session: Session) => void;
   onSend: (session: Session) => void;
-  onPeek: (session: Session) => void;
   onToggleFavorite: (session: Session) => void;
   onNewSession: () => void;
   onRefresh: (session: Session) => void;
@@ -31,7 +30,7 @@ const STATUS_ICONS: Record<string, { icon: string; color: string }> = {
   dead: { icon: '✕', color: 'red' },
 };
 
-export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, onCursorChange, onSwapFavoriteOrder, onSelect, onSend, onPeek, onToggleFavorite, onNewSession, onRefresh, onKill, onGo, onQuit, onDisplayOrderChange, initialDisplayOrder }: Props) {
+export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, onCursorChange, onSwapFavoriteOrder, onSelect, onSend, onToggleFavorite, onNewSession, onRefresh, onKill, onGo, onQuit, onDisplayOrderChange, initialDisplayOrder }: Props) {
   const [confirmQuit, setConfirmQuit] = useState(false);
   const [confirmKill, setConfirmKill] = useState(false);
 
@@ -133,7 +132,6 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
     // Actions
     if (key.return && sorted[cursor]) onSelect(sorted[cursor]!);
     if (input === '/' && sorted[cursor]) onSend(sorted[cursor]!);
-    if (input === 'p' && sorted[cursor]) onPeek(sorted[cursor]!);
     if (input === 'f' && sorted[cursor]) onToggleFavorite(sorted[cursor]!);
     if (input === 'r' && sorted[cursor]) onRefresh(sorted[cursor]!);
     if (input === 'x' && sorted[cursor]) setConfirmKill(true);
@@ -236,7 +234,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
             <Text color="red">✕</Text><Text dimColor> Dead</Text>
           </Box>
           <Box>
-            <Text dimColor>  [j/k] Nav  [1-9] Jump  [{`[/]`}] Reorder  │  [Enter] Detail  [p] Peek  [g] Go  [/] Send  │  [f] Fav  [n] New  [r] Refresh  [x] Kill  [q] Quit</Text>
+            <Text dimColor>  [j/k] Nav  [1-9] Jump  [{`[/]`}] Reorder  │  [Enter] Detail  [g] Go  [/] Send  │  [f] Fav  [n] New  [r] Refresh  [x] Kill  [q] Quit</Text>
           </Box>
         </Box>
       )}

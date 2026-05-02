@@ -23,7 +23,7 @@ interface Props {
   /**
    * Picker mode: TUI renders normally, but action keys write a single-line
    * JSON result to `outputPath` and `process.exit(0)`. The dashboard's
-   * dashboard-mode handlers (peek, switch-client, kill, …) are bypassed.
+   * dashboard-mode handlers (switch-client, kill, …) are bypassed.
    */
   pickerMode?: boolean;
   outputPath?: string;
@@ -32,7 +32,7 @@ interface Props {
 export function App({ tower, pickerMode, outputPath }: Props) {
   const { exit } = useApp();
   const { sessions, tmuxCount } = useSessionStore(tower.store);
-  const { send, peek } = useTmux(tower.config.keys.close);
+  const { send } = useTmux(tower.config.keys.close);
   const [view, setView] = useState<View>('dashboard');
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
@@ -61,23 +61,6 @@ export function App({ tower, pickerMode, outputPath }: Props) {
     setSelectedSession(session);
     setView('send');
   }, []);
-
-  const handlePeek = useCallback(async (session: Session) => {
-    if (pickerMode && outputPath) {
-      // Picker has no separate "peek" — treat p as "go".
-      writeAndExit(outputPath, {
-        action: 'go',
-        sessionId: session.sessionId,
-        paneId: session.paneId ?? '',
-        host: session.host ?? 'local',
-        cwd: session.cwd,
-        sshTarget: session.sshTarget ?? null,
-        agentId: 'claude',
-      });
-    }
-    if (!session.hasTmux && !session.sshTarget) return;
-    await peek(session);
-  }, [peek, pickerMode, outputPath]);
 
   const handleSendText = useCallback(async (text: string) => {
     if (pickerMode && outputPath && selectedSession) {
@@ -269,7 +252,7 @@ export function App({ tower, pickerMode, outputPath }: Props) {
     const { execa: ex } = await import('execa');
 
     if (host) {
-      // Remote: SSH + tmux new-session in separate session + peek
+      // Remote: SSH + tmux new-session in separate session
       const sessionName = `claude-${name}`.replace(/[^a-zA-Z0-9_-]/g, '-');
       const claudeCmd = host.commandPrefix
         ? `${host.commandPrefix} sh -c 'cd ${projectPath} && claude${claudeArgs}'`
@@ -281,7 +264,7 @@ export function App({ tower, pickerMode, outputPath }: Props) {
           width: '80%',
           height: '80%',
           title: ` ⌁ ${host.name}:${name} (new) | ${closeKey} to close `,
-          command: `tmux bind-key -T cctower-peek ${closeKey} detach-client && ssh -t ${host.ssh} "tmux attach -t ${sessionName}" ; tmux unbind-key -T cctower-peek ${closeKey}`,
+          command: `tmux bind-key -T cctower-nav ${closeKey} detach-client && ssh -t ${host.ssh} "tmux attach -t ${sessionName}" ; tmux unbind-key -T cctower-nav ${closeKey}`,
           closeOnExit: true,
         });
       } catch {}
@@ -308,29 +291,7 @@ export function App({ tower, pickerMode, outputPath }: Props) {
           windowIndex = stdout.trim();
         }
 
-        // Open in popup (peek) — reuse the peek function with a minimal Session-like object
-        // Get the pane ID of the newly created window
-        const { stdout: paneInfo } = await ex('tmux', [
-          'list-panes', '-t', `${hiveSession}:${windowIndex}`, '-F', '#{pane_id}',
-        ]);
-        const newPaneId = paneInfo.trim();
-        if (newPaneId) {
-          await peek({
-            paneId: newPaneId,
-            pid: 0,
-            sessionId: resumeSessionId ?? '',
-            cwd: projectPath,
-            projectName: name,
-            host: 'local',
-            hasTmux: true,
-            detectionMode: 'jsonl',
-            status: 'idle',
-            lastActivity: new Date(),
-            startedAt: new Date(),
-            messageCount: 0,
-            toolCallCount: 0,
-          } as Session);
-        }
+        // Window created — session will be discovered by Tower automatically
       } catch {}
     }
   }, [tower]);
@@ -438,7 +399,6 @@ export function App({ tower, pickerMode, outputPath }: Props) {
             onSwapFavoriteOrder={handleSwapFavoriteOrder}
             onSelect={handleSelect}
             onSend={handleSend}
-            onPeek={handlePeek}
             onToggleFavorite={handleToggleFavorite}
             onRefresh={handleRefresh}
             onKill={handleKill}
@@ -473,7 +433,6 @@ export function App({ tower, pickerMode, outputPath }: Props) {
             session={selectedSession}
             onBack={handleBack}
             onSend={handleSend}
-            onPeek={handlePeek}
           />
         )}
 

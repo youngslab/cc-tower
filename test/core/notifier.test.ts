@@ -158,28 +158,6 @@ describe('Notifier', () => {
     expect(events[0].level).toBe('error');
   });
 
-  it('suppresses when session is being peeked', () => {
-    const session = makeSession();
-    store.register(session);
-    notifierInstance.setFocused(false);
-    notifierInstance.setPeeking('test-session');
-
-    const events: any[] = [];
-    notifierInstance.on('notification', (e) => events.push(e));
-
-    const change: StateChange = {
-      sessionId: 'test-session',
-      from: 'thinking',
-      to: 'idle',
-      event: { type: 'stop' },
-      timestamp: Date.now(),
-      duration: 60000,
-    };
-
-    notifierInstance.onStateChange(change);
-    expect(events.length).toBe(0);
-  });
-
   it('does nothing when notifications disabled', () => {
     store = makeStore();
     notifierInstance = new Notifier({ ...defaultConfig, enabled: false }, store);
