@@ -597,6 +597,83 @@ program
     }
   });
 
+// Mirror — manage remote tmux mirror windows (Plan v2 §B3)
+program
+  .command('mirror')
+  .description('Manage popmux remote mirror windows (used by popmux-go wrapper)')
+  .option('--host <host>', 'Remote host name (matches config)')
+  .option('--pane <paneId>', 'Remote tmux pane id, e.g., %5')
+  .option('--ssh-target <target>', 'SSH target string, e.g., user@host')
+  .option('--clean', 'Remove dead and stale mirror windows')
+  .option('--list', 'Print current mirror windows as JSON')
+  .option('--ttl-ms <ms>', 'Override stale-eviction TTL in milliseconds')
+  .action(async (opts: { host?: string; pane?: string; sshTarget?: string; clean?: boolean; list?: boolean; ttlMs?: string }) => {
+    const mgr = await import('./mirror/window-manager.js');
+    const ttlMs = opts.ttlMs ? parseInt(opts.ttlMs, 10) : undefined;
+
+    if (opts.list) {
+      const mirrors = await mgr.listMirrors();
+      console.log(JSON.stringify(mirrors, null, 2));
+      return;
+    }
+    if (opts.clean) {
+      const dead = await mgr.cleanupDeadMirrors();
+      const stale = await mgr.cleanupStaleMirrors({ ttlMs });
+      console.log(`Cleaned ${dead.length} dead, ${stale.length} stale mirror windows`);
+      if (dead.length) console.log(`  dead:  ${dead.join(', ')}`);
+      if (stale.length) console.log(`  stale: ${stale.join(', ')}`);
+      return;
+    }
+    if (!opts.host || !opts.pane || !opts.sshTarget) {
+      console.error('mirror: --host, --pane, --ssh-target are required (unless --clean or --list)');
+      process.exit(2);
+    }
+    await mgr.goToMirror(
+      { host: opts.host, pane: opts.pane, sshTarget: opts.sshTarget },
+      ttlMs !== undefined ? { ttlMs } : undefined,
+    );
+  });
+
+// Spawn — create a new claude session (stub; B4 wrapper will use this)
+program
+  .command('spawn')
+  .description('Spawn a new claude session locally or via ssh (used by popmux-go wrapper)')
+  .option('--cwd <path>', 'Working directory (local only)')
+  .option('--host <host>', 'Remote host name (placeholder — full impl in B4)')
+  .option('--ssh-target <target>', 'SSH target (placeholder — full impl in B4)')
+  .option('--resume <sessionId>', 'Resume an existing session id')
+  .action(async (opts: { cwd?: string; host?: string; sshTarget?: string; resume?: string }) => {
+    // B3 ships a minimal stub — B4 will flesh out the full local + remote
+    // spawn flow. The wrapper-script integration lives in B4 too. For now,
+    // the local case is enough to validate the CLI surface.
+    if (opts.host && opts.host !== 'local') {
+      console.error('spawn: remote host spawn is implemented in B4. Use the dashboard for now.');
+      process.exit(2);
+    }
+    const cwd = opts.cwd ?? process.cwd();
+    if (!fs.existsSync(cwd)) {
+      console.error(`spawn: cwd does not exist: ${cwd}`);
+      process.exit(2);
+    }
+    if (!process.env['TMUX']) {
+      console.error('spawn: must run inside a tmux session');
+      process.exit(2);
+    }
+    // Build the claude command. Resume takes precedence; otherwise fresh.
+    const claudeBin = 'claude';
+    const claudeArgs = opts.resume ? ['--resume', opts.resume] : [];
+    const cmd = `${claudeBin} ${claudeArgs.map((a) => JSON.stringify(a)).join(' ')}`.trim();
+    // Spawn in a new tmux window in the current session.
+    try {
+      execSync(`tmux new-window -c ${JSON.stringify(cwd)} -n claude ${JSON.stringify(cmd)}`, {
+        stdio: 'inherit',
+      });
+    } catch (err) {
+      console.error(`spawn: tmux new-window failed: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
 // Internal: hook CLI fallback
 program
   .command('hook <event>')
