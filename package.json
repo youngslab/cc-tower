@@ -5,7 +5,8 @@
   "type": "module",
   "main": "src/index.tsx",
   "bin": {
-    "cc-tower": "./bin/cc-tower.js"
+    "cc-tower": "./bin/cc-tower.js",
+    "popmux-go": "./bin/popmux-go"
   },
   "files": [
     "bin/",

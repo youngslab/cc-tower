@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# popmux-go: wrapper script that launches popmux --picker in a tmux popup,
+# reads the JSON action result, and dispatches to the appropriate command.
+#
+# Usage (tmux key bind):
+#   tmux bind-key g run-shell 'popmux-go'
+#
+# Plan v2 §B4 — single binary entry-point that wires picker mode to
+# go/send/new/cancel actions emitted by popmux --picker.
+#
+# Exit codes:
+#   0  — success or user-cancelled
+#   2  — argument error (e.g. --help on unknown flag — reserved for future)
+#   3  — picker exited without a result (caller treats as silent cancel)
+#   4  — required dependency (tmux/jq) missing or popmux binary not found
+set -euo pipefail
+
+# ── --help ─────────────────────────────────────────────────────────────────
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  cat <<'EOF'
+popmux-go — launch popmux picker in a tmux popup and dispatch the chosen action.
+
+USAGE
+  popmux-go            Show the picker (intended as a tmux key binding target)
+  popmux-go --help     Show this help
+
+ENVIRONMENT
+  POPMUX_BIN           Override the popmux binary name (default: cc-tower).
+  XDG_RUNTIME_DIR      Used for the picker tmpfile directory.
+
+EXIT CODES
+  0  success or user-cancelled
+  3  picker had no TTY (silent cancel)
+  4  missing dependency (tmux, jq, or popmux binary)
+EOF
+  exit 0
+fi
+
+# ── Dependencies check ─────────────────────────────────────────────────────
+for cmd in tmux jq; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "popmux-go: required command '$cmd' not found" >&2
+    exit 4
+  fi
+done
+
+# Determine popmux binary (currently 'cc-tower' until A3 rename).
+POPMUX="${POPMUX_BIN:-cc-tower}"
+if ! command -v "$POPMUX" >/dev/null 2>&1; then
+  echo "popmux-go: '$POPMUX' not found in PATH (set POPMUX_BIN to override)" >&2
+  exit 4
+fi
+
+# ── Output file with cleanup ───────────────────────────────────────────────
+RUNDIR="${XDG_RUNTIME_DIR:-/tmp}/popmux"
+mkdir -p "$RUNDIR"
+chmod 0700 "$RUNDIR" 2>/dev/null || true
+
+OUT="$RUNDIR/picker-$$-$(date +%s%N).json"
+cleanup() { rm -f "$OUT"; }
+trap cleanup EXIT INT TERM
+
+# ── Launch picker via tmux popup ───────────────────────────────────────────
+# `|| true` so that a nonzero picker exit (e.g. exit code 3 = no-tty) does not
+# kill this script — we still want to fall through to "no-op cancel" below.
+tmux display-popup -E -w 80% -h 80% \
+  "$POPMUX --picker --output \"$OUT\" --no-cold-start </dev/tty" || true
+
+# Empty file (catastrophic) or missing → cancel-equivalent (no-op).
+if [[ ! -s "$OUT" ]]; then
+  exit 0
+fi
+
+# ── Parse and dispatch ─────────────────────────────────────────────────────
+ACTION=$(jq -r .action <"$OUT")
+
+case "$ACTION" in
+  go)
+    HOST=$(jq -r .host <"$OUT")
+    PANE=$(jq -r .paneId <"$OUT")
+    if [[ "$HOST" == "local" ]]; then
+      tmux switch-client -t "$PANE"
+    else
+      SSH=$(jq -r .sshTarget <"$OUT")
+      "$POPMUX" mirror --host "$HOST" --pane "$PANE" --ssh-target "$SSH"
+    fi
+    ;;
+  send)
+    SID=$(jq -r .sessionId <"$OUT")
+    # R5 decision: single-line read only — no multi-line / no editor escape.
+    read -e -p "Send to ${SID}: " MSG || MSG=""
+    if [[ -n "${MSG:-}" ]]; then
+      "$POPMUX" send "$SID" "$MSG"
+    fi
+    ;;
+  new)
+    CWD=$(jq -r .cwd <"$OUT")
+    HOST=$(jq -r .host <"$OUT")
+    SSH=$(jq -r '.sshTarget // empty' <"$OUT")
+    RESUME=$(jq -r '.resumeSessionId // empty' <"$OUT")
+    SPAWN_ARGS=("--cwd" "$CWD")
+    if [[ "$HOST" != "local" ]]; then
+      SPAWN_ARGS+=("--host" "$HOST" "--ssh-target" "$SSH")
+    fi
+    if [[ -n "$RESUME" ]]; then
+      SPAWN_ARGS+=("--resume" "$RESUME")
+    fi
+    "$POPMUX" spawn "${SPAWN_ARGS[@]}"
+    ;;
+  cancel|*)
+    exit 0
+    ;;
+esac
+
+# ── Optional: background cleanup of stale mirrors ──────────────────────────
+# Fire-and-forget; never blocks the user's go/send/new dispatch.
+("$POPMUX" mirror --clean >/dev/null 2>&1 &) || true

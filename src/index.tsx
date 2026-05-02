@@ -13,6 +13,7 @@ import { logger, setTuiMode } from './utils/logger.js';
 import { loadConfig } from './config/loader.js';
 import { markSpawn } from './picker/protocol.js';
 import { detectLegacy, migrateFromCcTower } from './migrate/from-cc-tower.js';
+import { disableLegacyCcTowerPlugin } from './migrate/legacy-plugin.js';
 
 // Mark spawn time as early as possible — used by --picker --output to compute
 // "READY <ms>" perf SLO for sub-second popup spawn.
@@ -424,6 +425,11 @@ program
       console.log(result.success ? `✓ ${result.message}` : `✗ ${result.message}`);
     } else {
       // Local install
+      // Plan v2 §3.4 / C4: disable legacy cc-tower plugin if present so v1
+      // hooks stop firing once popmux takes over. Idempotent — second run is
+      // a no-op (plugin.json already gone, .disabled already there).
+      disableLegacyCcTowerPlugin();
+
       const pluginDir = path.join(os.homedir(), '.claude', 'plugins', 'cc-tower');
       const hooksDir = path.join(pluginDir, 'hooks');
       fs.mkdirSync(hooksDir, { recursive: true });

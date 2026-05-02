@@ -60,14 +60,20 @@ export class Tower extends EventEmitter {
     if (this.readOnly) this.skipHooks = true;
 
     const persistPath = path.join(os.homedir(), '.config', 'cc-tower', 'state.json');
-    const socketPath = `${process.env['XDG_RUNTIME_DIR'] ?? '/tmp'}/cc-tower.sock`;
+    // Plan v2 §3.4 dual-socket: bind both popmux.sock (new) and cc-tower.sock
+    // (legacy) for the 14-day deprecation window. Existing v1 hooks continue
+    // to route to cc-tower.sock; new popmux install-hooks will switch to
+    // popmux.sock. Both feed the same SessionStateMachine.
+    const runtimeDir = process.env['XDG_RUNTIME_DIR'] ?? '/tmp';
+    const popmuxSocket = path.join(runtimeDir, 'popmux.sock');
+    const legacySocket = path.join(runtimeDir, 'cc-tower.sock');
 
     this.store = new SessionStore(persistPath);
     this.discovery = new DiscoveryEngine({
       scan_interval: this.config.discovery.scan_interval,
       claude_dir: this.config.discovery.claude_dir.replace('~', os.homedir()),
     });
-    this.hookReceiver = new HookReceiver(socketPath);
+    this.hookReceiver = new HookReceiver([popmuxSocket, legacySocket]);
     this.jsonlWatcher = new JsonlWatcher();
     this.processMonitor = new ProcessMonitor();
     this.summarizer = new Summarizer();
