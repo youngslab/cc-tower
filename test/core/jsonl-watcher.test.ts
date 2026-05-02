@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { JsonlWatcher } from '../../src/core/jsonl-watcher.js';
+import { coldStartScan } from '../../src/agents/claude/status-inferer.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -26,7 +27,7 @@ describe('JsonlWatcher', () => {
         JSON.stringify({ type: 'assistant', message: { stop_reason: 'end_turn', model: 'claude' }, timestamp: '2024-01-01T00:00:05Z', sessionId: 's1' }),
       ].join('\n') + '\n');
 
-      const state = watcher.coldStartScan(jsonlPath);
+      const state = coldStartScan(jsonlPath);
       expect(state).toBe('idle');
     });
 
@@ -36,7 +37,7 @@ describe('JsonlWatcher', () => {
         JSON.stringify({ type: 'assistant', message: { stop_reason: 'tool_use' }, sessionId: 's1' }),
       ].join('\n') + '\n');
 
-      const state = watcher.coldStartScan(jsonlPath);
+      const state = coldStartScan(jsonlPath);
       expect(state).toBe('executing');
     });
 
@@ -46,19 +47,19 @@ describe('JsonlWatcher', () => {
         JSON.stringify({ type: 'user', message: { role: 'user', content: 'do something' }, sessionId: 's1' }),
       ].join('\n') + '\n');
 
-      const state = watcher.coldStartScan(jsonlPath);
+      const state = coldStartScan(jsonlPath);
       expect(state).toBe('thinking');
     });
 
     it('returns idle for empty file', () => {
       const jsonlPath = path.join(tmpDir, 'test.jsonl');
       fs.writeFileSync(jsonlPath, '');
-      const state = watcher.coldStartScan(jsonlPath);
+      const state = coldStartScan(jsonlPath);
       expect(state).toBe('idle');
     });
 
     it('returns idle for nonexistent file', () => {
-      const state = watcher.coldStartScan(path.join(tmpDir, 'nonexistent.jsonl'));
+      const state = coldStartScan(path.join(tmpDir, 'nonexistent.jsonl'));
       expect(state).toBe('idle');
     });
   });

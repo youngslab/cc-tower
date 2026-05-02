@@ -1,10 +1,8 @@
 import { EventEmitter } from 'node:events';
-import { readdir, readFile } from 'node:fs/promises';
-import { readFileSync, readdirSync, readlinkSync, statSync } from 'node:fs';
-import { join, basename } from 'node:path';
-import { execSync } from 'node:child_process';
+import { readdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import { logger } from '../utils/logger.js';
-import { cwdToSlug } from '../utils/slug.js';
+import { agents } from '../agents/registry.js';
 
 export interface SessionInfo {
   pid: number;
@@ -67,48 +65,18 @@ export class DiscoveryEngine extends EventEmitter {
 
     const jsonFiles = files.filter((f) => f.endsWith('.json'));
 
-    // If sessions dir is empty, fall back to process scanning
+    // If sessions dir is empty, fall back to process scanning via the
+    // claude agent (Claude Code >= 2.1.77 stopped writing pid.json).
     if (jsonFiles.length === 0) {
-      return this.scanProcesses();
+      return this.scanProcessesViaAgent();
     }
 
     let active: SessionInfo[] = [];
 
     for (const file of jsonFiles) {
       const filePath = join(sessionsDir, file);
-      let info: SessionInfo;
-
-      try {
-        const raw = await readFile(filePath, 'utf8');
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(raw);
-        } catch {
-          // File may have trailing garbage after the JSON object — extract the first object
-          const end = raw.indexOf('}');
-          if (end === -1) throw new Error('no closing brace found');
-          parsed = JSON.parse(raw.slice(0, end + 1));
-        }
-        if (!isSessionInfo(parsed)) {
-          logger.debug('discovery: malformed session file', { filePath });
-          continue;
-        }
-        // Skip sdk-cli sessions (headless subprocesses spawned by user code, not interactive terminals)
-        if ((parsed as unknown as Record<string, unknown>)['entrypoint'] === 'sdk-cli') {
-          logger.debug('discovery: skipping sdk-cli session', { filePath });
-          continue;
-        }
-        info = parsed;
-      } catch (err) {
-        logger.debug('discovery: failed to read/parse session file', { filePath, err: String(err) });
-        continue;
-      }
-
-      // Skip /tmp sessions (ephemeral subprocesses, LLM summarizer, etc.)
-      if (info.cwd.startsWith('/tmp')) {
-        logger.debug('discovery: skipping /tmp session', { filePath, cwd: info.cwd });
-        continue;
-      }
+      const info = await agents.claude.parseSessionFile(filePath);
+      if (!info) continue; // malformed / sdk-cli / /tmp — agent already filtered + logged
 
       const alive = isPidAlive(info.pid);
       if (!alive) {
@@ -182,98 +150,34 @@ export class DiscoveryEngine extends EventEmitter {
   }
 
   /**
-   * Fallback: discover Claude sessions by scanning running processes.
-   * Used when ~/.claude/sessions/ is empty (Claude Code >= 2.1.77).
+   * Fallback path: ask the claude agent to scan running processes, then
+   * apply the same emit-and-track bookkeeping as the file-based path.
    */
-  private scanProcesses(): SessionInfo[] {
+  private scanProcessesViaAgent(): SessionInfo[] {
+    const detected = agents.claude.scanProcesses(this.config.claude_dir, (cwd, pid) => {
+      return new Set(
+        Array.from(this.known.values())
+          .filter(s => s.cwd === cwd && s.pid !== pid)
+          .map(s => s.sessionId),
+      );
+    });
+
     const active: SessionInfo[] = [];
-    try {
-      // Find all 'claude' processes with a CWD
-      const out = execSync(
-        "ps -eo pid,comm | grep '^[[:space:]]*[0-9].*claude$' | awk '{print $1}'",
-        { encoding: 'utf8', timeout: 5000 },
-      ).trim();
-      if (!out) return active;
-
-      for (const pidStr of out.split('\n')) {
-        const pid = parseInt(pidStr.trim());
-        if (isNaN(pid)) continue;
-
-        // Get CWD from /proc
-        let cwd: string;
-        try {
-          cwd = readlinkSync(`/proc/${pid}/cwd`);
-        } catch { continue; }
-        if (!cwd) continue;
-
-        // Skip temporary/ephemeral claude processes (e.g., claude --print from /tmp)
-        if (cwd === '/tmp' || cwd.startsWith('/tmp/')) continue;
-
-        // Only include if we have a matching project directory in claude_dir
-        const slug = cwdToSlug(cwd);
-        const projectDir = join(this.config.claude_dir, 'projects', slug);
-        try { readdirSync(projectDir); } catch { continue; } // no project dir = not a tracked session
-
-        let sessionId = `proc-${pid}`;
-
-        // 1. Try to get CLAUDE_SESSION_ID from process environment (highest priority)
-        try {
-          const environPath = `/proc/${pid}/environ`;
-          const environData = readFileSync(environPath, 'utf-8');
-          const environ = environData.split('\0');
-          const claudeSessionIdEntry = environ.find(entry => entry.startsWith('CLAUDE_SESSION_ID='));
-          if (claudeSessionIdEntry) {
-            sessionId = claudeSessionIdEntry.replace('CLAUDE_SESSION_ID=', '');
-          }
-        } catch {}
-
-        // 2. Fallback: use JSONL filename if CLAUDE_SESSION_ID not found
-        // Skip JSONLs already claimed by another known session (same CWD, different PID)
-        if (sessionId.startsWith('proc-')) {
-          try {
-            const usedSessionIds = new Set(
-              Array.from(this.known.values())
-                .filter(s => s.cwd === cwd && s.pid !== pid)
-                .map(s => s.sessionId),
-            );
-            const jsonls = readdirSync(projectDir)
-              .filter(f => f.endsWith('.jsonl'))
-              .map(f => { try { return { name: f, mtime: statSync(join(projectDir, f)).mtimeMs }; } catch { return { name: f, mtime: 0 }; } })
-              .sort((a, b) => b.mtime - a.mtime);
-            for (const j of jsonls) {
-              const candidate = j.name.replace('.jsonl', '');
-              if (!usedSessionIds.has(candidate)) {
-                sessionId = candidate;
-                break;
-              }
-            }
-          } catch {}
-        }
-
-        const info: SessionInfo = {
-          pid,
-          sessionId,
-          cwd,
-          startedAt: Date.now(),
-        };
-
-        if (!this.known.has(pid)) {
-          this.known.set(pid, info);
-          this.emit('session-found', info);
-          logger.debug('discovery: session-found (process scan)', { pid, cwd });
-        }
-        active.push(info);
+    for (const info of detected) {
+      if (!this.known.has(info.pid)) {
+        this.known.set(info.pid, info);
+        this.emit('session-found', info);
+        logger.debug('discovery: session-found (process scan)', { pid: info.pid, cwd: info.cwd });
       }
+      active.push(info);
+    }
 
-      // Check for dead processes
-      for (const [pid, session] of this.known) {
-        if (!active.find(s => s.pid === pid) && !isPidAlive(pid)) {
-          this.known.delete(pid);
-          this.emit('session-lost', session);
-        }
+    // Check for dead processes
+    for (const [pid, session] of this.known) {
+      if (!active.find(s => s.pid === pid) && !isPidAlive(pid)) {
+        this.known.delete(pid);
+        this.emit('session-lost', session);
       }
-    } catch (err) {
-      logger.debug('discovery: process scan failed', { error: String(err) });
     }
     return active;
   }
@@ -292,15 +196,4 @@ function isPidAlive(pid: number): boolean {
     }
     return false;
   }
-}
-
-function isSessionInfo(val: unknown): val is SessionInfo {
-  if (typeof val !== 'object' || val === null) return false;
-  const v = val as Record<string, unknown>;
-  return (
-    typeof v['pid'] === 'number' &&
-    typeof v['sessionId'] === 'string' &&
-    typeof v['cwd'] === 'string' &&
-    typeof v['startedAt'] === 'number'
-  );
 }

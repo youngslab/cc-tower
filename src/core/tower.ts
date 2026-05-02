@@ -14,7 +14,7 @@ import { mapPidToPane } from '../tmux/pane-mapper.js';
 import { isHeadlessProcess, isPidAlive, getPpid } from '../utils/pid-resolver.js';
 import { tmux } from '../tmux/commands.js';
 import { cwdToSlug, cleanDisplayText, isInternalMessage } from '../utils/slug.js';
-import { generateContextSummary, generateGoalSummary, generateNextSteps, clearSummaryCache, startLlmSession, stopLlmSession, getLlmSessionName } from './llm-summarizer.js';
+import { agents } from '../agents/registry.js';
 import { logger } from '../utils/logger.js';
 import { parseJsonlLine } from '../utils/jsonl-parser.js';
 import { ConnectionManager } from '../ssh/connection-manager.js';
@@ -266,7 +266,7 @@ export class Tower extends EventEmitter {
     }
 
     // 10. Start hidden LLM session (non-blocking, boots in background)
-    void startLlmSession();
+    void agents.claude.startLlmSession();
 
     // 11. Setup SSH remote hosts (if configured)
     if (this.config.hosts.length > 0) {
@@ -373,7 +373,7 @@ export class Tower extends EventEmitter {
     logger.info('tower: refreshSession called', { sessionId, host: session.host, sshTarget: session.sshTarget });
 
     // Clear UI immediately
-    clearSummaryCache(sessionId);
+    agents.claude.clearSummaryCache(sessionId);
     this.store.updateMeta(identity, { goalSummary: undefined, contextSummary: undefined, nextSteps: undefined });
     this.store.update(identity, { summaryLoading: true });
 
@@ -503,7 +503,7 @@ export class Tower extends EventEmitter {
         return;
       }
       logger.info('tower: calling LLM for goal summary', { identity, msgLen: earlyMessages.length });
-      const summary = await generateGoalSummary(sessionId, earlyMessages);
+      const summary = await agents.claude.generateGoalSummary(sessionId, earlyMessages);
       if (summary) {
         logger.info('tower: goal summary received', { identity, summary });
         this.store.updateMeta(identity, { goalSummary: summary });
@@ -533,7 +533,7 @@ export class Tower extends EventEmitter {
       }
       logger.info('tower: calling LLM for summary', { identity, msgLen: recentMessages.length });
       this.store.update(identity, { summaryLoading: true });
-      const summary = await generateContextSummary(sessionId, recentMessages);
+      const summary = await agents.claude.generateContextSummary(sessionId, recentMessages);
       if (summary) {
         logger.info('tower: context summary received', { identity, summary });
         this.store.updateMeta(identity, { contextSummary: summary });
@@ -553,7 +553,7 @@ export class Tower extends EventEmitter {
       const sessionId = session?.sessionId ?? identity;
       const recentMessages = await this.jsonlWatcher.readRecentContext(jsonlPath, 15);
       if (!recentMessages || recentMessages.length < 20) return;
-      const suggestion = await generateNextSteps(sessionId, recentMessages);
+      const suggestion = await agents.claude.generateNextSteps(sessionId, recentMessages);
       if (suggestion) {
         logger.info('tower: next steps received', { identity, suggestion });
         this.store.updateMeta(identity, { nextSteps: suggestion });
@@ -577,7 +577,7 @@ export class Tower extends EventEmitter {
       }
       const recentText = meaningful.join('\n');
       if (recentText.length < 20) return;
-      const suggestion = await generateNextSteps(compositeId, recentText);
+      const suggestion = await agents.claude.generateNextSteps(compositeId, recentText);
       if (suggestion) {
         logger.info('tower: remote next steps received', { compositeId, suggestion });
         this.store.updateMeta(compositeId, { nextSteps: suggestion });
@@ -615,7 +615,7 @@ export class Tower extends EventEmitter {
       }
       const earlyText = meaningful.join('\n');
       if (earlyText.length < 20) return;
-      const summary = await generateGoalSummary(compositeId, earlyText);
+      const summary = await agents.claude.generateGoalSummary(compositeId, earlyText);
       if (summary) {
         logger.info('tower: remote goal summary received', { compositeId, summary });
         this.store.updateMeta(compositeId, { goalSummary: summary });
@@ -639,7 +639,7 @@ export class Tower extends EventEmitter {
       }
       const recentText = meaningful.join('\n');
       if (recentText.length < 20) return;
-      const summary = await generateContextSummary(compositeId, recentText);
+      const summary = await agents.claude.generateContextSummary(compositeId, recentText);
       if (summary) {
         logger.info('tower: remote context summary received', { compositeId, summary });
         this.store.updateMeta(compositeId, { contextSummary: summary });
@@ -658,7 +658,7 @@ export class Tower extends EventEmitter {
     this.store.persistSync();
     // Fire-and-forget: don't await these to avoid slow shutdown
     this.hookReceiver.stop().catch(() => {});
-    stopLlmSession().catch(() => {});
+    agents.claude.stopLlmSession().catch(() => {});
     // SSH cleanup
     if (this.remoteDiscovery) this.remoteDiscovery.stop();
     if (this.connectionManager) this.connectionManager.stopAll();
@@ -670,7 +670,7 @@ export class Tower extends EventEmitter {
     // Skip /tmp sessions (LLM summarizer, ephemeral subprocesses, etc.)
     if (info.cwd.startsWith('/tmp')) return;
 
-    // Skip headless sessions (claude --print) — non-interactive, should not appear in dashboard
+    // Skip headless / non-interactive subprocesses — should not appear in dashboard
     if (info.pid && isHeadlessProcess(info.pid)) {
       logger.debug('tower: skipping headless session', { pid: info.pid, cwd: info.cwd });
       return;
@@ -752,9 +752,9 @@ export class Tower extends EventEmitter {
     } catch {}
 
     // c. Cold start: determine current state + last task from JSONL
-    const initialState = this.jsonlWatcher.coldStartScan(jsonlPath);
-    const lastTask = this.jsonlWatcher.coldStartLastTask(jsonlPath);
-    let customTitle = this.jsonlWatcher.coldStartCustomTitle(jsonlPath);
+    const initialState = agents.claude.coldStartScan(jsonlPath);
+    const lastTask = agents.claude.coldStartLastTask(jsonlPath);
+    let customTitle = agents.claude.extractLabel(jsonlPath);
 
     // d. Determine detection mode
     const detectionMode = 'jsonl' as const;
@@ -791,7 +791,7 @@ export class Tower extends EventEmitter {
         jsonlPath = correctedJsonl;
         info.sessionId = registeredSession.sessionId;
         // Re-read cold start data from corrected JSONL
-        customTitle = this.jsonlWatcher.coldStartCustomTitle(jsonlPath);
+        customTitle = agents.claude.extractLabel(jsonlPath);
       }
     }
 
@@ -1189,20 +1189,15 @@ export class Tower extends EventEmitter {
     if (event.pid !== undefined && (typeof event.pid !== 'number' || event.pid < 0)) return;
     if (event.pane !== undefined && typeof event.pane !== 'string') return;
 
-    // Skip hook events from sdk-cli (headless) sessions — e.g. services that spawn claude
-    // programmatically inside the same project. Their events must not be attributed to the
-    // parent interactive session via PID ancestry.
+    // Skip hook events from headless / SDK-spawned sessions — e.g. services that
+    // launch the agent programmatically inside the same project. Their events
+    // must not be attributed to the parent interactive session via PID ancestry.
     if (event.pid && event.pid > 0) {
-      try {
-        const sessionsDir = this.config.discovery.claude_dir.replace('~', os.homedir()) + '/sessions';
-        const raw = fs.readFileSync(path.join(sessionsDir, `${event.pid}.json`), 'utf8');
-        const end = raw.indexOf('}');
-        const parsed = JSON.parse(end >= 0 ? raw.slice(0, end + 1) : raw) as { entrypoint?: string };
-        if (parsed.entrypoint === 'sdk-cli') {
-          logger.debug('tower: ignoring hook event from sdk-cli session', { hookSid, pid: event.pid });
-          return;
-        }
-      } catch {}
+      const sessionsDir = this.config.discovery.claude_dir.replace('~', os.homedir()) + '/sessions';
+      if (agents.claude.isHeadlessSession(sessionsDir, event.pid)) {
+        logger.debug('tower: ignoring hook event from headless session', { hookSid, pid: event.pid });
+        return;
+      }
     }
 
     // When CLAUDE_SESSION_ID is not available (sid='unknown'), resolve by PID ancestry only
@@ -1287,7 +1282,7 @@ export class Tower extends EventEmitter {
           this.jsonlPaths.set(hookSid, newJsonl);
           this.jsonlWatcher.watch(hookSid, newJsonl);
           // Read custom title from new JSONL
-          const customTitle = this.jsonlWatcher.coldStartCustomTitle(newJsonl);
+          const customTitle = agents.claude.extractLabel(newJsonl);
           if (customTitle) {
             this.store.updateMeta(identity, { label: customTitle });
           }
@@ -1308,7 +1303,7 @@ export class Tower extends EventEmitter {
                 dirWatcher.close();
                 this.jsonlPaths.set(hookSid, newJsonl);
                 this.jsonlWatcher.watch(hookSid, newJsonl);
-                const customTitle = this.jsonlWatcher.coldStartCustomTitle(newJsonl);
+                const customTitle = agents.claude.extractLabel(newJsonl);
                 if (customTitle) {
                   this.store.updateMeta(capturedIdentity, { label: customTitle });
                 }

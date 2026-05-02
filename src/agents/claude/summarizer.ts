@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
-import { logger } from '../utils/logger.js';
-import { cleanDisplayText } from '../utils/slug.js';
+import { logger } from '../../utils/logger.js';
+import { cleanDisplayText } from '../../utils/slug.js';
 
 /**
  * LLM-based context summarizer using parallel `claude --print` calls.
