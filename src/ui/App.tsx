@@ -14,14 +14,22 @@ import { DetailView } from './DetailView.js';
 import { SendInput } from './SendInput.js';
 import { NewSession, PastSession, PastSessionByCwd } from './NewSession.js';
 import { getRecentProjects, RecentProject } from '../utils/recent-projects.js';
+import { writeAndExit, emitReady } from '../picker/protocol.js';
 
 type View = 'dashboard' | 'detail' | 'send' | 'new-session';
 
 interface Props {
   tower: Tower;
+  /**
+   * Picker mode: TUI renders normally, but action keys write a single-line
+   * JSON result to `outputPath` and `process.exit(0)`. The dashboard's
+   * dashboard-mode handlers (peek, switch-client, kill, …) are bypassed.
+   */
+  pickerMode?: boolean;
+  outputPath?: string;
 }
 
-export function App({ tower }: Props) {
+export function App({ tower, pickerMode, outputPath }: Props) {
   const { exit } = useApp();
   const { sessions, tmuxCount } = useSessionStore(tower.store);
   const { send, peek } = useTmux(tower.config.keys.close);
@@ -31,26 +39,63 @@ export function App({ tower }: Props) {
   const [cursorIdentity, setCursorIdentity] = useState<string | null>(null);
 
   const handleSelect = useCallback((session: Session) => {
+    if (pickerMode && outputPath) {
+      // Enter = "go" — switch to that session
+      writeAndExit(outputPath, {
+        action: 'go',
+        sessionId: session.sessionId,
+        paneId: session.paneId ?? '',
+        host: session.host ?? 'local',
+        cwd: session.cwd,
+        sshTarget: session.sshTarget ?? null,
+        agentId: 'claude',
+      });
+    }
     setSelectedSession(session);
     setView('detail');
-  }, []);
+  }, [pickerMode, outputPath]);
 
   const handleSend = useCallback((session: Session) => {
+    // In picker mode, route through the local SendInput so the user can type a
+    // message inline; only emit JSON once they submit. (Empty text = cancel.)
     setSelectedSession(session);
     setView('send');
   }, []);
 
   const handlePeek = useCallback(async (session: Session) => {
+    if (pickerMode && outputPath) {
+      // Picker has no separate "peek" — treat p as "go".
+      writeAndExit(outputPath, {
+        action: 'go',
+        sessionId: session.sessionId,
+        paneId: session.paneId ?? '',
+        host: session.host ?? 'local',
+        cwd: session.cwd,
+        sshTarget: session.sshTarget ?? null,
+        agentId: 'claude',
+      });
+    }
     if (!session.hasTmux && !session.sshTarget) return;
     await peek(session);
-  }, [peek]);
+  }, [peek, pickerMode, outputPath]);
 
   const handleSendText = useCallback(async (text: string) => {
+    if (pickerMode && outputPath && selectedSession) {
+      writeAndExit(outputPath, {
+        action: 'send',
+        sessionId: selectedSession.sessionId,
+        paneId: selectedSession.paneId ?? '',
+        host: selectedSession.host ?? 'local',
+        sshTarget: selectedSession.sshTarget ?? null,
+        agentId: 'claude',
+        text,
+      });
+    }
     if (selectedSession) {
       await send(selectedSession, text);
     }
     setView(view === 'send' ? 'dashboard' : 'detail');
-  }, [selectedSession, send, view]);
+  }, [selectedSession, send, view, pickerMode, outputPath]);
 
   const handleBack = useCallback(() => {
     setView('dashboard');
@@ -79,6 +124,10 @@ export function App({ tower }: Props) {
   }, [tower]);
 
   const handleKill = useCallback(async (session: Session) => {
+    if (pickerMode && outputPath) {
+      // Picker doesn't kill — treat 'x' as cancel (no destructive action via tmpfile).
+      writeAndExit(outputPath, { action: 'cancel' });
+    }
     if (!session.pid) return;
     // Remove from favorites on kill
     if (session.favorite) {
@@ -101,6 +150,17 @@ export function App({ tower }: Props) {
   }, [tower]);
 
   const handleGo = useCallback(async (session: Session) => {
+    if (pickerMode && outputPath) {
+      writeAndExit(outputPath, {
+        action: 'go',
+        sessionId: session.sessionId,
+        paneId: session.paneId ?? '',
+        host: session.host ?? 'local',
+        cwd: session.cwd,
+        sshTarget: session.sshTarget ?? null,
+        agentId: 'claude',
+      });
+    }
     if (!session.paneId) return;
     const { execa: ex } = await import('execa');
     const tmuxKey = tower.config.keys.close === 'Escape' ? 'Escape' : tower.config.keys.close;
@@ -190,6 +250,16 @@ export function App({ tower }: Props) {
   }, [tower]);
 
   const handleNewSession = useCallback(async (projectPath: string, host?: { name: string; ssh: string; commandPrefix?: string }, resumeSessionId?: string) => {
+    if (pickerMode && outputPath) {
+      writeAndExit(outputPath, {
+        action: 'new',
+        cwd: projectPath,
+        host: host?.name ?? 'local',
+        sshTarget: host?.ssh ?? null,
+        agentId: 'claude',
+        resumeSessionId: resumeSessionId ?? null,
+      });
+    }
     const closeKey = tower.config.keys.close === 'Escape' ? 'Escape' : tower.config.keys.close;
     const name = projectPath.split('/').pop() ?? projectPath;
     const resumeArg = resumeSessionId ? ` --resume ${resumeSessionId}` : '';
@@ -266,6 +336,9 @@ export function App({ tower }: Props) {
   }, [tower]);
 
   const handleQuit = useCallback(async () => {
+    if (pickerMode && outputPath) {
+      writeAndExit(outputPath, { action: 'cancel' });
+    }
     await tower.stop();
     // Kill the entire cc-tower tmux session so all outer wrapper processes exit cleanly
     if (process.env['TMUX']) {
@@ -293,6 +366,11 @@ export function App({ tower }: Props) {
     process.stdout.on('resize', onResize);
     return () => { process.stdout.off('resize', onResize); };
   }, [stdout]);
+
+  // Picker SLO: emit READY <ms> on stderr after first render
+  useEffect(() => {
+    if (pickerMode) emitReady();
+  }, [pickerMode]);
 
   const termWidth = termSize.width;
   const termHeight = termSize.height;
@@ -377,7 +455,12 @@ export function App({ tower }: Props) {
             projects={recentProjects}
             hosts={tower.config.hosts.map(h => ({ name: h.name, ssh: h.ssh, commandPrefix: h.command_prefix }))}
             onSelect={handleNewSession}
-            onCancel={() => setView('dashboard')}
+            onCancel={() => {
+              if (pickerMode && outputPath) {
+                writeAndExit(outputPath, { action: 'cancel' });
+              }
+              setView('dashboard');
+            }}
             getPastSessions={getPastSessions}
             getPastSessionsByTarget={getPastSessionsByTarget}
             getAllPastSessions={() => tower.store.getAllPastSessions()}
@@ -399,7 +482,12 @@ export function App({ tower }: Props) {
             session={selectedSession}
             confirmWhenBusy={tower.config.commands.confirm_when_busy}
             onSend={handleSendText}
-            onCancel={() => setView('dashboard')}
+            onCancel={() => {
+              if (pickerMode && outputPath) {
+                writeAndExit(outputPath, { action: 'cancel' });
+              }
+              setView('dashboard');
+            }}
           />
         )}
       </Box>

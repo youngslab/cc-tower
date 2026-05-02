@@ -45,11 +45,19 @@ export class Tower extends EventEmitter {
   private remotePollers: Map<string, ReturnType<typeof setInterval>> = new Map();
 
   private skipHooks: boolean;
+  private skipColdStart: boolean;
+  private skipSummary: boolean;
+  private readOnly: boolean;
 
-  constructor(config?: Config, opts?: { skipHooks?: boolean }) {
+  constructor(config?: Config, opts?: { skipHooks?: boolean; skipColdStart?: boolean; skipSummary?: boolean; readOnly?: boolean }) {
     super();
     this.config = config ?? loadConfig();
     this.skipHooks = opts?.skipHooks ?? false;
+    this.skipColdStart = opts?.skipColdStart ?? false;
+    this.skipSummary = opts?.skipSummary ?? false;
+    this.readOnly = opts?.readOnly ?? false;
+    // readOnly implies skipHooks (no socket bind, no instance lock)
+    if (this.readOnly) this.skipHooks = true;
 
     const persistPath = path.join(os.homedir(), '.config', 'cc-tower', 'state.json');
     const socketPath = `${process.env['XDG_RUNTIME_DIR'] ?? '/tmp'}/cc-tower.sock`;
@@ -151,6 +159,17 @@ export class Tower extends EventEmitter {
 
     // 1. Restore user metadata (labels, tags) from disk
     this.store.restore();
+
+    // readOnly mode (--no-cold-start picker): just rehydrate state.json sessions
+    // into the store and return. No socket, no scans, no watchers, no LLM.
+    if (this.readOnly) {
+      // Reuse persisted Session entries verbatim — they have status/summaries/etc.
+      // SessionStore.restore() above already populated most fields, but doesn't
+      // mark sessions as live in `getAll()`. Persist→register them as Sessions.
+      this.rehydrateFromState();
+      logger.info('tower: started in read-only mode', { sessions: this.store.getAll().length });
+      return;
+    }
 
     // 2. Start hook receiver (socket bind) — skip for one-shot commands to avoid stealing the TUI's socket
     if (!this.skipHooks) {
@@ -266,7 +285,9 @@ export class Tower extends EventEmitter {
     }
 
     // 10. Start hidden LLM session (non-blocking, boots in background)
-    void agents.claude.startLlmSession();
+    if (!this.skipSummary) {
+      void agents.claude.startLlmSession();
+    }
 
     // 11. Setup SSH remote hosts (if configured)
     if (this.config.hosts.length > 0) {
@@ -364,6 +385,46 @@ export class Tower extends EventEmitter {
     logger.info('tower: started successfully', { sessions: this.store.getAll().length });
   }
 
+
+  /**
+   * Read-only hydration: re-create Session entries from persisted state.json
+   * without scanning processes, watching JSONLs, or triggering LLM summaries.
+   * Used by `--picker --no-cold-start` for sub-second popup spawn.
+   *
+   * Walks persistedMeta entries (sessionId-keyed) — each one carries enough
+   * identity info (cwd, host, pid, sshTarget, startedAt) to reconstruct a
+   * Session. Status is forced to 'idle' since we cannot determine liveness
+   * without a process scan; summaries come straight from the cached fields.
+   */
+  private rehydrateFromState(): void {
+    for (const sessionId of this.store.getPersistedKeys()) {
+      const entry = this.store.getPersistedEntry(sessionId);
+      if (!entry) continue;
+      if (!entry.cwd) continue; // need cwd to render anything useful
+
+      const projectName = entry.cwd.split('/').filter(Boolean).pop() ?? entry.cwd;
+      const session: Session = {
+        pid: entry.pid ?? 0,
+        sessionId,
+        hasTmux: false, // unknown without scan; picker uses host/sshTarget for routing
+        detectionMode: 'jsonl' as const,
+        cwd: entry.cwd,
+        projectName,
+        status: 'idle' as const,
+        lastActivity: new Date(entry.startedAt ?? Date.now()),
+        startedAt: new Date(entry.startedAt ?? Date.now()),
+        messageCount: 0,
+        toolCallCount: 0,
+        host: entry.host ?? 'local',
+        sshTarget: entry.sshTarget,
+      };
+      try {
+        this.store.register(session);
+      } catch (err) {
+        logger.debug('tower: rehydrate skip', { sessionId, error: String(err) });
+      }
+    }
+  }
 
   /** Full refresh: re-scan discovery, re-register session, then regenerate LLM summaries. */
   async refreshSession(sessionId: string): Promise<void> {
@@ -488,6 +549,7 @@ export class Tower extends EventEmitter {
   }
 
   private async refreshGoalSummary(identity: string, jsonlPath: string): Promise<void> {
+    if (this.skipSummary) return;
     try {
       const session = this.store.get(identity);
       const sessionId = session?.sessionId ?? identity;
@@ -516,6 +578,7 @@ export class Tower extends EventEmitter {
   }
 
   private async refreshContextSummary(identity: string, jsonlPath: string): Promise<void> {
+    if (this.skipSummary) return;
     try {
       const session = this.store.get(identity);
       const sessionId = session?.sessionId ?? identity;
@@ -548,6 +611,7 @@ export class Tower extends EventEmitter {
   }
 
   private async refreshNextSteps(identity: string, jsonlPath: string): Promise<void> {
+    if (this.skipSummary) return;
     try {
       const session = this.store.get(identity);
       const sessionId = session?.sessionId ?? identity;
@@ -589,6 +653,7 @@ export class Tower extends EventEmitter {
 
   /** Run all three remote summary refreshes concurrently, managing summaryLoading as a unit. */
   private async refreshAllRemoteSummaries(compositeId: string, config: RemoteHostConfig, jsonlPath: string): Promise<void> {
+    if (this.skipSummary) return;
     this.store.update(compositeId, { summaryLoading: true });
     try {
       await Promise.all([
@@ -752,9 +817,10 @@ export class Tower extends EventEmitter {
     } catch {}
 
     // c. Cold start: determine current state + last task from JSONL
-    const initialState = agents.claude.coldStartScan(jsonlPath);
-    const lastTask = agents.claude.coldStartLastTask(jsonlPath);
-    let customTitle = agents.claude.extractLabel(jsonlPath);
+    // skipColdStart (picker --no-cold-start) bypasses JSONL scans entirely.
+    const initialState = this.skipColdStart ? 'idle' as const : agents.claude.coldStartScan(jsonlPath);
+    const lastTask = this.skipColdStart ? undefined : agents.claude.coldStartLastTask(jsonlPath);
+    let customTitle = this.skipColdStart ? undefined : agents.claude.extractLabel(jsonlPath);
 
     // d. Determine detection mode
     const detectionMode = 'jsonl' as const;

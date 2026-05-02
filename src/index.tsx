@@ -11,15 +11,99 @@ import { App } from './ui/App.js';
 import { tmux } from './tmux/commands.js';
 import { logger, setTuiMode } from './utils/logger.js';
 import { loadConfig } from './config/loader.js';
+import { markSpawn } from './picker/protocol.js';
+
+// Mark spawn time as early as possible — used by --picker --output to compute
+// "READY <ms>" perf SLO for sub-second popup spawn.
+markSpawn();
 
 program
   .name('cc-tower')
   .description('Claude Code Session Control Tower')
   .version('0.1.0');
 
-// Default: TUI dashboard
+// Default: TUI dashboard (or picker mode when --picker is set)
 program
-  .action(async () => {
+  .option('--picker', 'Run as picker (TUI + JSON output on action, then exit)')
+  .option('--output <path>', 'Output path for picker result JSON (required with --picker)')
+  .option('--no-cold-start', 'Skip JSONL coldStart scans — read state.json only (fast popup mode)')
+  .option('--no-summary', 'Disable LLM summarization — use cached fields only')
+  .action(async (opts: { picker?: boolean; output?: string; coldStart?: boolean; summary?: boolean }) => {
+    // === Picker mode (one-shot, JSON-via-tmpfile) =========================
+    if (opts.picker) {
+      if (!opts.output) {
+        console.error('--picker requires --output <path>');
+        process.exit(2);
+      }
+      // commander negation: --no-cold-start sets coldStart=false; default true.
+      const skipColdStart = opts.coldStart === false;
+      const skipSummary = opts.summary === false;
+
+      setTuiMode(true);
+      const tower = new Tower(undefined, {
+        skipHooks: true,
+        skipColdStart,
+        skipSummary,
+        readOnly: skipColdStart,
+      });
+      try {
+        await tower.start();
+      } catch (err) {
+        logger.error('picker: tower start failed', { error: String(err) });
+        // Best effort — write cancel and exit non-zero so wrapper can detect.
+        try { fs.writeFileSync(opts.output, '{"action":"cancel"}\n'); } catch {}
+        process.exit(1);
+      }
+
+      // Redirect React/ink console warnings to logger (prevents TUI corruption)
+      const origConsoleError = console.error;
+      const origConsoleWarn = console.warn;
+      console.error = (...args: unknown[]) => logger.error('console.error: ' + args.map(a => a instanceof Error ? a.stack ?? String(a) : String(a)).join(' '));
+      console.warn = (...args: unknown[]) => logger.warn('console.warn: ' + args.map(String).join(' '));
+
+      // Route ink output to /dev/tty so stdout stays clean for downstream tools
+      // that may capture popmux's stdout independently from the picker tmpfile.
+      // Falls back to process.stdout if /dev/tty is unavailable (e.g. CI without
+      // a controlling terminal). stderr is unchanged (debug + READY signal).
+      let renderOpts: Parameters<typeof render>[1] = undefined;
+      try {
+        const ttyFd = fs.openSync('/dev/tty', 'w');
+        const ttyStream = fs.createWriteStream('', { fd: ttyFd }) as unknown as NodeJS.WriteStream;
+        // ink reads .columns/.rows from the stream — proxy them from process.stdout
+        Object.defineProperty(ttyStream, 'columns', { get: () => process.stdout.columns ?? 80 });
+        Object.defineProperty(ttyStream, 'rows', { get: () => process.stdout.rows ?? 24 });
+        renderOpts = { stdout: ttyStream };
+      } catch {
+        // No tty available — fall back to default stdout
+      }
+
+      // Enter alternate screen on the tty (or stdout) so popup contents don't
+      // leak into the parent terminal's scrollback.
+      try {
+        const out = (renderOpts?.stdout as NodeJS.WriteStream | undefined) ?? process.stdout;
+        out.write('\x1b[?1049h\x1b[H');
+      } catch {}
+
+      const { waitUntilExit } = render(
+        React.createElement(App, { tower, pickerMode: true, outputPath: opts.output }),
+        renderOpts,
+      );
+      try { await waitUntilExit(); } catch {}
+
+      try {
+        const out = (renderOpts?.stdout as NodeJS.WriteStream | undefined) ?? process.stdout;
+        out.write('\x1b[?1049l');
+      } catch {}
+
+      console.error = origConsoleError;
+      console.warn = origConsoleWarn;
+      // If we got here without writeAndExit firing, treat as cancel so the
+      // wrapper script always finds a parseable file (or empty cancel).
+      try { fs.writeFileSync(opts.output, '{"action":"cancel"}\n'); } catch {}
+      process.exit(0);
+    }
+
+    // === Default dashboard ================================================
     // If not inside tmux, launch cc-tower inside a tmux session
     if (!process.env['TMUX']) {
       // Check if session already exists
