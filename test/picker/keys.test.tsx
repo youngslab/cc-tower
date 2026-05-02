@@ -127,6 +127,29 @@ describe('picker keys (ink-testing-library)', () => {
     unmount();
   });
 
+  // ── Test 1b: 'g' on dashboard → action: 'go' (B2 explicit) ───────────────
+  it("'g' on highlighted session writes go JSON directly from dashboard", async () => {
+    const session = makeSession({ paneId: '%9', sessionId: 'go-key', host: 'local' });
+    const tower = makeMockTower([session]);
+
+    const { stdin, unmount } = render(
+      <App tower={tower} pickerMode={true} outputPath={outputPath} />,
+    );
+
+    await settle();
+    stdin.write('g');
+    await settle();
+
+    expect(fs.existsSync(outputPath)).toBe(true);
+    const result = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
+    expect(result.action).toBe('go');
+    expect(result.paneId).toBe('%9');
+    expect(result.sessionId).toBe('go-key');
+    expect(result.host).toBe('local');
+
+    unmount();
+  });
+
   // ── Test 2: '/' → SendInput view, text → Enter → action: 'send' ──────────
   it('/ opens SendInput and Enter submits send JSON', async () => {
     const session = makeSession({ paneId: '%7', sessionId: 'send-sess' });
