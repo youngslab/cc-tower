@@ -17,10 +17,19 @@ import { disableLegacyCcTowerPlugin } from './migrate/legacy-plugin.js';
 // Mark spawn time as early as possible — used by --picker --output to compute
 // "READY <ms>" perf SLO for sub-second popup spawn.
 markSpawn();
+const APP_VERSION = (() => {
+    try {
+        const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+        return pkg.version ?? '0.0.0';
+    }
+    catch {
+        return '0.0.0';
+    }
+})();
 program
     .name('popmux')
     .description('Claude Code Session Control Tower')
-    .version('0.1.0');
+    .version(APP_VERSION);
 // Default: TUI dashboard (or picker mode when --picker is set)
 program
     .option('--picker', 'Run as picker (TUI + JSON output on action, then exit)')

@@ -19,10 +19,19 @@ import { disableLegacyCcTowerPlugin } from './migrate/legacy-plugin.js';
 // "READY <ms>" perf SLO for sub-second popup spawn.
 markSpawn();
 
+const APP_VERSION = (() => {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version?: string };
+    return pkg.version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+})();
+
 program
   .name('popmux')
   .description('Claude Code Session Control Tower')
-  .version('0.1.0');
+  .version(APP_VERSION);
 
 // Default: TUI dashboard (or picker mode when --picker is set)
 program
