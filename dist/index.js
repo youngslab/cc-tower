@@ -11,13 +11,115 @@ import { App } from './ui/App.js';
 import { tmux } from './tmux/commands.js';
 import { logger, setTuiMode } from './utils/logger.js';
 import { loadConfig } from './config/loader.js';
+import { markSpawn } from './picker/protocol.js';
+import { detectLegacy, migrateFromCcTower } from './migrate/from-cc-tower.js';
+import { disableLegacyCcTowerPlugin } from './migrate/legacy-plugin.js';
+// Mark spawn time as early as possible — used by --picker --output to compute
+// "READY <ms>" perf SLO for sub-second popup spawn.
+markSpawn();
 program
     .name('popmux')
     .description('Claude Code Session Control Tower')
     .version('0.1.0');
-// Default: TUI dashboard
+// Default: TUI dashboard (or picker mode when --picker is set)
 program
-    .action(async () => {
+    .option('--picker', 'Run as picker (TUI + JSON output on action, then exit)')
+    .option('--output <path>', 'Output path for picker result JSON (required with --picker)')
+    .option('--no-cold-start', 'Skip JSONL coldStart scans — read state.json only (fast popup mode)')
+    .option('--no-summary', 'Disable LLM summarization — use cached fields only')
+    .action(async (opts) => {
+    // === Picker mode (one-shot, JSON-via-tmpfile) =========================
+    if (opts.picker) {
+        if (!opts.output) {
+            console.error('--picker requires --output <path>');
+            process.exit(2);
+        }
+        // commander negation: --no-cold-start sets coldStart=false; default true.
+        const skipColdStart = opts.coldStart === false;
+        const skipSummary = opts.summary === false;
+        setTuiMode(true);
+        const tower = new Tower(undefined, {
+            skipHooks: true,
+            skipColdStart,
+            skipSummary,
+            readOnly: skipColdStart,
+        });
+        try {
+            await tower.start();
+        }
+        catch (err) {
+            logger.error('picker: tower start failed', { error: String(err) });
+            // Best effort — write cancel and exit non-zero so wrapper can detect.
+            try {
+                fs.writeFileSync(opts.output, '{"action":"cancel"}\n');
+            }
+            catch { }
+            process.exit(1);
+        }
+        // Redirect React/ink console warnings to logger (prevents TUI corruption)
+        const origConsoleError = console.error;
+        const origConsoleWarn = console.warn;
+        console.error = (...args) => logger.error('console.error: ' + args.map(a => a instanceof Error ? a.stack ?? String(a) : String(a)).join(' '));
+        console.warn = (...args) => logger.warn('console.warn: ' + args.map(String).join(' '));
+        // Route ink output to /dev/tty so stdout stays clean for downstream tools
+        // that may capture popmux's stdout independently from the picker tmpfile.
+        // Exit with code 3 if /dev/tty is unavailable — picker MUST run inside a
+        // terminal/popup (tmux display-popup, etc.). A cancel JSON is written so
+        // the wrapper script always finds a parseable result.
+        // Exit code 3 = "no-tty" (wrapper should treat as silent skip/cancel).
+        let renderOpts = undefined;
+        try {
+            const ttyFd = fs.openSync('/dev/tty', 'w');
+            const ttyStream = fs.createWriteStream('', { fd: ttyFd });
+            // ink reads .columns/.rows from the stream — proxy them from process.stdout
+            Object.defineProperty(ttyStream, 'columns', { get: () => process.stdout.columns ?? 80 });
+            Object.defineProperty(ttyStream, 'rows', { get: () => process.stdout.rows ?? 24 });
+            renderOpts = { stdout: ttyStream };
+        }
+        catch {
+            // No TTY available — picker must run inside a terminal/popup.
+            process.stderr.write('popmux: --picker requires a TTY (e.g., tmux popup or terminal). Use the dashboard mode instead.\n');
+            try {
+                fs.writeFileSync(opts.output, JSON.stringify({ action: 'cancel' }) + '\n');
+            }
+            catch { }
+            process.exit(3); // exit code 3 = no-tty (wrapper treats as silent cancel)
+        }
+        // Enter alternate screen on the tty (or stdout) so popup contents don't
+        // leak into the parent terminal's scrollback.
+        try {
+            const out = renderOpts?.stdout ?? process.stdout;
+            out.write('\x1b[?1049h\x1b[H');
+        }
+        catch { }
+        const { waitUntilExit } = render(React.createElement(App, { tower, pickerMode: true, outputPath: opts.output }), renderOpts);
+        try {
+            await waitUntilExit();
+        }
+        catch { }
+        try {
+            const out = renderOpts?.stdout ?? process.stdout;
+            out.write('\x1b[?1049l');
+        }
+        catch { }
+        console.error = origConsoleError;
+        console.warn = origConsoleWarn;
+        // If we got here without writeAndExit firing, treat as cancel so the
+        // wrapper script always finds a parseable file (or empty cancel).
+        try {
+            fs.writeFileSync(opts.output, '{"action":"cancel"}\n');
+        }
+        catch { }
+        process.exit(0);
+    }
+    // === Default dashboard ================================================
+    // Warn if legacy popmux data exists and migration hasn't run yet
+    if (!opts.picker) {
+        const legacy = detectLegacy();
+        if (legacy.hasSrcDir && !legacy.hasMarker) {
+            process.stderr.write('[migrate] legacy ~/.config/popmux detected. Run: popmux migrate (or popmux migrate after rename)\n');
+        }
+    }
     // If not inside tmux, launch popmux inside a tmux session
     if (!process.env['TMUX']) {
         // Check if session already exists
@@ -295,42 +397,6 @@ program
     }
     process.exit(0);
 });
-// Peek
-program
-    .command('peek <session>')
-    .action(async (sessionArg) => {
-    const tower = new Tower(undefined, { skipHooks: true });
-    await tower.start();
-    const sessions = tower.store.getAll();
-    const s = sessions.find(s => s.sessionId.startsWith(sessionArg) || s.label === sessionArg || s.paneId === sessionArg);
-    if (!s) {
-        console.log(`Session not found: ${sessionArg}`);
-    }
-    else if (s.sshTarget) {
-        await tmux.displayPopup({
-            width: '80%', height: '80%',
-            title: ` ${s.label ? `[${s.label}] ` : ''}${s.projectName} (${s.host})${s.goalSummary ? ` — ${s.goalSummary.slice(0, 60)}` : ''} | prefix+d to close `,
-            command: `ssh -t ${s.sshTarget} "tmux attach"`,
-            closeOnExit: true,
-        });
-    }
-    else if (!s.paneId) {
-        console.log('Session has no tmux pane');
-    }
-    else {
-        const panes = await tmux.listPanes();
-        const targetPane = panes.find(p => p.paneId === s.paneId);
-        if (targetPane) {
-            await tmux.displayPopup({
-                width: '80%', height: '80%',
-                title: ` ${s.label ? `[${s.label}] ` : ''}${s.projectName} (${s.paneId})${s.goalSummary ? ` — ${s.goalSummary.slice(0, 60)}` : ''} | prefix+d to close `,
-                command: `tmux attach -t ${targetPane.sessionName} \\; select-window -t :${targetPane.windowIndex}`,
-                closeOnExit: true,
-            });
-        }
-    }
-    await tower.stop();
-});
 // Watch pane manually
 program
     .command('watch <paneId>')
@@ -354,9 +420,24 @@ program
         const { installRemoteHooks } = await import('./ssh/install-remote-hooks.js');
         const result = await installRemoteHooks(hostConfig.ssh, hostConfig.ssh_options);
         console.log(result.success ? `✓ ${result.message}` : `✗ ${result.message}`);
+        if (result.success) {
+            const hint = opts.remote;
+            process.stderr.write('\n');
+            process.stderr.write('Hint: For best performance, configure SSH ControlMaster:\n');
+            process.stderr.write(`  Host ${hint}\n`);
+            process.stderr.write('    ControlMaster auto\n');
+            process.stderr.write('    ControlPath ~/.ssh/cm-%r@%h:%p\n');
+            process.stderr.write('    ControlPersist 10m\n');
+            process.stderr.write('\n');
+            process.stderr.write(`Run \`popmux check-ssh ${hint}\` to verify.\n`);
+        }
     }
     else {
         // Local install
+        // Plan v2 §3.4 / C4: disable legacy popmux plugin if present so v1
+        // hooks stop firing once popmux takes over. Idempotent — second run is
+        // a no-op (plugin.json already gone, .disabled already there).
+        disableLegacyCcTowerPlugin();
         const pluginDir = path.join(os.homedir(), '.claude', 'plugins', 'popmux');
         const hooksDir = path.join(pluginDir, 'hooks');
         fs.mkdirSync(hooksDir, { recursive: true });
@@ -501,6 +582,114 @@ program
         const goal = (s.goalSummary ?? s.currentTask ?? '').slice(0, 60);
         console.log(`${sid}${label}${status}${cwd}${goal}`);
     }
+});
+// Migrate from popmux to popmux
+program
+    .command('migrate')
+    .description('Migrate config and state from popmux (legacy) to popmux')
+    .option('--force', 'Overwrite destination even if data exists')
+    .option('--dry-run', 'Print what would be done without changing files')
+    .action(async (opts) => {
+    const result = migrateFromCcTower({ force: opts.force, dryRun: opts.dryRun });
+    console.log(`State:  ${result.migrated.state ? 'migrated' : 'skipped'}`);
+    console.log(`Config: ${result.migrated.config ? 'migrated' : 'skipped'}`);
+    if (result.migrated.agentIdFilled > 0) {
+        console.log(`agentId filled: ${result.migrated.agentIdFilled} entries`);
+    }
+    if (opts.dryRun) {
+        console.log('(dry-run: no files were changed)');
+    }
+    for (const w of result.warnings) {
+        process.stderr.write(`Warning: ${w}\n`);
+    }
+    if (result.skipped.reason) {
+        process.stderr.write(`Skipped: ${result.skipped.reason}\n`);
+        process.exit(1);
+    }
+});
+// Mirror — manage remote tmux mirror windows (Plan v2 §B3)
+program
+    .command('mirror')
+    .description('Manage popmux remote mirror windows (used by popmux-go wrapper)')
+    .option('--host <host>', 'Remote host name (matches config)')
+    .option('--pane <paneId>', 'Remote tmux pane id, e.g., %5')
+    .option('--ssh-target <target>', 'SSH target string, e.g., user@host')
+    .option('--clean', 'Remove dead and stale mirror windows')
+    .option('--list', 'Print current mirror windows as JSON')
+    .option('--ttl-ms <ms>', 'Override stale-eviction TTL in milliseconds')
+    .action(async (opts) => {
+    const mgr = await import('./mirror/window-manager.js');
+    const ttlMs = opts.ttlMs ? parseInt(opts.ttlMs, 10) : undefined;
+    if (opts.list) {
+        const mirrors = await mgr.listMirrors();
+        console.log(JSON.stringify(mirrors, null, 2));
+        return;
+    }
+    if (opts.clean) {
+        const dead = await mgr.cleanupDeadMirrors();
+        const stale = await mgr.cleanupStaleMirrors({ ttlMs });
+        console.log(`Cleaned ${dead.length} dead, ${stale.length} stale mirror windows`);
+        if (dead.length)
+            console.log(`  dead:  ${dead.join(', ')}`);
+        if (stale.length)
+            console.log(`  stale: ${stale.join(', ')}`);
+        return;
+    }
+    if (!opts.host || !opts.pane || !opts.sshTarget) {
+        console.error('mirror: --host, --pane, --ssh-target are required (unless --clean or --list)');
+        process.exit(2);
+    }
+    await mgr.goToMirror({ host: opts.host, pane: opts.pane, sshTarget: opts.sshTarget }, ttlMs !== undefined ? { ttlMs } : undefined);
+});
+// Spawn — create a new claude session (stub; B4 wrapper will use this)
+program
+    .command('spawn')
+    .description('Spawn a new claude session locally or via ssh (used by popmux-go wrapper)')
+    .option('--cwd <path>', 'Working directory (local only)')
+    .option('--host <host>', 'Remote host name (placeholder — full impl in B4)')
+    .option('--ssh-target <target>', 'SSH target (placeholder — full impl in B4)')
+    .option('--resume <sessionId>', 'Resume an existing session id')
+    .action(async (opts) => {
+    // B3 ships a minimal stub — B4 will flesh out the full local + remote
+    // spawn flow. The wrapper-script integration lives in B4 too. For now,
+    // the local case is enough to validate the CLI surface.
+    if (opts.host && opts.host !== 'local') {
+        console.error('spawn: remote host spawn is implemented in B4. Use the dashboard for now.');
+        process.exit(2);
+    }
+    const cwd = opts.cwd ?? process.cwd();
+    if (!fs.existsSync(cwd)) {
+        console.error(`spawn: cwd does not exist: ${cwd}`);
+        process.exit(2);
+    }
+    if (!process.env['TMUX']) {
+        console.error('spawn: must run inside a tmux session');
+        process.exit(2);
+    }
+    // Build the claude command. Resume takes precedence; otherwise fresh.
+    const claudeBin = 'claude';
+    const claudeArgs = opts.resume ? ['--resume', opts.resume] : [];
+    const cmd = `${claudeBin} ${claudeArgs.map((a) => JSON.stringify(a)).join(' ')}`.trim();
+    // Spawn in a new tmux window in the current session.
+    try {
+        execSync(`tmux new-window -c ${JSON.stringify(cwd)} -n claude ${JSON.stringify(cmd)}`, {
+            stdio: 'inherit',
+        });
+    }
+    catch (err) {
+        console.error(`spawn: tmux new-window failed: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+    }
+});
+// Check SSH ControlMaster configuration (read-only)
+program
+    .command('check-ssh [host]')
+    .description('Check SSH ControlMaster configuration (read-only)')
+    .action(async (host) => {
+    const { checkSsh } = await import('./cli/check-ssh.js');
+    const { ok, report } = checkSsh(host);
+    console.log(report);
+    process.exit(ok ? 0 : 1);
 });
 // Internal: hook CLI fallback
 program

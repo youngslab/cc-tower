@@ -8,7 +8,6 @@ interface Props {
     onSwapFavoriteOrder: (idA: string, idB: string) => void;
     onSelect: (session: Session) => void;
     onSend: (session: Session) => void;
-    onPeek: (session: Session) => void;
     onToggleFavorite: (session: Session) => void;
     onNewSession: () => void;
     onRefresh: (session: Session) => void;
@@ -18,5 +17,5 @@ interface Props {
     initialDisplayOrder: string[];
     onQuit: () => void;
 }
-export declare function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, onCursorChange, onSwapFavoriteOrder, onSelect, onSend, onPeek, onToggleFavorite, onNewSession, onRefresh, onKill, onGo, onQuit, onDisplayOrderChange, initialDisplayOrder }: Props): import("react/jsx-runtime").JSX.Element;
+export declare function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, onCursorChange, onSwapFavoriteOrder, onSelect, onSend, onToggleFavorite, onNewSession, onRefresh, onKill, onGo, onQuit, onDisplayOrderChange, initialDisplayOrder }: Props): import("react/jsx-runtime").JSX.Element;
 export {};

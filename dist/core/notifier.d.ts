@@ -7,10 +7,8 @@ export declare class Notifier extends EventEmitter {
     private store;
     private lastNotification;
     private focused;
-    private peekingSession;
     constructor(config: Config['notifications'], store: SessionStore);
     setFocused(focused: boolean): void;
-    setPeeking(sessionId: string | null): void;
     onStateChange(change: StateChange): void;
     private shouldNotify;
     private notify;

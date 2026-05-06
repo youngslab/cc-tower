@@ -6,7 +6,6 @@ export class Notifier extends EventEmitter {
     store;
     lastNotification = new Map(); // sessionId → timestamp
     focused = true;
-    peekingSession = null;
     constructor(config, store) {
         super();
         this.config = config;
@@ -14,9 +13,6 @@ export class Notifier extends EventEmitter {
     }
     setFocused(focused) {
         this.focused = focused;
-    }
-    setPeeking(sessionId) {
-        this.peekingSession = sessionId;
     }
     onStateChange(change) {
         if (!this.config.enabled)
@@ -46,10 +42,7 @@ export class Notifier extends EventEmitter {
         // 2. Dashboard not focused (suppress_when_focused)
         if (this.config.suppress_when_focused && this.focused)
             return false;
-        // 3. Session not currently being peeked
-        if (this.peekingSession === session.sessionId)
-            return false;
-        // 4. Cooldown
+        // 3. Cooldown
         const lastTime = this.lastNotification.get(session.sessionId) ?? 0;
         if (Date.now() - lastTime < this.config.cooldown * 1000)
             return false;

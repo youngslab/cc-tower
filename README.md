@@ -1,217 +1,166 @@
 # popmux
 
-Claude Code Session Control Tower — monitor and interact with multiple Claude Code sessions in tmux.
+> Multi-agent tmux session picker for AI coding sessions
 
-## Dashboard Preview
+## What is popmux?
+
+popmux is a popup-first picker for browsing and switching between AI
+coding agent sessions (currently Claude Code; codex/gemini support
+planned) running in local and remote tmux servers. Press a key, see
+all your sessions, jump straight in.
 
 ```
-popmux — 5 sessions
-   PANE  LABEL            STATUS    TASK
-1  %3   migration-api    ● EXEC    bash: npm test
-2  %5   frontend-dash    ◐ THINK   "Add tooltip component..."
-3  %7   auth-refactor    ○ IDLE    ✓ Token refresh implemented
-─────────────────────────────────────────────────── (monitor-only)
-4  —    vscode-session   ◐ THINK   Refactoring database layer
-5  —    ssh-dev          ○ IDLE    ✓ Deployment complete
-
-[j/k] Navigate  [1-9] Jump  [Enter] Detail  [p] Peek  [/] Send  [q] Quit
+prefix + Space  →  popmux popup
+                   ┌──────────────┐
+                   │ ● local-1    │  Enter — jump to that session
+                   │ ○ local-2    │  /     — send a message
+                   │ ◐ remote-A   │  q     — cancel
+                   └──────────────┘
 ```
 
-## Features
+## Quick Start
 
-- **Auto-discovery** — Detects Claude Code sessions automatically from `~/.claude/sessions/`
-- **Real-time state tracking** — Monitors session status (idle/thinking/executing/agent) via Claude Code hooks or JSONL fallback
-- **TUI dashboard** — Terminal UI showing all sessions with status, task, and progress
-- **LLM summaries** — Intelligent turn summaries describing what Claude is actually working on
-- **Desktop notifications** — Alerts when sessions idle, error, or complete
-- **Send/Peek** — Send commands to sessions or peek at their output from the dashboard
-- **Remote ready** — SSH socket forwarding support for remote session monitoring (Phase 1.5)
-- **Flexible configuration** — YAML config for notifications, dashboard behavior, and more
+```bash
+npm i -g popmux
+popmux install-hooks
+```
+
+In your `~/.tmux.conf`:
+
+```tmux
+bind-key Space run-shell 'popmux-go'
+```
+
+That's it. `prefix + Space` opens the popup; pressing Enter switches
+the client to the highlighted session.
+
+## Why popup-first?
+
+popmux is designed to be invoked dozens of times a day. The previous
+generation (cc-tower v1) ran a full-screen TUI that took 1–2s to start.
+popmux's `--no-cold-start` mode reads `state.json` only and reaches
+first frame in ~50–100 ms — even on the smallest popup.
+
+The wrapper does the orchestration:
+1. tmux opens a popup running `popmux --picker --output <tmpfile>`
+2. The picker writes a single-line JSON action to the tmpfile and exits
+3. The wrapper reads the JSON and dispatches:
+   - `go` → `tmux switch-client` (local) or `popmux mirror` (remote)
+   - `send` → `popmux send`
+   - `new` → `popmux spawn`
+
+## Architecture
+
+popmux is organized in three layers:
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Picker (popmux --picker --output <file>)           │
+│  Ink/React TUI — renders session list, writes JSON  │
+└────────────────────┬────────────────────────────────┘
+                     │ JSON action file
+┌────────────────────▼────────────────────────────────┐
+│  Wrapper (popmux-go)                                │
+│  Bash — opens tmux popup, reads action, dispatches  │
+└────────────────────┬────────────────────────────────┘
+                     │ CLI calls
+┌────────────────────▼────────────────────────────────┐
+│  Orchestrator (popmux mirror / send / spawn)        │
+│  Node — manages mirror windows, SSH, state          │
+└─────────────────────────────────────────────────────┘
+```
+
+Session discovery feeds state into the picker:
+
+```
+Session Discovery
+    ├─ Local: PID scan + process CWD → project matching
+    └─ Remote: SSH polling (cat ~/.claude/sessions/*.json)
+    ↓
+State Machine (Hook-Primary)
+    ├─ Primary: Claude Code hooks (Unix socket, local or SSH-tunneled)
+    ├─ Fallback: JSONL polling (local fs.watch or SSH tail)
+    └─ Fallback: Process scanning (local only)
+    ↓
+Session Store (in-memory cache with file persistence)
+    ↓
+Picker / TUI Dashboard (Ink + React)
+```
+
+## Multi-agent
+
+popmux currently supports Claude Code only. The agent layer
+(`src/agents/`) is intentionally not behind an interface yet — the
+abstraction will be extracted when codex / gemini get their first
+implementation (2-instances rule). For now `agents.claude` is the
+only namespace.
+
+## Remote SSH sessions
+
+popmux discovers tmux/Claude sessions on remote hosts via SSH. When
+you press Enter on a remote session, popmux creates a persistent
+*mirror window* in a hidden `__popmux_mirrors` tmux session and runs
+`ssh -t target tmux attach -t %paneId` inside it. The next press on
+the same target reuses the open ssh — so you get O(1) jump cost after
+the first connect.
+
+### ControlMaster (recommended)
+
+Add to `~/.ssh/config`:
+
+```
+Host *
+  ControlMaster auto
+  ControlPath ~/.ssh/cm-%r@%h:%p
+  ControlPersist 10m
+```
+
+This drops new ssh handshakes to a few milliseconds. `popmux check-ssh`
+reads your config (read-only) and reports any missing settings.
+
+## Comparison
+
+`claude-tmux` (Rust) is the closest cousin. Both render a popup and
+both let you jump into Claude sessions; popmux differs in:
+
+- Multi-agent abstraction (claude only today, codex/gemini wired up)
+- Remote SSH-attached sessions with persistent mirror windows
+- Picker / wrapper / orchestrator separation (Rust binary picker
+  is feasible but not necessary)
+- Tower mode for full-screen monitoring is still available
+  (`popmux` with no flags)
 
 ## Requirements
 
 - **Node.js 22+** with npm
-- **tmux 3.2+** (for full interactivity; monitor-only works without tmux)
+- **tmux 3.2+**
 - **Claude Code** (installed and configured)
 - **macOS/Linux** (tested on Linux; macOS support pending)
 
 Optional but recommended:
 - `socat` or `nc` (netcat) for faster hook delivery
 
-## Installation
+## Commands
 
-```bash
-npm install -g popmux
-```
-
-> If you get a permission error, either use [nvm](https://github.com/nvm-sh/nvm)/[fnm](https://github.com/Schniz/fnm) (recommended)
-> or run `npm config set prefix ~/.local` and ensure `~/.local/bin` is in your PATH.
-
-### Alternative: Clone and run directly
-
-```bash
-git clone https://github.com/youngslab/popmux.git
-cd popmux
-npm install
-npm link
-```
-
-After any option, `popmux` is available as a command from anywhere.
-
-### 3. Install Hook Plugin
-
-The hook plugin enables real-time state updates. Install it once:
-
-```bash
-popmux install-hooks
-```
-
-This creates `~/.claude/plugins/popmux/` with hook definitions. New Claude Code sessions will immediately report state changes to popmux.
-
-**Note:** Already-running sessions will fall back to JSONL polling until restarted.
-
-## Usage
-
-### Dashboard (TUI) — Main Interface
-
-Launch the interactive dashboard:
-
-```bash
-popmux
-```
-
-The dashboard displays all active Claude Code sessions with real-time status updates. This is the primary interface for monitoring and interacting with sessions.
-
-### CLI Commands
-
-#### List Sessions
-
-Show all sessions in table format:
-
-```bash
-popmux list
-```
-
-Export as JSON:
-
-```bash
-popmux list --json
-```
-
-#### Status
-
-Quick status check of all sessions:
-
-```bash
-popmux status
-```
-
-Show details for one session:
-
-```bash
-popmux status <session>
-```
-
-Where `<session>` can be:
-- Pane ID: `%5`
-- Session ID prefix: `9445bc28` (first 8 chars)
-- Custom label: `migration-api`
-
-#### Send Command to Session
-
-Send a message or command to a running session:
-
-```bash
-popmux send <session> <message>
-```
-
-Examples:
-
-```bash
-# Send by pane ID
-popmux send %5 "npm test"
-
-# Send by label
-popmux send migration-api "npm test -- --watch"
-
-# Send by session ID prefix
-popmux send 9445bc28 "clear"
-```
-
-The command is sent to the session's tmux pane. For SSH-based sessions, the command is delivered via SSH.
-
-#### Peek at Session
-
-Open a read-only popup view of a session's output (tmux popup window):
-
-```bash
-popmux peek <session>
-```
-
-The popup shows the full pane content in a scrollable view. Press `prefix + d` (default: `Ctrl-b d`) to close and return to the dashboard.
-
-#### Inspect Session
-
-Debug session summaries vs. actual JSONL content (no tower startup needed):
-
-```bash
-popmux inspect <session>
-```
-
-Options:
-
-```bash
-popmux inspect migration-api -n 20  # Show last 20 messages
-```
-
-Matches sessions by ID, label, project name, or goal summary. Useful for verifying LLM summaries and recent activity.
-
-#### Label a Session
-
-Assign a human-readable name:
-
-```bash
-popmux label 9445bc28 "feature-branch"
-```
-
-#### Tag Sessions
-
-Add custom tags for organization:
-
-```bash
-popmux tag migration-api backend important
-```
-
-#### Manage Configuration
-
-Edit the config file in your default editor:
-
-```bash
-popmux config
-```
-
-Config location: `~/.config/popmux/config.yaml`
-
-## Dashboard Keyboard Shortcuts
-
-| Key | Action |
-|-----|--------|
-| `j` / `↓` | Navigate down |
-| `k` / `↑` | Navigate up |
-| `1-9` | Jump to session N |
-| `Enter` | View session details |
-| `p` | Peek at session (tmux popup) |
-| `/` | Send command to session |
-| `f` | Toggle favorite (pinned to top) |
-| `n` | New session (creates new Claude Code instance) |
-| `r` | Refresh session (forces state update) |
-| `q` / `Ctrl-C` | Quit with confirmation |
+| Command | Purpose |
+|---|---|
+| `popmux` | Full TUI dashboard |
+| `popmux --picker --output <path>` | Picker mode (used by popmux-go) |
+| `popmux list [--json]` | Print sessions to stdout |
+| `popmux send <session> <message>` | Send a message to a session |
+| `popmux spawn --cwd <p> [--host <h>] [--ssh-target <t>] [--resume <id>]` | Spawn a new claude session |
+| `popmux mirror --host <h> --pane <p> --ssh-target <t>` | Manage remote mirror windows |
+| `popmux mirror --clean` / `--list` | Mirror maintenance |
+| `popmux migrate` | Migrate from `~/.config/cc-tower/` |
+| `popmux install-hooks [--remote <host>]` | Install Claude Code hooks |
+| `popmux check-ssh [<host>]` | Diagnose SSH ControlMaster setup |
 
 ## Configuration
 
 Config file: `~/.config/popmux/config.yaml`
+State file: `~/.config/popmux/state.json`
 
-Create one to customize behavior. Example:
+Example config:
 
 ```yaml
 discovery:
@@ -241,10 +190,6 @@ notifications:
     on_error: true
     on_cost_threshold: 5.0     # USD
     on_session_death: true
-  quiet_hours:
-    enabled: false
-    start: "23:00"
-    end: "07:00"
 
 commands:
   confirm_before_send: true    # confirm when sending to session
@@ -255,127 +200,39 @@ hosts:
   - name: server-a
     ssh: user@192.168.1.10
     hooks: true                # SSH socket forwarding for real-time events
-    # ssh_options: "-i ~/.ssh/id_rsa -p 2222"
-    # claude_dir: "~/.claude"  # custom path if non-standard
   - name: dev-box
     ssh: user@dev.example.com
     hooks: false               # JSONL polling fallback (no remote install needed)
 ```
 
-## SSH Remote Sessions
+## Migrating from cc-tower v1.x
 
-Monitor Claude Code sessions running on remote servers from your local dashboard.
+popmux is the successor to cc-tower. See [MIGRATION.md](./MIGRATION.md)
+for the upgrade path: install popmux, run `popmux migrate`, then
+`popmux install-hooks` to disable the v1 plugin and switch to the new
+socket. The legacy `cc-tower.sock` is still listened on for 14 days
+so v1 hook deliveries don't get lost.
 
-### Setup
+## Manual test checklist
 
-1. Add hosts to `~/.config/popmux/config.yaml` (see above)
-2. Ensure SSH key-based auth works: `ssh user@host "echo ok"`
-3. (Optional) Install hooks on remote for real-time tracking:
-
-```bash
-popmux install-hooks --remote server-a
-```
-
-### Two Modes
-
-| Mode | Config | Latency | Remote Install |
-|------|--------|---------|----------------|
-| **Socket forwarding** | `hooks: true` | ~50ms (real-time) | Required (`install-hooks --remote`) |
-| **JSONL polling** | `hooks: false` | ~3s (polling) | Not needed |
-
-### How It Works
-
-```
-Local (popmux TUI)
-  ├─ SSH tunnel (-R) ──→ Remote: hooks → socket → tunnel → local popmux
-  ├─ SSH poll ──────────→ Remote: cat ~/.claude/sessions/*.json
-  ├─ SSH JSONL tail ───→ Remote: tail -c 262144 session.jsonl
-  ├─ Peek: display-popup → ssh -t host "tmux attach"
-  └─ Send: ssh host "tmux send-keys -t %5 'text' Enter"
-```
-
-Remote sessions appear in the dashboard with a HOST column:
-
-```
-   #  HOST      PANE  LABEL           STATUS    TASK
-   1  local     %7    cc-session      ● EXEC    ...
-   2  local     %5    obsidian        ○ IDLE    ...
-   3  server-a  %3    api-backend     ◐ THINK   ...
-   4  dev-box   %1    ml-pipeline     ● EXEC    ...
-```
-
-## Architecture
-
-popmux combines multiple signals to provide semantic awareness:
-
-```
-Session Discovery
-    ├─ Local: PID scan + process CWD → project matching
-    └─ Remote: SSH polling (cat ~/.claude/sessions/*.json)
-    ↓
-State Machine (Hook-Primary)
-    ├─ Primary: Claude Code hooks (Unix socket, local or SSH-tunneled)
-    ├─ Fallback: JSONL polling (local fs.watch or SSH tail)
-    └─ Fallback: Process scanning (local only)
-    ↓
-Session Store (in-memory cache with file persistence)
-    ↓
-TUI Dashboard (Ink + React)
-    ├─ Dashboard view (session list with HOST column)
-    ├─ Detail view (session info + recent activity)
-    ├─ Send view (local tmux send-keys or SSH)
-    └─ Peek (local session group or SSH tmux attach)
-```
-
-**Key Design Principles:**
-
-- **No persistent daemon** — popmux runs only when the TUI is active
-- **Hook-primary architecture** — Hooks deliver real-time updates; JSONL/process are fallbacks
-- **Monitor-only graceful degradation** — Sessions run outside tmux are still tracked but don't support Peek/Send
-- **Cold start recovery** — On startup, reads `~/.claude/sessions/` and JSONL files to restore current state
-
-## Known Limitations
-
-### Peek Popup: Clipboard (OSC52) Not Supported
-
-tmux `display-popup` does not forward OSC52 escape sequences to the parent terminal. This is a [confirmed tmux limitation](https://github.com/tmux/tmux/issues/3817) — the maintainer states "OSC 52 does not work inside popups." All tmux versions up to 3.6a are affected. `allow-passthrough on/all` does not help.
-
-**Impact:** Copy operations inside Peek (vim yank, tmux copy-mode) don't reach the system clipboard.
-
-**Workarounds:**
-
-1. **tmux copy-mode** — popmux automatically sets `copy-command` to `xclip`/`xsel` for the peek session, so tmux copy-mode works.
-2. **vim/neovim** — Configure clipboard provider to write OSC52 directly to the parent TTY:
-   ```lua
-   -- neovim: bypass tmux popup by writing to parent TTY
-   vim.g.clipboard = {
-     name = 'OSC 52 via TTY',
-     copy = {
-       ['+'] = function(lines)
-         local encoded = vim.fn.system({'base64', '-w0'}, table.concat(lines, '\n'))
-         local tty = vim.fn.system('tmux display-message -p "#{client_tty}"'):gsub('%s+$', '')
-         local f = io.open(tty, 'w')
-         if f then f:write('\027]52;c;' .. encoded .. '\007'); f:close() end
-       end,
-       ['*'] = function() end,
-     },
-     paste = { ['+'] = function() return vim.fn.split(vim.fn.getreg('+'), '\n') end, ['*'] = function() return {} end },
-   }
-   ```
+1. `bind-key Space run-shell popmux-go` after reload → Space opens popup
+2. Local session Enter → immediate jump to that session
+3. Remote session Enter → mirror window created + ssh connected
+4. Second jump to same remote → mirror reused (no new ssh handshake)
+5. `prefix + d` from mirror window then re-jump → cleanup and recreate
+6. Two tmux clients attach same mirror → status-line `[shared mirror]` warning shown
+7. `/` in picker → single-line prompt → message delivered to session
+8. Run `popmux` outside tmux → clear error or dashboard fallback
+9. Session with v1 hook installed → tracked via cc-tower.sock (14-day window)
+10. After `popmux install-hooks` → stderr shows legacy plugin disabled notice
 
 ## Roadmap
 
-| Phase | Status | Features |
-|-------|--------|----------|
-| **Phase 1** | ✓ Complete | Local MVP: auto-discovery, TUI, hooks, JSONL fallback, Send/Peek |
-| **Phase 1.5** | ✓ Complete | SSH remote: socket forwarding, remote Peek/Send, multi-host dashboard |
-| **Phase 1.6** | TODO | Remote clipboard: copy support in remote Go/Peek (OSC52 or copy-command) |
-| **Phase 2** | Future | Web UI: browser dashboard, team collaboration, cost tracking, analytics |
+- [ ] Codex CLI agent
+- [ ] Gemini CLI agent
+- [ ] Standalone Rust picker binary for sub-50ms cold start
+- [ ] Web dashboard
 
 ## License
 
 MIT
-
-## Support
-
-For issues, questions, or feature requests, open an issue on GitHub or check the PRD.md for detailed technical specifications.

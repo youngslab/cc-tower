@@ -423,6 +423,17 @@ program
       const { installRemoteHooks } = await import('./ssh/install-remote-hooks.js');
       const result = await installRemoteHooks(hostConfig.ssh, hostConfig.ssh_options);
       console.log(result.success ? `✓ ${result.message}` : `✗ ${result.message}`);
+      if (result.success) {
+        const hint = opts.remote;
+        process.stderr.write('\n');
+        process.stderr.write('Hint: For best performance, configure SSH ControlMaster:\n');
+        process.stderr.write(`  Host ${hint}\n`);
+        process.stderr.write('    ControlMaster auto\n');
+        process.stderr.write('    ControlPath ~/.ssh/cm-%r@%h:%p\n');
+        process.stderr.write('    ControlPersist 10m\n');
+        process.stderr.write('\n');
+        process.stderr.write(`Run \`popmux check-ssh ${hint}\` to verify.\n`);
+      }
     } else {
       // Local install
       // Plan v2 §3.4 / C4: disable legacy popmux plugin if present so v1
@@ -678,6 +689,17 @@ program
       console.error(`spawn: tmux new-window failed: ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
     }
+  });
+
+// Check SSH ControlMaster configuration (read-only)
+program
+  .command('check-ssh [host]')
+  .description('Check SSH ControlMaster configuration (read-only)')
+  .action(async (host?: string) => {
+    const { checkSsh } = await import('./cli/check-ssh.js');
+    const { ok, report } = checkSsh(host);
+    console.log(report);
+    process.exit(ok ? 0 : 1);
   });
 
 // Internal: hook CLI fallback

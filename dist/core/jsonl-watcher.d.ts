@@ -1,22 +1,16 @@
 import { EventEmitter } from 'node:events';
-type SessionState = 'idle' | 'thinking' | 'executing';
+/**
+ * Generic JSONL tail watcher.
+ *
+ * Observes append-only JSONL files (Claude Code's transcript format today)
+ * and emits `jsonl-event` for each newly written line. Cold-start scanning
+ * and any agent-specific interpretation of those lines lives in the
+ * per-agent modules under `src/agents/<agent>/`, not here.
+ */
 export declare class JsonlWatcher extends EventEmitter {
     private watchers;
     /** Sessions waiting for their JSONL file to be created */
     private pendingWatchers;
-    /**
-     * Scan a JSONL file to determine the current session state at cold start.
-     * Reads the last meaningful message to infer state.
-     */
-    coldStartScan(jsonlPath: string): SessionState;
-    /**
-     * Extract the last user message content from a JSONL file (for cold start currentTask).
-     */
-    coldStartLastTask(jsonlPath: string): string | undefined;
-    /**
-     * Extract the latest custom-title (/rename) from a JSONL file.
-     */
-    coldStartCustomTitle(jsonlPath: string): string | undefined;
     /**
      * Start watching a JSONL file for new lines. Starts reading from the end
      * of the file so we only emit new events, not historical ones.
@@ -44,4 +38,3 @@ export declare class JsonlWatcher extends EventEmitter {
     readEarlyContext(jsonlPath: string, maxMessages?: number): Promise<string | undefined>;
     unwatchAll(): void;
 }
-export {};

@@ -26,14 +26,31 @@ export declare class Tower extends EventEmitter {
     private remoteDiscovery;
     private remotePollers;
     private skipHooks;
+    private skipColdStart;
+    private skipSummary;
+    private readOnly;
     constructor(config?: Config, opts?: {
         skipHooks?: boolean;
+        skipColdStart?: boolean;
+        skipSummary?: boolean;
+        readOnly?: boolean;
     });
     private lockFd;
     private acquireLock;
     private getTmuxSessionName;
     private releaseLock;
     start(): Promise<void>;
+    /**
+     * Read-only hydration: re-create Session entries from persisted state.json
+     * without scanning processes, watching JSONLs, or triggering LLM summaries.
+     * Used by `--picker --no-cold-start` for sub-second popup spawn.
+     *
+     * Walks persistedMeta entries (sessionId-keyed) — each one carries enough
+     * identity info (cwd, host, pid, sshTarget, startedAt) to reconstruct a
+     * Session. Status is forced to 'idle' since we cannot determine liveness
+     * without a process scan; summaries come straight from the cached fields.
+     */
+    private rehydrateFromState;
     /** Full refresh: re-scan discovery, re-register session, then regenerate LLM summaries. */
     refreshSession(sessionId: string): Promise<void>;
     /**

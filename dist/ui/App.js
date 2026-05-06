@@ -12,33 +12,54 @@ import { DetailView } from './DetailView.js';
 import { SendInput } from './SendInput.js';
 import { NewSession } from './NewSession.js';
 import { getRecentProjects } from '../utils/recent-projects.js';
-export function App({ tower }) {
+import { writeAndExit, emitReady } from '../picker/protocol.js';
+export function App({ tower, pickerMode, outputPath }) {
     const { exit } = useApp();
     const { sessions, tmuxCount } = useSessionStore(tower.store);
-    const { send, peek } = useTmux(tower.config.keys.close);
+    const { send } = useTmux(tower.config.keys.close);
     const [view, setView] = useState('dashboard');
     const [selectedSession, setSelectedSession] = useState(null);
     const [recentProjects, setRecentProjects] = useState([]);
     const [cursorIdentity, setCursorIdentity] = useState(null);
     const handleSelect = useCallback((session) => {
+        if (pickerMode && outputPath) {
+            // Enter = "go" — switch to that session
+            writeAndExit(outputPath, {
+                action: 'go',
+                sessionId: session.sessionId,
+                paneId: session.paneId ?? '',
+                host: session.host ?? 'local',
+                cwd: session.cwd,
+                sshTarget: session.sshTarget ?? null,
+                agentId: 'claude',
+            });
+        }
         setSelectedSession(session);
         setView('detail');
-    }, []);
+    }, [pickerMode, outputPath]);
     const handleSend = useCallback((session) => {
+        // In picker mode, route through the local SendInput so the user can type a
+        // message inline; only emit JSON once they submit. (Empty text = cancel.)
         setSelectedSession(session);
         setView('send');
     }, []);
-    const handlePeek = useCallback(async (session) => {
-        if (!session.hasTmux && !session.sshTarget)
-            return;
-        await peek(session);
-    }, [peek]);
     const handleSendText = useCallback(async (text) => {
+        if (pickerMode && outputPath && selectedSession) {
+            writeAndExit(outputPath, {
+                action: 'send',
+                sessionId: selectedSession.sessionId,
+                paneId: selectedSession.paneId ?? '',
+                host: selectedSession.host ?? 'local',
+                sshTarget: selectedSession.sshTarget ?? null,
+                agentId: 'claude',
+                text,
+            });
+        }
         if (selectedSession) {
             await send(selectedSession, text);
         }
         setView(view === 'send' ? 'dashboard' : 'detail');
-    }, [selectedSession, send, view]);
+    }, [selectedSession, send, view, pickerMode, outputPath]);
     const handleBack = useCallback(() => {
         setView('dashboard');
         setSelectedSession(null);
@@ -63,6 +84,10 @@ export function App({ tower }) {
         void tower.refreshSession(session.sessionId);
     }, [tower]);
     const handleKill = useCallback(async (session) => {
+        if (pickerMode && outputPath) {
+            // Picker doesn't kill — treat 'x' as cancel (no destructive action via tmpfile).
+            writeAndExit(outputPath, { action: 'cancel' });
+        }
         if (!session.pid)
             return;
         // Remove from favorites on kill
@@ -87,6 +112,17 @@ export function App({ tower }) {
         catch { }
     }, [tower]);
     const handleGo = useCallback(async (session) => {
+        if (pickerMode && outputPath) {
+            writeAndExit(outputPath, {
+                action: 'go',
+                sessionId: session.sessionId,
+                paneId: session.paneId ?? '',
+                host: session.host ?? 'local',
+                cwd: session.cwd,
+                sshTarget: session.sshTarget ?? null,
+                agentId: 'claude',
+            });
+        }
         if (!session.paneId)
             return;
         const { execa: ex } = await import('execa');
@@ -174,6 +210,16 @@ export function App({ tower }) {
         return tower.store.getPastSessionsByTarget(sshTarget);
     }, [tower]);
     const handleNewSession = useCallback(async (projectPath, host, resumeSessionId) => {
+        if (pickerMode && outputPath) {
+            writeAndExit(outputPath, {
+                action: 'new',
+                cwd: projectPath,
+                host: host?.name ?? 'local',
+                sshTarget: host?.ssh ?? null,
+                agentId: 'claude',
+                resumeSessionId: resumeSessionId ?? null,
+            });
+        }
         const closeKey = tower.config.keys.close === 'Escape' ? 'Escape' : tower.config.keys.close;
         const name = projectPath.split('/').pop() ?? projectPath;
         const resumeArg = resumeSessionId ? ` --resume ${resumeSessionId}` : '';
@@ -181,7 +227,7 @@ export function App({ tower }) {
         setView('dashboard');
         const { execa: ex } = await import('execa');
         if (host) {
-            // Remote: SSH + tmux new-session in separate session + peek
+            // Remote: SSH + tmux new-session in separate session
             const sessionName = `claude-${name}`.replace(/[^a-zA-Z0-9_-]/g, '-');
             const claudeCmd = host.commandPrefix
                 ? `${host.commandPrefix} sh -c 'cd ${projectPath} && claude${claudeArgs}'`
@@ -193,7 +239,7 @@ export function App({ tower }) {
                     width: '80%',
                     height: '80%',
                     title: ` ⌁ ${host.name}:${name} (new) | ${closeKey} to close `,
-                    command: `tmux bind-key -T popmux-peek ${closeKey} detach-client && ssh -t ${host.ssh} "tmux attach -t ${sessionName}" ; tmux unbind-key -T popmux-peek ${closeKey}`,
+                    command: `tmux bind-key -T popmux-nav ${closeKey} detach-client && ssh -t ${host.ssh} "tmux attach -t ${sessionName}" ; tmux unbind-key -T popmux-nav ${closeKey}`,
                     closeOnExit: true,
                 });
             }
@@ -225,34 +271,15 @@ export function App({ tower }) {
                     ]);
                     windowIndex = stdout.trim();
                 }
-                // Open in popup (peek) — reuse the peek function with a minimal Session-like object
-                // Get the pane ID of the newly created window
-                const { stdout: paneInfo } = await ex('tmux', [
-                    'list-panes', '-t', `${hiveSession}:${windowIndex}`, '-F', '#{pane_id}',
-                ]);
-                const newPaneId = paneInfo.trim();
-                if (newPaneId) {
-                    await peek({
-                        paneId: newPaneId,
-                        pid: 0,
-                        sessionId: resumeSessionId ?? '',
-                        cwd: projectPath,
-                        projectName: name,
-                        host: 'local',
-                        hasTmux: true,
-                        detectionMode: 'jsonl',
-                        status: 'idle',
-                        lastActivity: new Date(),
-                        startedAt: new Date(),
-                        messageCount: 0,
-                        toolCallCount: 0,
-                    });
-                }
+                // Window created — session will be discovered by Tower automatically
             }
             catch { }
         }
     }, [tower]);
     const handleQuit = useCallback(async () => {
+        if (pickerMode && outputPath) {
+            writeAndExit(outputPath, { action: 'cancel' });
+        }
         await tower.stop();
         // Kill the entire popmux tmux session so all outer wrapper processes exit cleanly
         if (process.env['TMUX']) {
@@ -279,6 +306,11 @@ export function App({ tower }) {
         process.stdout.on('resize', onResize);
         return () => { process.stdout.off('resize', onResize); };
     }, [stdout]);
+    // Picker SLO: emit READY <ms> on stderr after first render
+    useEffect(() => {
+        if (pickerMode)
+            emitReady();
+    }, [pickerMode]);
     const termWidth = termSize.width;
     const termHeight = termSize.height;
     const MIN_WIDTH = 60;
@@ -289,6 +321,16 @@ export function App({ tower }) {
     }
     // Dynamic sizing: use 70% of terminal width
     const boxWidth = Math.max(MIN_WIDTH, Math.min(termWidth - 4, Math.floor(termWidth * 0.7)));
-    return (_jsxs(Box, { width: termWidth, height: termHeight, flexDirection: "column", alignItems: "center", justifyContent: "center", children: [view === 'dashboard' && termHeight >= 30 && (_jsxs(Box, { width: boxWidth, justifyContent: "flex-start", alignItems: "flex-end", marginBottom: 0, children: [_jsxs(Box, { flexDirection: "column", children: [_jsx(Text, { color: "cyan", children: ' ██████╗  ██████╗ ████████╗' }), _jsx(Text, { color: "cyan", children: '██╔════╝ ██╔════╝ ╚══██╔══╝' }), _jsx(Text, { color: "cyan", children: '██║      ██║         ██║' }), _jsx(Text, { color: "cyan", children: '╚██████╗ ╚██████╗    ██║' }), _jsx(Text, { color: "cyan", children: ' ╚═════╝  ╚═════╝    ╚═╝' })] }), _jsxs(Box, { flexDirection: "column", justifyContent: "flex-end", marginLeft: 2, children: [_jsxs(Text, { dimColor: true, children: ["v", APP_VERSION] }), _jsxs(Text, { dimColor: true, children: [sessions.length, " sessions"] })] })] })), view === 'dashboard' && termHeight >= 20 && termHeight < 30 && (_jsxs(Box, { width: boxWidth, justifyContent: "flex-start", alignItems: "center", marginBottom: 0, children: [_jsx(Text, { color: "cyan", bold: true, children: "\u25C6 CCT" }), _jsxs(Text, { dimColor: true, children: [" v", APP_VERSION] }), _jsxs(Text, { dimColor: true, children: ["  ", sessions.length, " sessions"] })] })), _jsxs(Box, { flexDirection: "column", borderStyle: "round", borderColor: "cyan", paddingX: 2, paddingY: 1, width: boxWidth, children: [view === 'dashboard' && (_jsx(Dashboard, { sessions: sessions, tmuxCount: tmuxCount, maxTaskWidth: Math.max(10, boxWidth - 43), cursorIdentity: cursorIdentity, onCursorChange: setCursorIdentity, onSwapFavoriteOrder: handleSwapFavoriteOrder, onSelect: handleSelect, onSend: handleSend, onPeek: handlePeek, onToggleFavorite: handleToggleFavorite, onRefresh: handleRefresh, onKill: handleKill, onGo: handleGo, onNewSession: handleOpenNewSession, onQuit: handleQuit, initialDisplayOrder: tower.store.displayOrder, onDisplayOrderChange: (order) => { tower.store.displayOrder = order; } })), view === 'new-session' && (_jsx(NewSession, { projects: recentProjects, hosts: tower.config.hosts.map(h => ({ name: h.name, ssh: h.ssh, commandPrefix: h.command_prefix })), onSelect: handleNewSession, onCancel: () => setView('dashboard'), getPastSessions: getPastSessions, getPastSessionsByTarget: getPastSessionsByTarget, getAllPastSessions: () => tower.store.getAllPastSessions(), onDeleteSession: (id) => tower.store.deletePersistedSession(id) })), view === 'detail' && selectedSession && (_jsx(DetailView, { session: selectedSession, onBack: handleBack, onSend: handleSend, onPeek: handlePeek })), view === 'send' && selectedSession && (_jsx(SendInput, { session: selectedSession, confirmWhenBusy: tower.config.commands.confirm_when_busy, onSend: handleSendText, onCancel: () => setView('dashboard') }))] })] }));
+    return (_jsxs(Box, { width: termWidth, height: termHeight, flexDirection: "column", alignItems: "center", justifyContent: "center", children: [view === 'dashboard' && termHeight >= 30 && (_jsxs(Box, { width: boxWidth, justifyContent: "flex-start", alignItems: "flex-end", marginBottom: 0, children: [_jsxs(Box, { flexDirection: "column", children: [_jsx(Text, { color: "cyan", children: ' ██████╗  ██████╗ ████████╗' }), _jsx(Text, { color: "cyan", children: '██╔════╝ ██╔════╝ ╚══██╔══╝' }), _jsx(Text, { color: "cyan", children: '██║      ██║         ██║' }), _jsx(Text, { color: "cyan", children: '╚██████╗ ╚██████╗    ██║' }), _jsx(Text, { color: "cyan", children: ' ╚═════╝  ╚═════╝    ╚═╝' })] }), _jsxs(Box, { flexDirection: "column", justifyContent: "flex-end", marginLeft: 2, children: [_jsxs(Text, { dimColor: true, children: ["v", APP_VERSION] }), _jsxs(Text, { dimColor: true, children: [sessions.length, " sessions"] })] })] })), view === 'dashboard' && termHeight >= 20 && termHeight < 30 && (_jsxs(Box, { width: boxWidth, justifyContent: "flex-start", alignItems: "center", marginBottom: 0, children: [_jsx(Text, { color: "cyan", bold: true, children: "\u25C6 CCT" }), _jsxs(Text, { dimColor: true, children: [" v", APP_VERSION] }), _jsxs(Text, { dimColor: true, children: ["  ", sessions.length, " sessions"] })] })), _jsxs(Box, { flexDirection: "column", borderStyle: "round", borderColor: "cyan", paddingX: 2, paddingY: 1, width: boxWidth, children: [view === 'dashboard' && (_jsx(Dashboard, { sessions: sessions, tmuxCount: tmuxCount, maxTaskWidth: Math.max(10, boxWidth - 43), cursorIdentity: cursorIdentity, onCursorChange: setCursorIdentity, onSwapFavoriteOrder: handleSwapFavoriteOrder, onSelect: handleSelect, onSend: handleSend, onToggleFavorite: handleToggleFavorite, onRefresh: handleRefresh, onKill: handleKill, onGo: handleGo, onNewSession: handleOpenNewSession, onQuit: handleQuit, initialDisplayOrder: tower.store.displayOrder, onDisplayOrderChange: (order) => { tower.store.displayOrder = order; } })), view === 'new-session' && (_jsx(NewSession, { projects: recentProjects, hosts: tower.config.hosts.map(h => ({ name: h.name, ssh: h.ssh, commandPrefix: h.command_prefix })), onSelect: handleNewSession, onCancel: () => {
+                            if (pickerMode && outputPath) {
+                                writeAndExit(outputPath, { action: 'cancel' });
+                            }
+                            setView('dashboard');
+                        }, getPastSessions: getPastSessions, getPastSessionsByTarget: getPastSessionsByTarget, getAllPastSessions: () => tower.store.getAllPastSessions(), onDeleteSession: (id) => tower.store.deletePersistedSession(id) })), view === 'detail' && selectedSession && (_jsx(DetailView, { session: selectedSession, onBack: handleBack, onSend: handleSend })), view === 'send' && selectedSession && (_jsx(SendInput, { session: selectedSession, confirmWhenBusy: tower.config.commands.confirm_when_busy, onSend: handleSendText, onCancel: () => {
+                            if (pickerMode && outputPath) {
+                                writeAndExit(outputPath, { action: 'cancel' });
+                            }
+                            setView('dashboard');
+                        } }))] })] }));
 }
 //# sourceMappingURL=App.js.map

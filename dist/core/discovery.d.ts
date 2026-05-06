@@ -23,8 +23,8 @@ export declare class DiscoveryEngine extends EventEmitter {
     stop(): void;
     scanOnce(): Promise<SessionInfo[]>;
     /**
-     * Fallback: discover Claude sessions by scanning running processes.
-     * Used when ~/.claude/sessions/ is empty (Claude Code >= 2.1.77).
+     * Fallback path: ask the claude agent to scan running processes, then
+     * apply the same emit-and-track bookkeeping as the file-based path.
      */
-    private scanProcesses;
+    private scanProcessesViaAgent;
 }
