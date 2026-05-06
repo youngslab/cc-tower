@@ -12,25 +12,25 @@ import { tmux } from './tmux/commands.js';
 import { logger, setTuiMode } from './utils/logger.js';
 import { loadConfig } from './config/loader.js';
 program
-    .name('cc-tower')
+    .name('popmux')
     .description('Claude Code Session Control Tower')
     .version('0.1.0');
 // Default: TUI dashboard
 program
     .action(async () => {
-    // If not inside tmux, launch cc-tower inside a tmux session
+    // If not inside tmux, launch popmux inside a tmux session
     if (!process.env['TMUX']) {
         // Check if session already exists
         let sessionExists = false;
         try {
-            execSync('tmux has-session -t claude-cc-tower 2>/dev/null', { stdio: 'ignore' });
+            execSync('tmux has-session -t claude-popmux 2>/dev/null', { stdio: 'ignore' });
             sessionExists = true;
         }
         catch {
             sessionExists = false;
         }
         if (sessionExists) {
-            const child = spawn('tmux', ['attach', '-t', 'claude-cc-tower'], { stdio: 'inherit' });
+            const child = spawn('tmux', ['attach', '-t', 'claude-popmux'], { stdio: 'inherit' });
             child.on('close', (code) => process.exit(code ?? 0));
             child.on('error', () => process.exit(1));
         }
@@ -40,8 +40,8 @@ program
             const entryScript = path.resolve(import.meta.dirname, '..', 'src', 'index.tsx');
             const usesTsx = fs.existsSync(entryScript);
             const args = usesTsx
-                ? ['new-session', '-s', 'claude-cc-tower', '-c', cwd, '--', 'npx', 'tsx', entryScript]
-                : ['new-session', '-s', 'claude-cc-tower', '-c', cwd, '--', ...process.argv];
+                ? ['new-session', '-s', 'claude-popmux', '-c', cwd, '--', 'npx', 'tsx', entryScript]
+                : ['new-session', '-s', 'claude-popmux', '-c', cwd, '--', ...process.argv];
             const child = spawn('tmux', args, { stdio: 'inherit' });
             child.on('close', (code) => process.exit(code ?? 0));
             child.on('error', () => process.exit(1));
@@ -56,10 +56,10 @@ program
     catch (err) {
         if (err?.message?.includes('already running')) {
             // Another instance is running — try to attach to its tmux session
-            console.error('cc-tower is already running.');
+            console.error('popmux is already running.');
             try {
                 // Read tmux session name from lock file (line 2)
-                const lockPath = path.join(os.homedir(), '.config', 'cc-tower', 'tower.lock');
+                const lockPath = path.join(os.homedir(), '.config', 'popmux', 'tower.lock');
                 const lockLines = fs.readFileSync(lockPath, 'utf8').trim().split('\n');
                 const sessionName = lockLines[1]?.trim() || '';
                 if (!sessionName)
@@ -185,9 +185,9 @@ program
     const { parseJsonlLine } = await import('./utils/jsonl-parser.js');
     const { cwdToSlug } = await import('./utils/slug.js');
     // Read state.json directly (no tower startup)
-    const statePath = path.join(os.homedir(), '.config', 'cc-tower', 'state.json');
+    const statePath = path.join(os.homedir(), '.config', 'popmux', 'state.json');
     if (!fs.existsSync(statePath)) {
-        console.log('No state.json found. Run cc-tower first.');
+        console.log('No state.json found. Run popmux first.');
         process.exit(1);
     }
     const rawState = JSON.parse(fs.readFileSync(statePath, 'utf8'));
@@ -348,7 +348,7 @@ program
         const hostConfig = config.hosts.find(h => h.name === opts.remote);
         if (!hostConfig) {
             console.log(`Host not found in config: ${opts.remote}`);
-            console.log('Configure hosts in ~/.config/cc-tower/config.yaml');
+            console.log('Configure hosts in ~/.config/popmux/config.yaml');
             process.exit(1);
         }
         const { installRemoteHooks } = await import('./ssh/install-remote-hooks.js');
@@ -357,12 +357,12 @@ program
     }
     else {
         // Local install
-        const pluginDir = path.join(os.homedir(), '.claude', 'plugins', 'cc-tower');
+        const pluginDir = path.join(os.homedir(), '.claude', 'plugins', 'popmux');
         const hooksDir = path.join(pluginDir, 'hooks');
         fs.mkdirSync(hooksDir, { recursive: true });
         // Copy hooks files from our package
         const srcHooksDir = path.resolve(import.meta.dirname, '..', 'hooks');
-        for (const file of ['hooks.json', 'plugin.json', 'cc-tower-hook.sh']) {
+        for (const file of ['hooks.json', 'plugin.json', 'popmux-hook.sh']) {
             const src = path.join(srcHooksDir, file);
             const dest = path.join(file === 'plugin.json' ? pluginDir : hooksDir, file);
             if (fs.existsSync(src)) {
@@ -373,7 +373,7 @@ program
             }
         }
         console.log(`✓ Hook plugin installed at ${pluginDir}`);
-        console.log('  New Claude Code sessions will report to cc-tower.');
+        console.log('  New Claude Code sessions will report to popmux.');
         console.log('  Already running sessions use JSONL fallback.');
     }
 });
@@ -417,11 +417,11 @@ program
 program
     .command('config')
     .action(() => {
-    const configPath = path.join(os.homedir(), '.config', 'cc-tower', 'config.yaml');
+    const configPath = path.join(os.homedir(), '.config', 'popmux', 'config.yaml');
     const editor = process.env['EDITOR'] ?? 'vi';
     if (!fs.existsSync(configPath)) {
         fs.mkdirSync(path.dirname(configPath), { recursive: true });
-        fs.writeFileSync(configPath, '# cc-tower configuration\n# See PRD for available options\n');
+        fs.writeFileSync(configPath, '# popmux configuration\n# See PRD for available options\n');
     }
     execSync(`${JSON.stringify(editor)} ${JSON.stringify(configPath)}`, { stdio: 'inherit' });
 });
@@ -432,7 +432,7 @@ program
     .description('Show current session state from the running Tower instance')
     .action(async (opts) => {
     const net = await import('node:net');
-    const socketPath = `${process.env['XDG_RUNTIME_DIR'] ?? '/tmp'}/cc-tower.sock`;
+    const socketPath = `${process.env['XDG_RUNTIME_DIR'] ?? '/tmp'}/popmux.sock`;
     const queryRunning = () => new Promise((resolve) => {
         const client = net.createConnection(socketPath, () => {
             client.write(JSON.stringify({ event: 'query' }) + '\n');
@@ -455,8 +455,8 @@ program
     let source = 'live';
     if (!sessions) {
         // Fallback: read state.json directly
-        const statePath = path.join(os.homedir(), '.local', 'share', 'cc-tower', 'state.json');
-        const altStatePath = path.join(os.homedir(), '.config', 'cc-tower', 'state.json');
+        const statePath = path.join(os.homedir(), '.local', 'share', 'popmux', 'state.json');
+        const altStatePath = path.join(os.homedir(), '.config', 'popmux', 'state.json');
         const stateFile = fs.existsSync(statePath) ? statePath : fs.existsSync(altStatePath) ? altStatePath : null;
         if (stateFile) {
             try {
@@ -507,7 +507,7 @@ program
     .command('hook <event>')
     .action(async (event) => {
     const net = await import('node:net');
-    const socketPath = `${process.env['XDG_RUNTIME_DIR'] ?? '/tmp'}/cc-tower.sock`;
+    const socketPath = `${process.env['XDG_RUNTIME_DIR'] ?? '/tmp'}/popmux.sock`;
     const payload = JSON.stringify({
         event,
         sid: process.env['CLAUDE_SESSION_ID'] ?? 'unknown',

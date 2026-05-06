@@ -1,7 +1,7 @@
 #!/bin/sh
 # Read stdin JSON from Claude Code hooks (contains session_id, tool_name, etc.)
 CONTEXT=$(cat)
-SOCKET="${XDG_RUNTIME_DIR:-/tmp}/cc-tower.sock"
+SOCKET="${XDG_RUNTIME_DIR:-/tmp}/popmux.sock"
 
 # Extract session_id from stdin JSON (Claude Code provides this in all hook events)
 SID=$(printf '%s' "$CONTEXT" | sed -n 's/.*"session_id" *: *"\([^"]*\)".*/\1/p' | head -1)

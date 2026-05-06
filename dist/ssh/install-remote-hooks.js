@@ -8,16 +8,16 @@ export async function installRemoteHooks(sshTarget, sshOptions) {
     const localHooksDir = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..', 'hooks');
     try {
         // 1. Create remote directory
-        await sshExec(sshTarget, 'mkdir -p ~/.claude/plugins/cc-tower/hooks', { sshOptions });
+        await sshExec(sshTarget, 'mkdir -p ~/.claude/plugins/popmux/hooks', { sshOptions });
         // 2. SCP hooks files
-        const scpFiles = `scp ${localHooksDir}/hooks.json ${localHooksDir}/cc-tower-hook.sh ${sshTarget}:~/.claude/plugins/cc-tower/hooks/`;
+        const scpFiles = `scp ${localHooksDir}/hooks.json ${localHooksDir}/popmux-hook.sh ${sshTarget}:~/.claude/plugins/popmux/hooks/`;
         await runShell(scpFiles);
         // 3. SCP plugin.json
-        await runShell(`scp ${localHooksDir}/plugin.json ${sshTarget}:~/.claude/plugins/cc-tower/`);
+        await runShell(`scp ${localHooksDir}/plugin.json ${sshTarget}:~/.claude/plugins/popmux/`);
         // 4. Make hook script executable
-        await sshExec(sshTarget, 'chmod +x ~/.claude/plugins/cc-tower/hooks/cc-tower-hook.sh', { sshOptions });
+        await sshExec(sshTarget, 'chmod +x ~/.claude/plugins/popmux/hooks/popmux-hook.sh', { sshOptions });
         // 5. Verify
-        const verify = await sshExec(sshTarget, 'ls ~/.claude/plugins/cc-tower/hooks/hooks.json', { sshOptions });
+        const verify = await sshExec(sshTarget, 'ls ~/.claude/plugins/popmux/hooks/hooks.json', { sshOptions });
         if (verify.trim()) {
             return { success: true, message: `Hook plugin installed on ${sshTarget}` };
         }

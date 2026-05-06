@@ -103,7 +103,7 @@ export function App({ tower }) {
             const setupCmd = `PINFO=\\$(${paneSelect}); ` +
                 `if [ -z "\\$PINFO" ]; then ${restartCmd}; else ` +
                 `SESS=\\$(echo \\$PINFO | awk '{print \\$2}'); WIDX=\\$(echo \\$PINFO | awk '{print \\$3}'); ` +
-                `GO=_cctower_go_\\$\\$; tmux kill-session -t \\$GO 2>/dev/null; ` +
+                `GO=_popmux_go_\\$\\$; tmux kill-session -t \\$GO 2>/dev/null; ` +
                 `tmux new-session -d -s \\$GO -t \\$SESS && ` +
                 `tmux set-option -t \\$GO window-size largest 2>/dev/null; ` +
                 `tmux bind-key -T root ${tmuxKey} detach-client && ` +
@@ -133,10 +133,10 @@ export function App({ tower }) {
                 await ex('tmux', ['switch-client', '-t', `${targetSession}:${targetWindow}`]);
             }
             catch {
-                // Pane is gone — restart in __cct_playground with --resume
+                // Pane is gone — restart in __popmux_playground with --resume
                 const resumeArg = session.sessionId ? ` --resume ${session.sessionId}` : '';
                 const claudeArgs = (tower.config.claude_args ? ` ${tower.config.claude_args}` : '') + resumeArg;
-                const hiveSession = '__cct_playground';
+                const hiveSession = '__popmux_playground';
                 const windowName = session.projectName.replace(/[^a-zA-Z0-9_-]/g, '-');
                 try {
                     let sessionExists = false;
@@ -193,7 +193,7 @@ export function App({ tower }) {
                     width: '80%',
                     height: '80%',
                     title: ` ⌁ ${host.name}:${name} (new) | ${closeKey} to close `,
-                    command: `tmux bind-key -T cctower-peek ${closeKey} detach-client && ssh -t ${host.ssh} "tmux attach -t ${sessionName}" ; tmux unbind-key -T cctower-peek ${closeKey}`,
+                    command: `tmux bind-key -T popmux-peek ${closeKey} detach-client && ssh -t ${host.ssh} "tmux attach -t ${sessionName}" ; tmux unbind-key -T popmux-peek ${closeKey}`,
                     closeOnExit: true,
                 });
             }
@@ -201,7 +201,7 @@ export function App({ tower }) {
         }
         else {
             // Local: add a window to the hive session (create hive if needed)
-            const hiveSession = '__cct_playground';
+            const hiveSession = '__popmux_playground';
             const windowName = name.replace(/[^a-zA-Z0-9_-]/g, '-');
             try {
                 let sessionExists = false;
@@ -254,11 +254,11 @@ export function App({ tower }) {
     }, [tower]);
     const handleQuit = useCallback(async () => {
         await tower.stop();
-        // Kill the entire cc-tower tmux session so all outer wrapper processes exit cleanly
+        // Kill the entire popmux tmux session so all outer wrapper processes exit cleanly
         if (process.env['TMUX']) {
             try {
                 const { execSync } = await import('node:child_process');
-                execSync('tmux kill-session -t claude-cc-tower 2>/dev/null', { timeout: 2000 });
+                execSync('tmux kill-session -t claude-popmux 2>/dev/null', { timeout: 2000 });
             }
             catch { }
         }

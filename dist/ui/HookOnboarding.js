@@ -14,6 +14,6 @@ export function HookOnboarding({ onInstall, onSkip }) {
     if (installing) {
         return _jsx(Text, { color: "green", children: "Installing hook plugin..." });
     }
-    return (_jsxs(Box, { flexDirection: "column", paddingX: 2, paddingY: 1, borderStyle: "round", borderColor: "yellow", children: [_jsx(Text, { bold: true, color: "yellow", children: "cc-tower hook plugin is not installed." }), _jsx(Text, {}), _jsx(Text, { children: "Works without hooks (JSONL fallback)," }), _jsx(Text, { children: "but hooks provide real-time state tracking." }), _jsx(Text, {}), _jsx(Text, { children: "[y] Install now  [n] Later" })] }));
+    return (_jsxs(Box, { flexDirection: "column", paddingX: 2, paddingY: 1, borderStyle: "round", borderColor: "yellow", children: [_jsx(Text, { bold: true, color: "yellow", children: "popmux hook plugin is not installed." }), _jsx(Text, {}), _jsx(Text, { children: "Works without hooks (JSONL fallback)," }), _jsx(Text, { children: "but hooks provide real-time state tracking." }), _jsx(Text, {}), _jsx(Text, { children: "[y] Install now  [n] Later" })] }));
 }
 //# sourceMappingURL=HookOnboarding.js.map

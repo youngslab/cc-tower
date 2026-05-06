@@ -34,7 +34,7 @@ export function clearSummaryCache(sessionId: string): void {
 
 export async function startLlmSession(): Promise<void> {}
 export async function stopLlmSession(): Promise<void> {}
-export function getLlmSessionName(): string { return '_cctower_llm'; }
+export function getLlmSessionName(): string { return '_popmux_llm'; }
 
 /**
  * Generate a 1-line context summary using `claude --print`.

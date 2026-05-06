@@ -65,7 +65,7 @@ export class Notifier extends EventEmitter {
     if (this.config.channels.desktop) {
       try {
         notifier.notify({
-          title: 'cc-tower',
+          title: 'popmux',
           message,
           sound: this.config.channels.sound,
         });

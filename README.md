@@ -1,11 +1,11 @@
-# cc-tower
+# popmux
 
 Claude Code Session Control Tower — monitor and interact with multiple Claude Code sessions in tmux.
 
 ## Dashboard Preview
 
 ```
-cc-tower — 5 sessions
+popmux — 5 sessions
    PANE  LABEL            STATUS    TASK
 1  %3   migration-api    ● EXEC    bash: npm test
 2  %5   frontend-dash    ◐ THINK   "Add tooltip component..."
@@ -41,7 +41,7 @@ Optional but recommended:
 ## Installation
 
 ```bash
-npm install -g cc-tower
+npm install -g popmux
 ```
 
 > If you get a permission error, either use [nvm](https://github.com/nvm-sh/nvm)/[fnm](https://github.com/Schniz/fnm) (recommended)
@@ -50,23 +50,23 @@ npm install -g cc-tower
 ### Alternative: Clone and run directly
 
 ```bash
-git clone https://github.com/youngslab/cc-tower.git
-cd cc-tower
+git clone https://github.com/youngslab/popmux.git
+cd popmux
 npm install
 npm link
 ```
 
-After any option, `cc-tower` is available as a command from anywhere.
+After any option, `popmux` is available as a command from anywhere.
 
 ### 3. Install Hook Plugin
 
 The hook plugin enables real-time state updates. Install it once:
 
 ```bash
-cc-tower install-hooks
+popmux install-hooks
 ```
 
-This creates `~/.claude/plugins/cc-tower/` with hook definitions. New Claude Code sessions will immediately report state changes to cc-tower.
+This creates `~/.claude/plugins/popmux/` with hook definitions. New Claude Code sessions will immediately report state changes to popmux.
 
 **Note:** Already-running sessions will fall back to JSONL polling until restarted.
 
@@ -77,7 +77,7 @@ This creates `~/.claude/plugins/cc-tower/` with hook definitions. New Claude Cod
 Launch the interactive dashboard:
 
 ```bash
-cc-tower
+popmux
 ```
 
 The dashboard displays all active Claude Code sessions with real-time status updates. This is the primary interface for monitoring and interacting with sessions.
@@ -89,13 +89,13 @@ The dashboard displays all active Claude Code sessions with real-time status upd
 Show all sessions in table format:
 
 ```bash
-cc-tower list
+popmux list
 ```
 
 Export as JSON:
 
 ```bash
-cc-tower list --json
+popmux list --json
 ```
 
 #### Status
@@ -103,13 +103,13 @@ cc-tower list --json
 Quick status check of all sessions:
 
 ```bash
-cc-tower status
+popmux status
 ```
 
 Show details for one session:
 
 ```bash
-cc-tower status <session>
+popmux status <session>
 ```
 
 Where `<session>` can be:
@@ -122,20 +122,20 @@ Where `<session>` can be:
 Send a message or command to a running session:
 
 ```bash
-cc-tower send <session> <message>
+popmux send <session> <message>
 ```
 
 Examples:
 
 ```bash
 # Send by pane ID
-cc-tower send %5 "npm test"
+popmux send %5 "npm test"
 
 # Send by label
-cc-tower send migration-api "npm test -- --watch"
+popmux send migration-api "npm test -- --watch"
 
 # Send by session ID prefix
-cc-tower send 9445bc28 "clear"
+popmux send 9445bc28 "clear"
 ```
 
 The command is sent to the session's tmux pane. For SSH-based sessions, the command is delivered via SSH.
@@ -145,7 +145,7 @@ The command is sent to the session's tmux pane. For SSH-based sessions, the comm
 Open a read-only popup view of a session's output (tmux popup window):
 
 ```bash
-cc-tower peek <session>
+popmux peek <session>
 ```
 
 The popup shows the full pane content in a scrollable view. Press `prefix + d` (default: `Ctrl-b d`) to close and return to the dashboard.
@@ -155,13 +155,13 @@ The popup shows the full pane content in a scrollable view. Press `prefix + d` (
 Debug session summaries vs. actual JSONL content (no tower startup needed):
 
 ```bash
-cc-tower inspect <session>
+popmux inspect <session>
 ```
 
 Options:
 
 ```bash
-cc-tower inspect migration-api -n 20  # Show last 20 messages
+popmux inspect migration-api -n 20  # Show last 20 messages
 ```
 
 Matches sessions by ID, label, project name, or goal summary. Useful for verifying LLM summaries and recent activity.
@@ -171,7 +171,7 @@ Matches sessions by ID, label, project name, or goal summary. Useful for verifyi
 Assign a human-readable name:
 
 ```bash
-cc-tower label 9445bc28 "feature-branch"
+popmux label 9445bc28 "feature-branch"
 ```
 
 #### Tag Sessions
@@ -179,7 +179,7 @@ cc-tower label 9445bc28 "feature-branch"
 Add custom tags for organization:
 
 ```bash
-cc-tower tag migration-api backend important
+popmux tag migration-api backend important
 ```
 
 #### Manage Configuration
@@ -187,10 +187,10 @@ cc-tower tag migration-api backend important
 Edit the config file in your default editor:
 
 ```bash
-cc-tower config
+popmux config
 ```
 
-Config location: `~/.config/cc-tower/config.yaml`
+Config location: `~/.config/popmux/config.yaml`
 
 ## Dashboard Keyboard Shortcuts
 
@@ -209,7 +209,7 @@ Config location: `~/.config/cc-tower/config.yaml`
 
 ## Configuration
 
-Config file: `~/.config/cc-tower/config.yaml`
+Config file: `~/.config/popmux/config.yaml`
 
 Create one to customize behavior. Example:
 
@@ -232,7 +232,7 @@ notifications:
   enabled: true
   min_duration: 30             # don't notify for quick tasks (seconds)
   cooldown: 30                 # min seconds between alerts
-  suppress_when_focused: true  # quiet if cc-tower has focus
+  suppress_when_focused: true  # quiet if popmux has focus
   channels:
     desktop: true              # system notifications
     tmux_bell: true            # tmux bell
@@ -268,12 +268,12 @@ Monitor Claude Code sessions running on remote servers from your local dashboard
 
 ### Setup
 
-1. Add hosts to `~/.config/cc-tower/config.yaml` (see above)
+1. Add hosts to `~/.config/popmux/config.yaml` (see above)
 2. Ensure SSH key-based auth works: `ssh user@host "echo ok"`
 3. (Optional) Install hooks on remote for real-time tracking:
 
 ```bash
-cc-tower install-hooks --remote server-a
+popmux install-hooks --remote server-a
 ```
 
 ### Two Modes
@@ -286,8 +286,8 @@ cc-tower install-hooks --remote server-a
 ### How It Works
 
 ```
-Local (cc-tower TUI)
-  ├─ SSH tunnel (-R) ──→ Remote: hooks → socket → tunnel → local cc-tower
+Local (popmux TUI)
+  ├─ SSH tunnel (-R) ──→ Remote: hooks → socket → tunnel → local popmux
   ├─ SSH poll ──────────→ Remote: cat ~/.claude/sessions/*.json
   ├─ SSH JSONL tail ───→ Remote: tail -c 262144 session.jsonl
   ├─ Peek: display-popup → ssh -t host "tmux attach"
@@ -306,7 +306,7 @@ Remote sessions appear in the dashboard with a HOST column:
 
 ## Architecture
 
-cc-tower combines multiple signals to provide semantic awareness:
+popmux combines multiple signals to provide semantic awareness:
 
 ```
 Session Discovery
@@ -329,7 +329,7 @@ TUI Dashboard (Ink + React)
 
 **Key Design Principles:**
 
-- **No persistent daemon** — cc-tower runs only when the TUI is active
+- **No persistent daemon** — popmux runs only when the TUI is active
 - **Hook-primary architecture** — Hooks deliver real-time updates; JSONL/process are fallbacks
 - **Monitor-only graceful degradation** — Sessions run outside tmux are still tracked but don't support Peek/Send
 - **Cold start recovery** — On startup, reads `~/.claude/sessions/` and JSONL files to restore current state
@@ -344,7 +344,7 @@ tmux `display-popup` does not forward OSC52 escape sequences to the parent termi
 
 **Workarounds:**
 
-1. **tmux copy-mode** — cc-tower automatically sets `copy-command` to `xclip`/`xsel` for the peek session, so tmux copy-mode works.
+1. **tmux copy-mode** — popmux automatically sets `copy-command` to `xclip`/`xsel` for the peek session, so tmux copy-mode works.
 2. **vim/neovim** — Configure clipboard provider to write OSC52 directly to the parent TTY:
    ```lua
    -- neovim: bypass tmux popup by writing to parent TTY

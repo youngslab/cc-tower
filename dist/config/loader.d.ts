@@ -4,7 +4,7 @@ import { type Config } from './defaults.js';
  */
 export declare function expandHome(p: string): string;
 /**
- * Get the default config file path: ~/.config/cc-tower/config.yaml
+ * Get the default config file path: ~/.config/popmux/config.yaml
  */
 export declare function getConfigPath(): string;
 /**
@@ -12,6 +12,6 @@ export declare function getConfigPath(): string;
  * - If the file does not exist, returns defaults.
  * - If the file is malformed YAML, logs a warning and returns defaults.
  *
- * @param configPath - Optional path to the config file. Defaults to ~/.config/cc-tower/config.yaml.
+ * @param configPath - Optional path to the config file. Defaults to ~/.config/popmux/config.yaml.
  */
 export declare function loadConfig(configPath?: string): Config;

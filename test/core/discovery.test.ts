@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { DiscoveryEngine, type SessionInfo } from '../../src/core/discovery.js';
 
 async function makeTempDir(): Promise<string> {
-  return mkdtemp(join(tmpdir(), 'cc-tower-discovery-'));
+  return mkdtemp(join(tmpdir(), 'popmux-discovery-'));
 }
 
 describe('DiscoveryEngine', () => {
@@ -161,12 +161,12 @@ describe('DiscoveryEngine', () => {
     expect(found).toHaveLength(0);
   });
 
-  it('scanOnce skips /tmp/cc-tower-llm session specifically', async () => {
+  it('scanOnce skips /tmp/popmux-llm session specifically', async () => {
     const pid = process.pid;
     const info: SessionInfo = {
       pid,
       sessionId: 'llm-session',
-      cwd: '/tmp/cc-tower-llm',
+      cwd: '/tmp/popmux-llm',
       startedAt: Date.now(),
     };
     await writeFile(join(sessionsDir, `${pid}.json`), JSON.stringify(info));

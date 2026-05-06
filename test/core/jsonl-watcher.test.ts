@@ -10,7 +10,7 @@ describe('JsonlWatcher', () => {
   let watcher: JsonlWatcher;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-tower-test-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'popmux-test-'));
     watcher = new JsonlWatcher();
   });
 

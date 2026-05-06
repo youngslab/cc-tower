@@ -1,6 +1,6 @@
 # CC-Tower Algorithms and State Management
 
-This document describes the key algorithms and state management logic in cc-tower. It focuses on the actual implementation details, not aspirational design.
+This document describes the key algorithms and state management logic in popmux. It focuses on the actual implementation details, not aspirational design.
 
 ---
 
@@ -474,7 +474,7 @@ Prevents multiple Tower instances from running concurrently.
 
 ### Lock Mechanism
 
-**File:** `~/.local/share/cc-tower/tower.lock`
+**File:** `~/.local/share/popmux/tower.lock`
 
 **Format:**
 ```
@@ -545,7 +545,7 @@ Several code paths produce ephemeral Claude processes:
 
 | Source | CWD | Example |
 |--------|-----|---------|
-| LLM summarizer | `/tmp/cc-tower-llm` | `claude --print` for goal/context summaries |
+| LLM summarizer | `/tmp/popmux-llm` | `claude --print` for goal/context summaries |
 | Tool execution shells | `/tmp/claude-<hash>/...` | Claude Code's bash tool subshells |
 | Hook scripts | `/tmp/...` | Shell snapshot environments |
 
@@ -591,7 +591,7 @@ The fallback process scanner already filtered `/tmp` at line 150–151. The sess
 ### Criteria
 
 Only `cwd.startsWith('/tmp')` is checked. This excludes:
-- `/tmp/cc-tower-llm`
+- `/tmp/popmux-llm`
 - `/tmp/claude-<hash>/...`
 - Any other `/tmp/...` path
 
@@ -701,11 +701,11 @@ const isResume = (() => {
 
 ## ps Command — Live State Snapshot
 
-`cc-tower ps` prints the current state of all sessions without starting a new Tower instance. It queries the running Tower via the Unix socket, with a fallback to `state.json` if Tower is not running.
+`popmux ps` prints the current state of all sessions without starting a new Tower instance. It queries the running Tower via the Unix socket, with a fallback to `state.json` if Tower is not running.
 
 ### Query Protocol
 
-Tower's Unix socket (`/tmp/cc-tower.sock` or `$XDG_RUNTIME_DIR/cc-tower.sock`) supports two message types:
+Tower's Unix socket (`/tmp/popmux.sock` or `$XDG_RUNTIME_DIR/popmux.sock`) supports two message types:
 
 | `event` field | Direction | Description |
 |---------------|-----------|-------------|
@@ -724,7 +724,7 @@ Tower's Unix socket (`/tmp/cc-tower.sock` or `$XDG_RUNTIME_DIR/cc-tower.sock`) s
 ### Fallback: state.json
 
 If the socket is unavailable (Tower not running), `ps` reads `state.json` directly:
-- Path: `~/.local/share/cc-tower/state.json` (or `~/.config/cc-tower/state.json`)
+- Path: `~/.local/share/popmux/state.json` (or `~/.config/popmux/state.json`)
 - Contains: persisted metadata (label, tags, goalSummary, etc.) but NOT live status
 - All sessions show `status: ?` in this mode
 
@@ -737,7 +737,7 @@ source: live  (6 sessions)
 
 SID     LABEL             STATUS     CWD                           GOAL
 ────────────────────────────────────────────────────────────────────────────────
-9ec2f593cc-tower          idle       ~/workspace/cc-tower          Fixing /tmp session filtering bug
+9ec2f593popmux          idle       ~/workspace/popmux          Fixing /tmp session filtering bug
 a099dd85shared-storage    thinking   ~/workspace/ccu-2.0/shared-s  Writing performance analysis doc
 ```
 
@@ -764,7 +764,7 @@ a099dd85shared-storage    thinking   ~/workspace/ccu-2.0/shared-s  Writing perfo
 
 ## tmux Session Auto-Rename
 
-When a new Claude session is registered, cc-tower automatically renames the containing tmux session to `claude-{projectName}` so session names are predictable and identifiable.
+When a new Claude session is registered, popmux automatically renames the containing tmux session to `claude-{projectName}` so session names are predictable and identifiable.
 
 ### Trigger
 
@@ -776,7 +776,7 @@ if mapping.paneId is set AND session is local (not SSH)
 ```
 
 `paneId` comes from:
-1. Hook payload `pane` field (`$TMUX_PANE` sent by `cc-tower-hook.sh`)
+1. Hook payload `pane` field (`$TMUX_PANE` sent by `popmux-hook.sh`)
 2. Fallback: PID→TTY→pane resolution
 
 ### Rename Algorithm
@@ -787,7 +787,7 @@ targetName = "claude-" + projectName
 1. tmux.listPanes() → find pane with paneId
 2. If pane not found → abort (no-op)
 3. If pane.sessionName === targetName → already correct, abort
-4. If pane.sessionName === "claude-cc-tower" → never rename (Tower's own session)
+4. If pane.sessionName === "claude-popmux" → never rename (Tower's own session)
 5. If pane.sessionName starts with "claude-" and ≠ targetName → skip
    (already claimed by another project — don't clobber)
 6. Otherwise → tmux.renameSession(pane.sessionName, targetName)
@@ -799,7 +799,7 @@ targetName = "claude-" + projectName
 |-----------|--------|--------|
 | `paneId` not in tmux | no-op | pane may have closed |
 | Already named correctly | no-op | idempotent |
-| Session is `claude-cc-tower` | skip | Tower's own session is sacred |
+| Session is `claude-popmux` | skip | Tower's own session is sacred |
 | Session already `claude-*` | skip | Another project owns it |
 | `tmux rename-session` fails | log debug, swallow | non-fatal |
 
@@ -807,7 +807,7 @@ targetName = "claude-" + projectName
 
 ```
 Project: my-app  →  tmux session renamed to: claude-my-app
-Project: cc-tower →  tmux session: claude-cc-tower (never renamed away)
+Project: popmux →  tmux session: claude-popmux (never renamed away)
 ```
 
 ### Implementation
@@ -917,7 +917,7 @@ execa('tmux', ['rename-session', '-t', target, newName])
 
 ### Configuration
 
-Each remote host is defined in `~/.config/cc-tower/config.yaml`:
+Each remote host is defined in `~/.config/popmux/config.yaml`:
 
 ```yaml
 hosts:

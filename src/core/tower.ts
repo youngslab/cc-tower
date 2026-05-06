@@ -59,7 +59,7 @@ export class Tower extends EventEmitter {
     // readOnly implies skipHooks (no socket bind, no instance lock)
     if (this.readOnly) this.skipHooks = true;
 
-    const persistPath = path.join(os.homedir(), '.config', 'cc-tower', 'state.json');
+    const persistPath = path.join(os.homedir(), '.config', 'popmux', 'state.json');
     // Plan v2 §3.4 dual-socket: bind both popmux.sock (new) and cc-tower.sock
     // (legacy) for the 14-day deprecation window. Existing v1 hooks continue
     // to route to cc-tower.sock; new popmux install-hooks will switch to
@@ -83,7 +83,7 @@ export class Tower extends EventEmitter {
   private lockFd: number | null = null;
 
   private acquireLock(): boolean {
-    const lockPath = path.join(os.homedir(), '.config', 'cc-tower', 'tower.lock');
+    const lockPath = path.join(os.homedir(), '.config', 'popmux', 'tower.lock');
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
     try {
       this.lockFd = fs.openSync(lockPath, 'wx');
@@ -116,7 +116,7 @@ export class Tower extends EventEmitter {
   }
 
   private releaseLock(): void {
-    const lockPath = path.join(os.homedir(), '.config', 'cc-tower', 'tower.lock');
+    const lockPath = path.join(os.homedir(), '.config', 'popmux', 'tower.lock');
     try {
       if (this.lockFd !== null) fs.closeSync(this.lockFd);
       fs.unlinkSync(lockPath);
@@ -137,12 +137,12 @@ export class Tower extends EventEmitter {
       const { execSync } = await import('node:child_process');
       commit = execSync('git rev-parse --short HEAD', { cwd: path.dirname(new URL(import.meta.url).pathname), timeout: 3000 }).toString().trim();
     } catch {}
-    logger.info('tower: starting cc-tower', { version, commit, hosts: this.config.hosts.map(h => h.name) });
+    logger.info('tower: starting popmux', { version, commit, hosts: this.config.hosts.map(h => h.name) });
 
     // === Single Instance Lock ===
     if (!this.skipHooks && !this.acquireLock()) {
       logger.error('tower: another instance is already running');
-      throw new Error('Another cc-tower instance is already running. Kill it first or use the existing one.');
+      throw new Error('Another popmux instance is already running. Kill it first or use the existing one.');
     }
     if (!this.skipHooks) {
       const cleanup = () => this.releaseLock();
@@ -190,7 +190,7 @@ export class Tower extends EventEmitter {
       this.handleHookEvent(event);
     });
 
-    // Wire up query events — respond with live session state (used by `cc-tower ps`)
+    // Wire up query events — respond with live session state (used by `popmux ps`)
     this.hookReceiver.on('query', (conn: import('node:net').Socket) => {
       try {
         const sessions = this.store.getAll();
@@ -287,7 +287,7 @@ export class Tower extends EventEmitter {
     // 11. Setup SSH remote hosts (if configured)
     if (this.config.hosts.length > 0) {
       this.connectionManager = new ConnectionManager();
-      const socketPath = `${process.env['XDG_RUNTIME_DIR'] ?? '/tmp'}/cc-tower.sock`;
+      const socketPath = `${process.env['XDG_RUNTIME_DIR'] ?? '/tmp'}/popmux.sock`;
 
       // Start SSH tunnels for hooks:true hosts
       for (const host of this.config.hosts) {
@@ -514,7 +514,7 @@ export class Tower extends EventEmitter {
       if (!pane) return;
       if (pane.sessionName === targetName) return;
       // Don't rename Tower's own session or sessions already dedicated to another project
-      if (pane.sessionName === 'claude-cc-tower') return;
+      if (pane.sessionName === 'claude-popmux') return;
       if (pane.sessionName.startsWith('claude-') && pane.sessionName !== targetName) return;
       await tmux.renameSession(pane.sessionName, targetName);
       logger.info('tower: renamed tmux session', { from: pane.sessionName, to: targetName, paneId });

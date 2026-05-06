@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 describe('HookReceiver', () => {
-  const socketPath = path.join(os.tmpdir(), `cc-tower-test-${process.pid}.sock`);
+  const socketPath = path.join(os.tmpdir(), `popmux-test-${process.pid}.sock`);
   let receiver: HookReceiver;
 
   afterEach(async () => {

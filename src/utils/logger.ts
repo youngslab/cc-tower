@@ -10,12 +10,12 @@ let tui = false;
 export function setTuiMode(enabled: boolean): void { tui = enabled; }
 
 // Log file: always writes info+ regardless of TUI mode
-const LOG_DIR = join(homedir(), '.config', 'cc-tower');
-const LOG_FILE = join(LOG_DIR, 'cc-tower.log');
+const LOG_DIR = join(homedir(), '.config', 'popmux');
+const LOG_FILE = join(LOG_DIR, 'popmux.log');
 let logFileReady = false;
 
 const MAX_LOG_SIZE = 5 * 1024 * 1024; // 5MB
-const MAX_OLD_LOGS = 3; // keep cc-tower.log.1, .2, .3
+const MAX_OLD_LOGS = 3; // keep popmux.log.1, .2, .3
 
 function ensureLogDir(): void {
   if (logFileReady) return;
@@ -50,7 +50,7 @@ function getConfiguredLevel(): Level {
 
 function shouldLogStderr(level: Level): boolean {
   // In TUI mode, never write to stderr — it corrupts the display.
-  // All logs are captured in the log file (~/.config/cc-tower/cc-tower.log).
+  // All logs are captured in the log file (~/.config/popmux/popmux.log).
   if (tui) return false;
   return LEVELS[level] >= LEVELS[getConfiguredLevel()];
 }

@@ -23,7 +23,7 @@ export function sshExec(
 
     // ControlMaster: reuse existing connection so ProxyCommand (cloudflared) is
     // only spawned once per host instead of on every call.
-    const controlPath = `${tmpdir()}/cc-tower-cm-%r@%h:%p`;
+    const controlPath = `${tmpdir()}/popmux-cm-%r@%h:%p`;
     sshArgs.push(
       '-o', 'ControlMaster=auto',
       '-o', `ControlPath=${controlPath}`,

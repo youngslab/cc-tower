@@ -76,7 +76,7 @@ describe('slugPaneId / unslugPaneId / windowName', () => {
   });
   it('parseWindowName returns null on non-mirror prefix', () => {
     expect(parseWindowName('something-else')).toBeNull();
-    expect(parseWindowName('claude-cc-tower')).toBeNull();
+    expect(parseWindowName('claude-popmux')).toBeNull();
   });
 });
 

@@ -1,7 +1,7 @@
 /**
  * Picker mode protocol — single-line JSON written to a tmpfile, then exit.
  *
- * Used by `popmux --picker --output <path>` (currently `cc-tower --picker`).
+ * Used by `popmux --picker --output <path>` (currently `popmux --picker`).
  * The TUI renders normally, but action keys cause the process to atomic-write
  * a result JSON to <path> and immediately `process.exit(0)`. A wrapper script
  * (e.g. invoked from `tmux display-popup -E`) reads the file after the popup

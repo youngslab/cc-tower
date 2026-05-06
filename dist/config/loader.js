@@ -13,10 +13,10 @@ export function expandHome(p) {
     return p;
 }
 /**
- * Get the default config file path: ~/.config/cc-tower/config.yaml
+ * Get the default config file path: ~/.config/popmux/config.yaml
  */
 export function getConfigPath() {
-    return join(homedir(), '.config', 'cc-tower', 'config.yaml');
+    return join(homedir(), '.config', 'popmux', 'config.yaml');
 }
 /**
  * Recursively merge `override` into `base`, returning a new object.
@@ -46,7 +46,7 @@ function deepMerge(base, override) {
  * - If the file does not exist, returns defaults.
  * - If the file is malformed YAML, logs a warning and returns defaults.
  *
- * @param configPath - Optional path to the config file. Defaults to ~/.config/cc-tower/config.yaml.
+ * @param configPath - Optional path to the config file. Defaults to ~/.config/popmux/config.yaml.
  */
 export function loadConfig(configPath) {
     const resolvedPath = expandHome(configPath ?? getConfigPath());
@@ -60,7 +60,7 @@ export function loadConfig(configPath) {
             return { ...defaults };
         }
         // Other read error — warn and use defaults
-        console.warn(`[cc-tower] Failed to read config file at ${resolvedPath}:`, err);
+        console.warn(`[popmux] Failed to read config file at ${resolvedPath}:`, err);
         return { ...defaults };
     }
     let parsed;
@@ -68,14 +68,14 @@ export function loadConfig(configPath) {
         parsed = yaml.load(raw);
     }
     catch (err) {
-        console.warn(`[cc-tower] Malformed YAML in config file ${resolvedPath}:`, err);
+        console.warn(`[popmux] Malformed YAML in config file ${resolvedPath}:`, err);
         return { ...defaults };
     }
     if (parsed === null || parsed === undefined) {
         return { ...defaults };
     }
     if (typeof parsed !== 'object' || Array.isArray(parsed)) {
-        console.warn(`[cc-tower] Config file ${resolvedPath} must be a YAML mapping, got ${typeof parsed}. Using defaults.`);
+        console.warn(`[popmux] Config file ${resolvedPath} must be a YAML mapping, got ${typeof parsed}. Using defaults.`);
         return { ...defaults };
     }
     return deepMerge(defaults, parsed);

@@ -25,7 +25,7 @@ USAGE
   popmux-go --help     Show this help
 
 ENVIRONMENT
-  POPMUX_BIN           Override the popmux binary name (default: cc-tower).
+  POPMUX_BIN           Override the popmux binary name (default: popmux).
   XDG_RUNTIME_DIR      Used for the picker tmpfile directory.
 
 EXIT CODES
@@ -44,8 +44,8 @@ for cmd in tmux jq; do
   fi
 done
 
-# Determine popmux binary (currently 'cc-tower' until A3 rename).
-POPMUX="${POPMUX_BIN:-cc-tower}"
+# Determine popmux binary (currently 'popmux' until A3 rename).
+POPMUX="${POPMUX_BIN:-popmux}"
 if ! command -v "$POPMUX" >/dev/null 2>&1; then
   echo "popmux-go: '$POPMUX' not found in PATH (set POPMUX_BIN to override)" >&2
   exit 4

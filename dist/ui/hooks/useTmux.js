@@ -62,18 +62,18 @@ export function useTmux(closeKey = 'Escape') {
                 : '';
             const setupCmd = session.paneId
                 ? `PINFO=\\$(${paneSelect}); SESS=\\$(echo \\$PINFO | awk '{print \\$2}'); WIDX=\\$(echo \\$PINFO | awk '{print \\$3}'); ` +
-                    `PEEK=_cctower_peek_\\$\\$; tmux kill-session -t \\$PEEK 2>/dev/null; ` +
+                    `PEEK=_popmux_peek_\\$\\$; tmux kill-session -t \\$PEEK 2>/dev/null; ` +
                     `DEFWIN=\\$(tmux new-session -d -s \\$PEEK -PF '#{window_id}') && ` +
                     `tmux link-window -s \\$SESS:\\$WIDX -t \\$PEEK:99 && ` +
                     `tmux kill-window -t \\$DEFWIN && ` +
                     `tmux set-option -t \\$PEEK aggressive-resize on 2>/dev/null; ` +
                     `tmux set-option -t \\$PEEK status off && ` +
-                    `tmux bind-key -T cctower-peek ${tmuxKey} detach-client && ` +
-                    `TMUX= tmux attach -t \\$PEEK \\\\; set-option key-table cctower-peek; ` +
-                    `tmux unbind-key -T cctower-peek ${tmuxKey}; tmux kill-session -t \\$PEEK 2>/dev/null`
-                : `tmux bind-key -T cctower-peek ${tmuxKey} detach-client && ` +
-                    `tmux attach \\\\; set-option key-table cctower-peek; ` +
-                    `tmux unbind-key -T cctower-peek ${tmuxKey}`;
+                    `tmux bind-key -T popmux-peek ${tmuxKey} detach-client && ` +
+                    `TMUX= tmux attach -t \\$PEEK \\\\; set-option key-table popmux-peek; ` +
+                    `tmux unbind-key -T popmux-peek ${tmuxKey}; tmux kill-session -t \\$PEEK 2>/dev/null`
+                : `tmux bind-key -T popmux-peek ${tmuxKey} detach-client && ` +
+                    `tmux attach \\\\; set-option key-table popmux-peek; ` +
+                    `tmux unbind-key -T popmux-peek ${tmuxKey}`;
             // For peek, tmux is always on the SSH host — commandPrefix (e.g. "docker exec devenv")
             // is for running Claude inside a container, NOT for host-level tmux operations.
             const remoteCmd = setupCmd;
@@ -97,7 +97,7 @@ export function useTmux(closeKey = 'Escape') {
         const targetPane = panes.find(p => p.paneId === resolvedPaneId);
         if (!targetPane)
             return false;
-        const peekName = `_cctower_peek_${process.pid}`;
+        const peekName = `_popmux_peek_${process.pid}`;
         try {
             await tmux.killSession(peekName);
         }
@@ -122,7 +122,7 @@ export function useTmux(closeKey = 'Escape') {
                 width: '80%',
                 height: '80%',
                 title: peekTitle(session, tmuxKey),
-                command: `tmux bind-key -T cctower-peek ${tmuxKey} detach-client && ${clipCmd}; TMUX= tmux attach -t ${peekName} \\; set-option key-table cctower-peek`,
+                command: `tmux bind-key -T popmux-peek ${tmuxKey} detach-client && ${clipCmd}; TMUX= tmux attach -t ${peekName} \\; set-option key-table popmux-peek`,
                 closeOnExit: true,
             });
         }

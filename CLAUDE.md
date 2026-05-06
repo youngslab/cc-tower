@@ -1,4 +1,4 @@
-# cc-tower Development Guidelines
+# popmux Development Guidelines
 
 ## Verification-First Development
 
@@ -10,7 +10,7 @@ If direct verification is not possible, report to the user with clear instructio
 | Tier | Method | Example |
 |------|--------|---------|
 | **1. Automated** | Unit test (`npx vitest run`) | JSONL parser, state machine, summarizer |
-| **2. CLI** | Run CLI command + check output | `LOG_LEVEL=error cc-tower list` |
+| **2. CLI** | Run CLI command + check output | `LOG_LEVEL=error popmux list` |
 | **3. Headless** | Script that starts Tower, waits, checks state | Cold start, LLM summary, session discovery |
 | **4. Manual (report to user)** | Cannot automate — describe what to test | TUI dashboard, Peek popup, keyboard input |
 
@@ -119,13 +119,13 @@ npx tsc && npm publish
 
 - Remote uses SSH alias `github-youngslab` (configured in `~/.ssh/config`)
 - Before push, amend author to: `Jaeyoung Park <jaeyoungs.park@gmail.com>`
-- Remote URL: `git@github-youngslab:youngslab/cc-tower.git`
+- Remote URL: `git@github-youngslab:youngslab/popmux.git`
 
 ## Project Structure
 
 - `src/` — TypeScript source (ESM-only, ink v5 + React)
 - `dist/` — Compiled JS (committed to git for npm install)
-- `bin/cc-tower.js` — Entry point (imports dist/index.js)
+- `bin/popmux.js` — Entry point (imports dist/index.js)
 - `hooks/` — Claude Code hook plugin files
 - `test/` — Vitest tests
 - `doc/` — Architecture and algorithm documentation

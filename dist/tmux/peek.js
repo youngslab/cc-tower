@@ -1,7 +1,7 @@
 import { execa } from 'execa';
 import { tmux } from './commands.js';
 export async function peekSession(opts) {
-    const peekName = `_cctower_peek_${process.pid}`;
+    const peekName = `_popmux_peek_${process.pid}`;
     try {
         await tmux.killSession(peekName);
     }

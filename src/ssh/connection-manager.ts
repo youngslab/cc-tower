@@ -35,7 +35,7 @@ export class ConnectionManager {
     const remoteSocket = localSocket; // same path on remote
     // Use the same ControlPath as sshExec so the tunnel becomes the ControlMaster
     // and subsequent sshExec calls reuse this connection (no extra cloudflared per call).
-    const controlPath = `${tmpdir()}/cc-tower-cm-%r@%h:%p`;
+    const controlPath = `${tmpdir()}/popmux-cm-%r@%h:%p`;
 
     const args: string[] = [];
     if (sshOptions) args.push(...sshOptions.split(/\s+/));
@@ -128,7 +128,7 @@ export class ConnectionManager {
       clearInterval(this.healthTimer);
       this.healthTimer = null;
     }
-    const controlPath = `${tmpdir()}/cc-tower-cm-%r@%h:%p`;
+    const controlPath = `${tmpdir()}/popmux-cm-%r@%h:%p`;
     for (const [name, tunnel] of this.tunnels) {
       try { tunnel.process.kill(); } catch {}
       try {

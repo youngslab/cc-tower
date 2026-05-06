@@ -28,7 +28,7 @@ describe('SessionStore', () => {
   let store: SessionStore;
 
   beforeEach(async () => {
-    tmpDir = await mkdtemp(join(tmpdir(), 'cc-tower-store-'));
+    tmpDir = await mkdtemp(join(tmpdir(), 'popmux-store-'));
     persistPath = join(tmpDir, 'state.json');
     store = new SessionStore(persistPath);
   });

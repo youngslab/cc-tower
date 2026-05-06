@@ -216,7 +216,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
       {/* Quit confirmation popup */}
       {confirmQuit && (
         <Box marginTop={1} borderStyle="round" borderColor="yellow" paddingX={2} paddingY={0} justifyContent="center">
-          <Text color="yellow">Quit cc-tower?  </Text>
+          <Text color="yellow">Quit popmux?  </Text>
           <Text bold color="green">[y] Yes  </Text>
           <Text bold color="red">[n] No</Text>
         </Box>

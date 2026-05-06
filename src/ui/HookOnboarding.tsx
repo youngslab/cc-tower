@@ -23,7 +23,7 @@ export function HookOnboarding({ onInstall, onSkip }: Props) {
 
   return (
     <Box flexDirection="column" paddingX={2} paddingY={1} borderStyle="round" borderColor="yellow">
-      <Text bold color="yellow">cc-tower hook plugin is not installed.</Text>
+      <Text bold color="yellow">popmux hook plugin is not installed.</Text>
       <Text></Text>
       <Text>Works without hooks (JSONL fallback),</Text>
       <Text>but hooks provide real-time state tracking.</Text>

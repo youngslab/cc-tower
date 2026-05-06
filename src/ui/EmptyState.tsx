@@ -20,7 +20,7 @@ export function EmptyState({ inTmux, hookInstalled }: Props) {
 
       {!hookInstalled && (
         <Box marginTop={1}>
-          <Text color="yellow">⚠ Hook plugin not installed — run cc-tower install-hooks for real-time tracking</Text>
+          <Text color="yellow">⚠ Hook plugin not installed — run popmux install-hooks for real-time tracking</Text>
         </Box>
       )}
     </Box>

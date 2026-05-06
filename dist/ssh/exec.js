@@ -15,7 +15,7 @@ export function sshExec(sshTarget, command, opts) {
         }
         // ControlMaster: reuse existing connection so ProxyCommand (cloudflared) is
         // only spawned once per host instead of on every call.
-        const controlPath = `${tmpdir()}/cc-tower-cm-%r@%h:%p`;
+        const controlPath = `${tmpdir()}/popmux-cm-%r@%h:%p`;
         sshArgs.push('-o', 'ControlMaster=auto', '-o', `ControlPath=${controlPath}`, '-o', 'ControlPersist=120');
         // Common options: no TTY allocation, batch mode (no password prompts)
         sshArgs.push('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5');

@@ -28,7 +28,7 @@ export function clearSummaryCache(sessionId) {
 }
 export async function startLlmSession() { }
 export async function stopLlmSession() { }
-export function getLlmSessionName() { return '_cctower_llm'; }
+export function getLlmSessionName() { return '_popmux_llm'; }
 /**
  * Generate a 1-line context summary using `claude --print`.
  * Fully async + non-blocking. Returns cached result if messages unchanged.
