@@ -431,6 +431,11 @@ export class SessionStore extends EventEmitter {
     return Array.from(this.persistedMeta.keys());
   }
 
+  /** Returns all persisted instance entries [identity/paneId, PersistedInstance]. Used by rehydrateFromState. */
+  getPersistedInstanceEntries(): Array<[string, PersistedInstance]> {
+    return Array.from(this.persistedInstances.entries());
+  }
+
   /** Returns persisted remote sessions (new format with sshTarget) for pre-populating known map before first scan. */
   getRestoredRemoteSessions(): Array<{ sessionId: string; pid: number; sshTarget: string; cwd: string; startedAt: number; host: string }> {
     const result = [];

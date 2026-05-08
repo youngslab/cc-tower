@@ -392,14 +392,18 @@ export class Tower extends EventEmitter {
    * without a process scan; summaries come straight from the cached fields.
    */
   private rehydrateFromState(): void {
-    for (const sessionId of this.store.getPersistedKeys()) {
+    for (const [identity, inst] of this.store.getPersistedInstanceEntries()) {
+      const sessionId = inst.lastSessionId;
+      if (!sessionId) continue;
       const entry = this.store.getPersistedEntry(sessionId);
       if (!entry) continue;
       if (!entry.cwd) continue; // need cwd to render anything useful
 
+      const paneId = identity.startsWith('%') ? identity : undefined;
       const projectName = entry.cwd.split('/').filter(Boolean).pop() ?? entry.cwd;
       const session: Session = {
         pid: entry.pid ?? 0,
+        paneId,
         sessionId,
         hasTmux: false, // unknown without scan; picker uses host/sshTarget for routing
         detectionMode: 'jsonl' as const,

@@ -62,6 +62,11 @@ interface PersistedEntry {
     cwd?: string;
     startedAt?: number;
 }
+interface PersistedInstance {
+    favorite?: boolean;
+    favoritedAt?: number;
+    lastSessionId?: string;
+}
 export declare function sessionIdentity(s: {
     paneId?: string;
     pid: number;
@@ -128,6 +133,8 @@ export declare class SessionStore extends EventEmitter {
     deletePersistedSession(sessionId: string): void;
     /** Returns all persisted session IDs (keys of persistedMeta). Used to detect remote sessions by key prefix. */
     getPersistedKeys(): string[];
+    /** Returns all persisted instance entries [identity/paneId, PersistedInstance]. Used by rehydrateFromState. */
+    getPersistedInstanceEntries(): Array<[string, PersistedInstance]>;
     /** Returns persisted remote sessions (new format with sshTarget) for pre-populating known map before first scan. */
     getRestoredRemoteSessions(): Array<{
         sessionId: string;
