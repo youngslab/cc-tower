@@ -2,6 +2,9 @@ import { jsxs as _jsxs, jsx as _jsx } from "react/jsx-runtime";
 import { useState, useCallback, useEffect } from 'react';
 import { Box, Text, useApp, useStdout } from 'ink';
 import { createRequire } from 'node:module';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 const _require = createRequire(import.meta.url);
 const { version: APP_VERSION } = _require('../../package.json');
 import { useSessionStore } from './hooks/useSessionStore.js';
@@ -20,7 +23,25 @@ export function App({ tower, pickerMode, outputPath }) {
     const [view, setView] = useState('dashboard');
     const [selectedSession, setSelectedSession] = useState(null);
     const [recentProjects, setRecentProjects] = useState([]);
-    const [cursorIdentity, setCursorIdentity] = useState(null);
+    const CURSOR_FILE = join(homedir(), '.config', 'popmux', 'picker-cursor');
+    const [cursorIdentity, setCursorIdentity] = useState(() => {
+        if (!pickerMode)
+            return null;
+        try {
+            return readFileSync(CURSOR_FILE, 'utf8').trim() || null;
+        }
+        catch {
+            return null;
+        }
+    });
+    useEffect(() => {
+        if (!pickerMode || !cursorIdentity)
+            return;
+        try {
+            writeFileSync(CURSOR_FILE, cursorIdentity, 'utf8');
+        }
+        catch { /* ignore */ }
+    }, [pickerMode, cursorIdentity]);
     const handleSelect = useCallback((session) => {
         if (pickerMode && outputPath) {
             // Enter = "go" — switch to that session

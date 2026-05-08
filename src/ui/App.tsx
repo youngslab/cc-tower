@@ -1,6 +1,9 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { Box, Text, useApp, useStdout } from 'ink';
 import { createRequire } from 'node:module';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { Tower } from '../core/tower.js';
 
 const _require = createRequire(import.meta.url);
@@ -36,7 +39,16 @@ export function App({ tower, pickerMode, outputPath }: Props) {
   const [view, setView] = useState<View>('dashboard');
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
-  const [cursorIdentity, setCursorIdentity] = useState<string | null>(null);
+  const CURSOR_FILE = join(homedir(), '.config', 'popmux', 'picker-cursor');
+  const [cursorIdentity, setCursorIdentity] = useState<string | null>(() => {
+    if (!pickerMode) return null;
+    try { return readFileSync(CURSOR_FILE, 'utf8').trim() || null; } catch { return null; }
+  });
+
+  useEffect(() => {
+    if (!pickerMode || !cursorIdentity) return;
+    try { writeFileSync(CURSOR_FILE, cursorIdentity, 'utf8'); } catch { /* ignore */ }
+  }, [pickerMode, cursorIdentity]);
 
   const handleSelect = useCallback((session: Session) => {
     if (pickerMode && outputPath) {
