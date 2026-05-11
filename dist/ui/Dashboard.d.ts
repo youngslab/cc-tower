@@ -16,6 +16,7 @@ interface Props {
     onDisplayOrderChange: (order: string[]) => void;
     initialDisplayOrder: string[];
     onQuit: () => void;
+    pickerMode?: boolean;
 }
-export declare function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, onCursorChange, onSwapFavoriteOrder, onSelect, onSend, onToggleFavorite, onNewSession, onRefresh, onKill, onGo, onQuit, onDisplayOrderChange, initialDisplayOrder }: Props): import("react/jsx-runtime").JSX.Element;
+export declare function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, onCursorChange, onSwapFavoriteOrder, onSelect, onSend, onToggleFavorite, onNewSession, onRefresh, onKill, onGo, onQuit, onDisplayOrderChange, initialDisplayOrder, pickerMode }: Props): import("react/jsx-runtime").JSX.Element;
 export {};

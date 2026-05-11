@@ -20,6 +20,7 @@ interface Props {
   onDisplayOrderChange: (order: string[]) => void;
   initialDisplayOrder: string[];
   onQuit: () => void;
+  pickerMode?: boolean;
 }
 
 const STATUS_ICONS: Record<string, { icon: string; color: string }> = {
@@ -30,7 +31,7 @@ const STATUS_ICONS: Record<string, { icon: string; color: string }> = {
   dead: { icon: '✕', color: 'red' },
 };
 
-export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, onCursorChange, onSwapFavoriteOrder, onSelect, onSend, onToggleFavorite, onNewSession, onRefresh, onKill, onGo, onQuit, onDisplayOrderChange, initialDisplayOrder }: Props) {
+export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, onCursorChange, onSwapFavoriteOrder, onSelect, onSend, onToggleFavorite, onNewSession, onRefresh, onKill, onGo, onQuit, onDisplayOrderChange, initialDisplayOrder, pickerMode }: Props) {
   const [confirmQuit, setConfirmQuit] = useState(false);
   const [confirmKill, setConfirmKill] = useState(false);
 
@@ -138,7 +139,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
     if (input === 'g' && sorted[cursor]) onGo(sorted[cursor]!);
 
     if (input === 'n') onNewSession();
-    if (input === 'q' || (key.ctrl && input === 'c')) setConfirmQuit(true);
+    if (input === 'q' || (key.ctrl && input === 'c')) { if (pickerMode) { onQuit(); } else { setConfirmQuit(true); } }
   });
 
   const hasFavorites = favorites.length > 0;

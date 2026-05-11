@@ -9,7 +9,7 @@ const STATUS_ICONS = {
     idle: { icon: '○', color: 'white' },
     dead: { icon: '✕', color: 'red' },
 };
-export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, onCursorChange, onSwapFavoriteOrder, onSelect, onSend, onToggleFavorite, onNewSession, onRefresh, onKill, onGo, onQuit, onDisplayOrderChange, initialDisplayOrder }) {
+export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, onCursorChange, onSwapFavoriteOrder, onSelect, onSend, onToggleFavorite, onNewSession, onRefresh, onKill, onGo, onQuit, onDisplayOrderChange, initialDisplayOrder, pickerMode }) {
     const [confirmQuit, setConfirmQuit] = useState(false);
     const [confirmKill, setConfirmKill] = useState(false);
     // Stable order ref for non-favorites — order doesn't change on status updates
@@ -124,8 +124,14 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
             onGo(sorted[cursor]);
         if (input === 'n')
             onNewSession();
-        if (input === 'q' || (key.ctrl && input === 'c'))
-            setConfirmQuit(true);
+        if (input === 'q' || (key.ctrl && input === 'c')) {
+            if (pickerMode) {
+                onQuit();
+            }
+            else {
+                setConfirmQuit(true);
+            }
+        }
     });
     const hasFavorites = favorites.length > 0;
     const hasNonFavorites = stableNonFavorites.length > 0;

@@ -50,6 +50,17 @@ export function App({ tower, pickerMode, outputPath }: Props) {
     try { writeFileSync(CURSOR_FILE, cursorIdentity, 'utf8'); } catch { /* ignore */ }
   }, [pickerMode, cursorIdentity]);
 
+  // F12 sends \x1b[24~ — not caught by Ink's useInput (which only handles printable keys).
+  // When in pickerMode (popup), F12 should close the popup the same as 'q'.
+  useEffect(() => {
+    if (!pickerMode) return;
+    const onData = (data: Buffer) => {
+      if (data.toString() === '\x1b[24~') exit();
+    };
+    process.stdin.on('data', onData);
+    return () => { process.stdin.off('data', onData); };
+  }, [pickerMode, exit]);
+
   const handleSelect = useCallback((session: Session) => {
     if (pickerMode && outputPath) {
       // Enter = "go" — switch to that session
@@ -417,6 +428,7 @@ export function App({ tower, pickerMode, outputPath }: Props) {
             onGo={handleGo}
             onNewSession={handleOpenNewSession}
             onQuit={handleQuit}
+            pickerMode={pickerMode}
             initialDisplayOrder={tower.store.displayOrder}
             onDisplayOrderChange={(order) => { tower.store.displayOrder = order; }}
           />

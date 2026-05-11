@@ -157,10 +157,9 @@ export class Tower extends EventEmitter {
         // readOnly mode (--no-cold-start picker): just rehydrate state.json sessions
         // into the store and return. No socket, no scans, no watchers, no LLM.
         if (this.readOnly) {
-            // Reuse persisted Session entries verbatim — they have status/summaries/etc.
-            // SessionStore.restore() above already populated most fields, but doesn't
-            // mark sessions as live in `getAll()`. Persist→register them as Sessions.
             this.rehydrateFromState();
+            this.drainEventQueue();
+            this.store.persistSync();
             logger.info('tower: started in read-only mode', { sessions: this.store.getAll().length });
             return;
         }
@@ -374,6 +373,15 @@ export class Tower extends EventEmitter {
      * without a process scan; summaries come straight from the cached fields.
      */
     rehydrateFromState() {
+        // Get live tmux panes once — skip sessions whose pane no longer exists
+        let livePanes;
+        try {
+            const out = execSync('tmux list-panes -a -F "#{pane_id}"', { encoding: 'utf8', timeout: 2000 });
+            livePanes = new Set(out.trim().split('\n').filter(Boolean));
+        }
+        catch {
+            livePanes = new Set(); // tmux unavailable — skip all local sessions
+        }
         for (const [identity, inst] of this.store.getPersistedInstanceEntries()) {
             const sessionId = inst.lastSessionId;
             if (!sessionId)
@@ -382,14 +390,19 @@ export class Tower extends EventEmitter {
             if (!entry)
                 continue;
             if (!entry.cwd)
-                continue; // need cwd to render anything useful
+                continue;
             const paneId = identity.startsWith('%') ? identity : undefined;
+            const isRemote = !!(entry.host && entry.host !== 'local');
+            // Skip local sessions whose tmux pane no longer exists
+            if (!isRemote && paneId && !livePanes.has(paneId))
+                continue;
+            const hasTmux = isRemote ? false : (paneId ? livePanes.has(paneId) : false);
             const projectName = entry.cwd.split('/').filter(Boolean).pop() ?? entry.cwd;
             const session = {
                 pid: entry.pid ?? 0,
                 paneId,
                 sessionId,
-                hasTmux: false, // unknown without scan; picker uses host/sshTarget for routing
+                hasTmux,
                 detectionMode: 'jsonl',
                 cwd: entry.cwd,
                 projectName,
@@ -407,6 +420,137 @@ export class Tower extends EventEmitter {
             catch (err) {
                 logger.debug('tower: rehydrate skip', { sessionId, error: String(err) });
             }
+        }
+    }
+    drainEventQueue() {
+        const runtimeDir = process.env['XDG_RUNTIME_DIR'] ?? '/tmp';
+        const queueFile = path.join(runtimeDir, 'popmux', 'hook-queue.jsonl');
+        const lockFile = queueFile + '.lock';
+        if (!fs.existsSync(queueFile))
+            return;
+        // Compute live panes once for the whole drain pass
+        let livePanes;
+        try {
+            const out = execSync('tmux list-panes -a -F "#{pane_id}"', { encoding: 'utf8', timeout: 2000 });
+            livePanes = new Set(out.trim().split('\n').filter(Boolean));
+        }
+        catch {
+            livePanes = new Set();
+        }
+        let lines = [];
+        try {
+            const raw = execSync(`flock -x "${lockFile}" sh -c 'cat "${queueFile}" && : > "${queueFile}"'`, { encoding: 'utf8', timeout: 3000 });
+            lines = raw.split('\n').filter(Boolean);
+        }
+        catch (err) {
+            logger.warn('tower: drainEventQueue: flock failed', { error: String(err) });
+            return;
+        }
+        if (lines.length === 0)
+            return;
+        logger.info('tower: draining hook queue', { count: lines.length });
+        // Coalesce: keep latest event per pane/sid key
+        const coalesced = new Map();
+        for (const line of lines) {
+            try {
+                const event = JSON.parse(line);
+                const key = (event.pane && String(event.pane)) || event.sid || line;
+                coalesced.set(key, event);
+            }
+            catch { }
+        }
+        for (const event of coalesced.values()) {
+            this.applyQueuedEvent(event, livePanes);
+        }
+    }
+    applyQueuedEvent(event, livePanes) {
+        if (typeof event !== 'object' || event === null)
+            return;
+        if (typeof event.event !== 'string')
+            return;
+        // Step 1: pane match
+        let identity;
+        if (event.pane && typeof event.pane === 'string' && event.pane.startsWith('%')) {
+            if (this.store.get(event.pane))
+                identity = event.pane;
+        }
+        // Step 2: sessionId match
+        if (!identity && event.sid && event.sid !== 'unknown') {
+            const cached = this.hookSidToIdentity.get(event.sid);
+            if (cached && this.store.get(cached)) {
+                identity = cached;
+            }
+            else {
+                const s = this.store.getBySessionId(event.sid);
+                if (s) {
+                    identity = sessionIdentity(s);
+                    this.hookSidToIdentity.set(event.sid, identity);
+                }
+            }
+        }
+        // Step 3: session-start upsert for unknown sessions
+        if (!identity && event.event === 'session-start') {
+            const pane = typeof event.pane === 'string' && event.pane.startsWith('%') ? event.pane : undefined;
+            const sid = event.sid && event.sid !== 'unknown' ? event.sid : undefined;
+            const cwd = typeof event.cwd === 'string' && event.cwd ? event.cwd : undefined;
+            if (!cwd || !sid) {
+                logger.debug('tower: drainEventQueue: session-start dropped (missing cwd/sid)', { sid: event.sid });
+                return;
+            }
+            if (pane && !livePanes.has(pane)) {
+                logger.debug('tower: drainEventQueue: session-start dropped (dead pane)', { pane });
+                return;
+            }
+            const projectName = cwd.split('/').filter(Boolean).pop() ?? cwd;
+            const pid = typeof event.pid === 'number' ? event.pid : 0;
+            const ts = new Date(typeof event.ts === 'number' ? event.ts : Date.now());
+            const newSession = {
+                pid,
+                paneId: pane,
+                sessionId: sid,
+                hasTmux: !!pane,
+                detectionMode: 'hook',
+                cwd,
+                projectName,
+                status: 'idle',
+                lastActivity: ts,
+                startedAt: ts,
+                messageCount: 0,
+                toolCallCount: 0,
+                host: 'local',
+            };
+            try {
+                this.store.register(newSession);
+                identity = pane ?? String(pid);
+                logger.info('tower: drainEventQueue: registered new session from queue', { sid, pane, cwd });
+            }
+            catch (err) {
+                logger.debug('tower: drainEventQueue: session-start register failed', { error: String(err) });
+                return;
+            }
+        }
+        // Step 4: zombie prevention — drop unresolvable events
+        if (!identity) {
+            logger.debug('tower: drainEventQueue: unresolvable event dropped', { event: event.event, sid: event.sid });
+            return;
+        }
+        // Step 5: apply status update (no FSM — readOnly mode only)
+        const statusMap = {
+            'pre-tool': 'executing',
+            'post-tool': 'idle',
+            'user-prompt': 'thinking',
+            'thinking': 'thinking',
+            'session-start': 'idle',
+            'session-end': 'dead',
+            'agent-start': 'agent',
+            'agent-end': 'idle',
+            'stop': 'idle',
+            'executing': 'executing',
+        };
+        const newStatus = statusMap[event.event];
+        if (newStatus) {
+            this.store.update(identity, { status: newStatus });
+            logger.debug('tower: drainEventQueue: applied', { event: event.event, identity, newStatus });
         }
     }
     /** Full refresh: re-scan discovery, re-register session, then regenerate LLM summaries. */
