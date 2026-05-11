@@ -398,6 +398,18 @@ export class Tower extends EventEmitter {
                 continue;
             const hasTmux = isRemote ? false : (paneId ? livePanes.has(paneId) : false);
             const projectName = entry.cwd.split('/').filter(Boolean).pop() ?? entry.cwd;
+            // Read /rename name from session file (pid.json) — takes precedence over persisted label
+            let sessionFileName;
+            if (entry.pid) {
+                try {
+                    const claudeDir = this.config.discovery.claude_dir.replace('~', os.homedir());
+                    const pidFile = path.join(claudeDir, 'sessions', `${entry.pid}.json`);
+                    const pidJson = JSON.parse(fs.readFileSync(pidFile, 'utf8'));
+                    if (typeof pidJson.name === 'string' && pidJson.name)
+                        sessionFileName = pidJson.name;
+                }
+                catch { }
+            }
             const session = {
                 pid: entry.pid ?? 0,
                 paneId,
@@ -413,6 +425,8 @@ export class Tower extends EventEmitter {
                 toolCallCount: 0,
                 host: entry.host ?? 'local',
                 sshTarget: entry.sshTarget,
+                // Use /rename name only if user hasn't set a popmux label manually
+                ...(!entry.label && sessionFileName ? { label: sessionFileName } : {}),
             };
             try {
                 this.store.register(session);
