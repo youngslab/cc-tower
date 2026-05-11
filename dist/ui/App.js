@@ -107,11 +107,13 @@ export function App({ tower, pickerMode, outputPath }) {
         const identityB = b.paneId ?? String(b.pid);
         tower.store.update(identityA, { favoritedAt: b.favoritedAt });
         tower.store.update(identityB, { favoritedAt: a.favoritedAt });
+        tower.store.persistSync();
     }, [tower]);
     const handleToggleFavorite = useCallback((session) => {
         const nowFav = !session.favorite;
         const identity = session.paneId ?? String(session.pid);
         tower.store.update(identity, { favorite: nowFav, favoritedAt: nowFav ? Date.now() : undefined });
+        tower.store.persistSync();
     }, [tower]);
     const handleRefresh = useCallback((session) => {
         void tower.refreshSession(session.sessionId);

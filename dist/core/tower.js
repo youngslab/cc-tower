@@ -373,14 +373,22 @@ export class Tower extends EventEmitter {
      * without a process scan; summaries come straight from the cached fields.
      */
     rehydrateFromState() {
-        // Get live tmux panes once — skip sessions whose pane no longer exists
+        // Get live tmux panes + pane shell PIDs once
         let livePanes;
+        const panePidMap = new Map(); // shell_pid → paneId
         try {
-            const out = execSync('tmux list-panes -a -F "#{pane_id}"', { encoding: 'utf8', timeout: 2000 });
-            livePanes = new Set(out.trim().split('\n').filter(Boolean));
+            const out = execSync('tmux list-panes -a -F "#{pane_id} #{pane_pid}"', { encoding: 'utf8', timeout: 2000 });
+            livePanes = new Set();
+            for (const line of out.trim().split('\n').filter(Boolean)) {
+                const [paneId, pid] = line.split(' ');
+                if (paneId)
+                    livePanes.add(paneId);
+                if (paneId && pid)
+                    panePidMap.set(parseInt(pid), paneId);
+            }
         }
         catch {
-            livePanes = new Set(); // tmux unavailable — skip all local sessions
+            livePanes = new Set();
         }
         for (const [identity, inst] of this.store.getPersistedInstanceEntries()) {
             const sessionId = inst.lastSessionId;
@@ -398,18 +406,36 @@ export class Tower extends EventEmitter {
                 continue;
             const hasTmux = isRemote ? false : (paneId ? livePanes.has(paneId) : false);
             const projectName = entry.cwd.split('/').filter(Boolean).pop() ?? entry.cwd;
-            // Read /rename name from session file (pid.json) — takes precedence over persisted label
+            // Read /rename name from session file — look up by sessionId since pid may not be persisted
             let sessionFileName;
-            if (entry.pid) {
-                try {
-                    const claudeDir = this.config.discovery.claude_dir.replace('~', os.homedir());
-                    const pidFile = path.join(claudeDir, 'sessions', `${entry.pid}.json`);
+            try {
+                const claudeDir = this.config.discovery.claude_dir.replace('~', os.homedir());
+                const sessionsDir = path.join(claudeDir, 'sessions');
+                const pid = entry.pid ?? (identity.startsWith('%') ? undefined : parseInt(identity));
+                const pidFile = pid ? path.join(sessionsDir, `${pid}.json`) : undefined;
+                if (pidFile && fs.existsSync(pidFile)) {
                     const pidJson = JSON.parse(fs.readFileSync(pidFile, 'utf8'));
-                    if (typeof pidJson.name === 'string' && pidJson.name)
+                    if (pidJson.sessionId === sessionId && typeof pidJson.name === 'string' && pidJson.name) {
                         sessionFileName = pidJson.name;
+                    }
                 }
-                catch { }
+                else {
+                    // Fallback: scan sessions dir for matching sessionId
+                    for (const f of fs.readdirSync(sessionsDir)) {
+                        if (!f.endsWith('.json'))
+                            continue;
+                        try {
+                            const pidJson = JSON.parse(fs.readFileSync(path.join(sessionsDir, f), 'utf8'));
+                            if (pidJson.sessionId === sessionId && typeof pidJson.name === 'string' && pidJson.name) {
+                                sessionFileName = pidJson.name;
+                                break;
+                            }
+                        }
+                        catch { }
+                    }
+                }
             }
+            catch { }
             const session = {
                 pid: entry.pid ?? 0,
                 paneId,
@@ -435,6 +461,82 @@ export class Tower extends EventEmitter {
                 logger.debug('tower: rehydrate skip', { sessionId, error: String(err) });
             }
         }
+        // Scan sessions dir for new sessions not in persistedInstances
+        this.rehydrateNewSessions(livePanes, panePidMap);
+    }
+    rehydrateNewSessions(livePanes, panePidMap) {
+        const claudeDir = this.config.discovery.claude_dir.replace('~', os.homedir());
+        const sessionsDir = path.join(claudeDir, 'sessions');
+        const registeredSids = new Set(this.store.getAll().map(s => s.sessionId));
+        let files;
+        try {
+            files = fs.readdirSync(sessionsDir).filter(f => f.endsWith('.json'));
+        }
+        catch {
+            return;
+        }
+        for (const f of files) {
+            try {
+                const pidJson = JSON.parse(fs.readFileSync(path.join(sessionsDir, f), 'utf8'));
+                const { pid, sessionId: sid, cwd, startedAt, name: sessionName, kind } = pidJson;
+                if (!pid || !sid || !cwd)
+                    continue;
+                if (kind && kind !== 'interactive')
+                    continue; // skip headless/sdk sessions
+                if (registeredSids.has(sid))
+                    continue;
+                const paneId = this.findPaneForPid(pid, panePidMap);
+                if (!paneId || !livePanes.has(paneId))
+                    continue;
+                const projectName = cwd.split('/').filter(Boolean).pop() ?? cwd;
+                const ts = new Date(startedAt ?? Date.now());
+                const session = {
+                    pid,
+                    paneId,
+                    sessionId: sid,
+                    hasTmux: true,
+                    detectionMode: 'jsonl',
+                    cwd,
+                    projectName,
+                    status: 'idle',
+                    lastActivity: ts,
+                    startedAt: ts,
+                    messageCount: 0,
+                    toolCallCount: 0,
+                    host: 'local',
+                    ...(typeof sessionName === 'string' && sessionName ? { label: sessionName } : {}),
+                };
+                try {
+                    this.store.register(session);
+                    logger.info('tower: rehydrate discovered new session', { sid: sid.slice(0, 8), paneId, cwd });
+                }
+                catch (err) {
+                    logger.debug('tower: rehydrate new session skip', { sid, error: String(err) });
+                }
+            }
+            catch { }
+        }
+    }
+    findPaneForPid(claudePid, panePidMap) {
+        let current = claudePid;
+        for (let depth = 0; depth < 12; depth++) {
+            if (panePidMap.has(current))
+                return panePidMap.get(current);
+            try {
+                const status = fs.readFileSync(`/proc/${current}/status`, 'utf8');
+                const m = status.match(/^PPid:\s+(\d+)/m);
+                if (!m)
+                    break;
+                const ppid = parseInt(m[1]);
+                if (ppid <= 1 || ppid === current)
+                    break;
+                current = ppid;
+            }
+            catch {
+                break;
+            }
+        }
+        return undefined;
     }
     drainEventQueue() {
         const runtimeDir = process.env['XDG_RUNTIME_DIR'] ?? '/tmp';

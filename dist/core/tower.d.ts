@@ -51,6 +51,8 @@ export declare class Tower extends EventEmitter {
      * without a process scan; summaries come straight from the cached fields.
      */
     private rehydrateFromState;
+    private rehydrateNewSessions;
+    private findPaneForPid;
     private drainEventQueue;
     private applyQueuedEvent;
     /** Full refresh: re-scan discovery, re-register session, then regenerate LLM summaries. */
