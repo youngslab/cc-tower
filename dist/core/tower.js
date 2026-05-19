@@ -1084,6 +1084,21 @@ export class Tower extends EventEmitter {
         const slug = cwdToSlug(info.cwd);
         const projectDir = path.join(claudeDir, 'projects', slug);
         let jsonlPath = path.join(projectDir, `${info.sessionId}.jsonl`);
+        // Priority 0: if exact sessionId.jsonl doesn't exist, use lastConversationId persisted from a
+        // previous registration before falling back to newest-JSONL scan (which can race with siblings).
+        // Use paneId (or pid string) as the identity key — same logic as sessionIdentity().
+        const earlyIdentity = mapping.paneId ?? String(info.pid);
+        if (!fs.existsSync(jsonlPath) && !opts.skipJsonlFallback) {
+            const persistedConvId = this.store.getPersistedInstanceEntries()
+                .find(([id]) => id === earlyIdentity)?.[1]?.lastConversationId;
+            if (persistedConvId) {
+                const persistedPath = path.join(projectDir, `${persistedConvId}.jsonl`);
+                if (fs.existsSync(persistedPath)) {
+                    logger.debug('tower: using persisted lastConversationId for JSONL', { identity: earlyIdentity, sessionId: info.sessionId, convId: persistedConvId });
+                    jsonlPath = persistedPath;
+                }
+            }
+        }
         // Check for a newer JSONL only when the exact sessionId file does not exist.
         // After /clear, Claude Code immediately creates the new JSONL as an empty file,
         // so exactExists===true but size===0 → do NOT fallback (it's a fresh session).
@@ -1098,7 +1113,7 @@ export class Tower extends EventEmitter {
                 const watchedJsonls = new Set(this.jsonlPaths.values());
                 // Also skip JSONLs claimed by another instance's lastConversationId (guards against registration-order races)
                 const claimedConvIds = new Set(this.store.getPersistedInstanceEntries()
-                    .filter(([id]) => id !== identity)
+                    .filter(([id]) => id !== earlyIdentity)
                     .map(([, v]) => v.lastConversationId)
                     .filter(Boolean));
                 const files = fs.readdirSync(projectDir)
