@@ -1085,11 +1085,21 @@ export class Tower extends EventEmitter {
       if (!exactExists && !opts.skipJsonlFallback) {
         // Skip JSONLs already watched by another active session (prevents same-cwd sessions sharing a JSONL)
         const watchedJsonls = new Set(this.jsonlPaths.values());
+        // Also skip JSONLs claimed by another instance's lastConversationId (guards against registration-order races)
+        const claimedConvIds = new Set(
+          this.store.getPersistedInstanceEntries()
+            .filter(([id]) => id !== identity)
+            .map(([, v]) => v.lastConversationId)
+            .filter(Boolean) as string[]
+        );
         const files = fs.readdirSync(projectDir)
           .filter(f => f.endsWith('.jsonl') && !f.includes('/'))
           .map(f => ({ name: f, path: path.join(projectDir, f), mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
           .sort((a, b) => b.mtime - a.mtime);
-        const candidate = files.find(f => f.path !== jsonlPath && !watchedJsonls.has(f.path));
+        const candidate = files.find(f => {
+          const convId = path.basename(f.path, '.jsonl');
+          return f.path !== jsonlPath && !watchedJsonls.has(f.path) && !claimedConvIds.has(convId);
+        });
         if (candidate) {
           logger.debug('tower: using fallback JSONL (exact missing — stale discovery)', {
             sessionId: info.sessionId,
