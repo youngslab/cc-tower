@@ -425,107 +425,172 @@ await this.registerSession(info, { skipJsonlFallback: true });
 
 ### 콜드 스타트 시퀀스
 
-```
-start() [tower.ts]
-  ↓
-restore() [session-store.ts]  — state.json에서 영속 메타데이터 로드
-  ↓
-hookReceiver.start()  — 훅 소켓 바인딩
-  ↓
-discovery.scanOnce()  — sessions/ 디렉토리 + 프로세스 목록 스캔
-  ↓
-각 session info에 대해 (순차):
-  registerSession(info)
-    ↓
-    mapPidToPane(pid) → { paneId?, hasTmux }
-    ↓
-    JSONL 경로 결정:
-      0. lastConversationId (저장된 값, 해당 파일 존재 시)
-      1. {sessionId}.jsonl (정확한 매칭)
-      2. Newest unclaimed JSONL (watchedJsonls + claimedConvIds 체크)
-    ↓
-    coldStartScan(jsonlPath) → 초기 상태
-    ↓
-    store.register(session)
-    ↓
-    setInstanceConversationId(identity, convId) → state.json 저장
-    ↓
-    SessionStateMachine 생성
-    ↓
-    ensureTmuxSessionName(paneId, projectName)
-  ↓
-  이벤트 연결: session-found, session-lost, session-changed, jsonl-event, hook-event
-  ↓
-discovery.start() — 주기적 스캔 시작
+```mermaid
+flowchart TD
+    A[start] --> B[restore\nstate.json 로드]
+    B --> C[hookReceiver.start\n훅 소켓 바인딩]
+    C --> D[discovery.scanOnce\nsessions/ + 프로세스 스캔]
+    D --> E[각 session info 순차 처리]
+
+    E --> F[registerSession]
+    F --> G[mapPidToPane\npaneId 확인]
+    G --> H{JSONL 경로 결정}
+
+    H --> H0[0. lastConversationId\n저장된 convId + 파일 존재?]
+    H0 -->|존재| I[해당 JSONL 사용]
+    H0 -->|없음| H1[1. sessionId.jsonl 존재?]
+    H1 -->|존재| I
+    H1 -->|없음| H2[2. Newest unclaimed JSONL\nwatchedJsonls + claimedConvIds 제외]
+    H2 --> I
+
+    I --> J[coldStartScan\n초기 상태 추출]
+    J --> K[store.register]
+    K --> L[setInstanceConversationId\nstate.json 저장]
+    L --> M[SessionStateMachine 생성]
+    M --> N[ensureTmuxSessionName]
+
+    N --> O{더 있음?}
+    O -->|Yes| E
+    O -->|No| P[이벤트 연결\nsession-found/lost/changed\njsonl-event / hook-event]
+    P --> Q[discovery.start\n주기적 스캔 시작]
 ```
 
 ### 훅 이벤트 플로우
 
-```
-훅 소켓: { event, sid, pid, cwd, pane } 수신
-  ↓
-handleHookEvent()
-  ↓
-1. SDK-cli 세션 필터링
-  ↓
-2. identity 결정:
-   a. hookSidToIdentity 캐시
-   b. remoteStateMachines 복합 키
-   c. PID 조상 탐색
-  ↓
-  NOT FOUND인 경우:
-    session-start + 미등록 세션 확인
-      ↓
-      CWD + PID로 dyingSession 탐색
-      ↓
-      즐겨찾기 메타데이터 이전
-      ↓
-      registerSession(hookSid, skipJsonlFallback=true)
-      ↓
-      Return
-  ↓
-  FOUND인 경우:
-    3. Stale sessionId 감지
-      ↓
-      hookSid ≠ 저장된 sessionId 시:
-        이전 JSONL watch 해제
-        sessionId 갱신
-        새 JSONL watch 시작
-    ↓
-    4. paneId 업그레이드 감지
-      ↓
-      새 paneId가 있으면:
-        identity 재키 (oldIdentity → newIdentity)
-        FSM 맵 갱신
-    ↓
-    5. FSM 전환
-      ↓
-      mapHookToInput(event) → InputEvent
-      fsm.transition(inputEvent)
-    ↓
-    6. 사후 갱신
-      ↓
-      session-start + idle 상태: refreshSessionAfterResume()
-      user-prompt: 요약 갱신
-      pre-tool: toolCallCount 증가
+```mermaid
+flowchart TD
+    A["훅 수신\n{ event, sid, pid, cwd, pane }"] --> B{SDK-cli?}
+    B -->|Yes| Z[무시]
+    B -->|No| C{identity 결정}
+
+    C --> C1[캐시 조회\nhookSidToIdentity]
+    C1 -->|Hit| FOUND
+    C1 -->|Miss| C2[remoteStateMachines\n복합키 매칭]
+    C2 -->|Hit| FOUND
+    C2 -->|Miss| C3[PID 조상 탐색\n최대 15단계]
+    C3 -->|Hit| FOUND
+    C3 -->|Miss| NOTFOUND
+
+    NOTFOUND["NOT FOUND"] --> D{session-start?}
+    D -->|No| Z2[무시]
+    D -->|Yes| E[CWD+PID로 dyingSession 탐색]
+    E --> F[즐겨찾기 메타데이터 이전]
+    F --> G["registerSession\nskipJsonlFallback=true"]
+    G --> Z3[Return]
+
+    FOUND["FOUND"] --> H{hookSid ≠ 저장된 sessionId?}
+    H -->|Yes| I[이전 JSONL unwatch\nsessionId 갱신\n새 JSONL watch]
+    H -->|No| J
+
+    I --> J{새 paneId?}
+    J -->|Yes| K["identity 재키\noldIdentity → paneId\nFSM 맵 갱신"]
+    J -->|No| L
+    K --> L[FSM 전환\nmapHookToInput → transition]
+
+    L --> M{사후 처리}
+    M --> M1["session-start + idle\n→ refreshSessionAfterResume"]
+    M --> M2["user-prompt\n→ 요약 갱신"]
+    M --> M3["pre-tool\n→ toolCallCount++"]
 ```
 
-### /resume 감지
+### /resume 플로우
 
+사용자가 `/resume <sessionId>` 실행 시:
+
+```mermaid
+flowchart TD
+    A["사용자: /resume &lt;oldSessionId&gt;"] --> B["Claude Code\n기존 JSONL 열고 내용 채움\nsessions/pid.json → newSessionId"]
+    B --> C["훅: session-start\nsid=newSessionId"]
+    B --> D["discovery: session-changed 이벤트\nprev.sessionId → next.sessionId"]
+
+    C --> E["handleHookEvent\nidentity FOUND"]
+    E --> F{"hookSid ≠\n저장된 sessionId?"}
+    F -->|Yes| G["이전 JSONL unwatch\nsessionId 갱신\n새 JSONL watch 시작"]
+    G --> H["FSM: session-start 입력\nidle 상태이면\nrefreshSessionAfterResume 호출"]
+
+    D --> I{"isResume?\n새 JSONL 크기 > 0"}
+    I -->|Yes| J["reassociateMeta\noldSid → newSid\nlabel/tags/summaries 이전"]
+    I -->|No| K["메타데이터 이전 안 함\n/clear로 판단"]
+
+    H --> L["projectDir 스캔\n최신 JSONL 찾기"]
+    L --> M{"최신 파일 ≠\n현재 JSONL?"}
+    M -->|Yes| N["JSONL 교체\n요약 초기화\n재생성 트리거"]
+    M -->|No| O["변경 없음 — 이미 올바른 파일"]
 ```
-훅: event.event === 'session-start', fsm.getState() === 'idle'
-  ↓
-refreshSessionAfterResume()
-  ↓
-projectDir/ 스캔 → mtime 내림차순 정렬
-  ↓
-최신 파일 ≠ 현재 JSONL인 경우:
-  jsonlPaths[sessionId] → 최신 파일로 교체
-  이전 JSONL unwatch, 새 JSONL watch
-  stale 요약 초기화 (goalSummary, contextSummary, nextSteps)
-  ↓
-재개된 JSONL에서 요약 재생성
+
+**Identity와 SessionMeta의 분리:**
+- identity(paneId)는 유지됨 — TUI 행 위치 변경 없음
+- sessionId만 교체됨
+- `reassociateMeta`로 label, tags, 요약이 새 sessionId로 이전
+
+### /clear 플로우
+
+사용자가 `/clear` 실행 시:
+
+```mermaid
+flowchart TD
+    A["사용자: /clear"] --> B["Claude Code\n새 빈 JSONL 생성\n{newSessionId}.jsonl (size=0)\nsessions/pid.json → newSessionId"]
+    B --> C["훅: session-start\nsid=newSessionId"]
+    B --> D["discovery: session-changed 이벤트"]
+
+    C --> E["handleHookEvent\nidentity NOT FOUND\n(새 sessionId는 미등록)"]
+    E --> F["CWD+PID로\ndyingSession 탐색"]
+    F --> G{"dyingSession\n발견?"}
+    G -->|Yes| H["즐겨찾기만 이전\nlabel/tags/summaries 초기화"]
+    G -->|No| I["메타데이터 없이 신규 등록"]
+    H --> J["cleanupSession(dyingSession)"]
+    I --> K
+    J --> K["registerSession\nskipJsonlFallback=true\n{newSessionId}.jsonl 감시 시작\n(size=0이어도 fallback 안 함)"]
+
+    D --> L{"isResume?\n새 JSONL 크기 > 0"}
+    L -->|No| M["메타데이터 이전 안 함\n(신선한 대화)"]
+    L -->|Yes| N["※ /resume으로 판단\nreassociateMeta"]
+
+    K --> O["새 SessionStateMachine\n새 JSONL watcher\nsetInstanceConversationId 갱신"]
 ```
+
+**/resume과 /clear의 차이:**
+
+| 항목 | /resume | /clear |
+|------|---------|--------|
+| JSONL | 기존 파일 (내용 있음) | 새 빈 파일 (size=0) |
+| isResume 판별 | true | false |
+| label 이전 | ✓ (reassociateMeta) | ✗ |
+| summaries 이전 | ✓ | ✗ |
+| 즐겨찾기 이전 | ✓ | ✓ |
+| identity(paneId) | 유지 | 유지 |
+
+### 대화 압축 (Context Compaction) 플로우
+
+Claude의 컨텍스트가 한계에 가까워지면 자동으로 대화를 요약·압축한다.
+
+```mermaid
+flowchart TD
+    A["컨텍스트 한계 근접\nClaude Code 자동 압축"] --> B["기존 JSONL에\n압축 요약 이벤트 추가\n(파일명·sessionId 변경 없음)"]
+    B --> C{"새 session-start\n훅 발생?"}
+
+    C -->|No — 동일 session 유지| D["JSONL watcher가 새 라인 감지\nhandleJsonlEvent 호출"]
+    D --> E{"이벤트 타입?"}
+    E -->|user/assistant| F["FSM 상태 갱신\nstatus: thinking/executing/idle"]
+    E -->|custom-title| G["label 갱신\nupdateMeta 호출"]
+    E -->|기타 압축 이벤트| H["Tower: 무시\n상태 변경 없음"]
+
+    C -->|Yes — 새 sessionId 발급\n※ 드문 경우| I["/clear 플로우와 동일하게 처리"]
+
+    F --> J["TUI 갱신 — 세션 행 유지\nidentity·sessionId 동일"]
+    G --> J
+    H --> J
+```
+
+**핵심: 대부분의 경우 Tower 상태 변경 없음**
+
+압축은 JSONL 내부 이벤트이므로 Tower 입장에서는 일반 메시지와 동일하게 처리된다:
+- `sessionId` 변경 없음
+- `identity(paneId)` 변경 없음
+- `lastConversationId` 변경 없음
+- JSONL 경로 변경 없음
+
+단, Claude Code가 압축 후 새 sessionId를 발급하는 경우에는 `/clear` 플로우와 동일하게 처리된다 (실제로는 매우 드뭄).
 
 ## 3-Level ID 계층
 
