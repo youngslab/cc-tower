@@ -39,7 +39,22 @@ program
   .option('--output <path>', 'Output path for picker result JSON (required with --picker)')
   .option('--no-cold-start', 'Skip JSONL coldStart scans — read state.json only (fast popup mode)')
   .option('--no-summary', 'Disable LLM summarization — use cached fields only')
-  .action(async (opts: { picker?: boolean; output?: string; coldStart?: boolean; summary?: boolean }) => {
+  .option('--daemon', 'Run as background daemon (no TUI, process hooks and update state.json)')
+  .action(async (opts: { picker?: boolean; output?: string; coldStart?: boolean; summary?: boolean; daemon?: boolean }) => {
+    // === Daemon mode (headless, background hook processor) ================
+    if (opts.daemon) {
+      const skipSummary = opts.summary === false;
+      const tower = new Tower(undefined, { skipSummary });
+      process.on('SIGINT', () => { tower.stop().then(() => process.exit(0)); });
+      process.on('SIGTERM', () => { tower.stop().then(() => process.exit(0)); });
+      logger.info('daemon: starting headless tower');
+      await tower.start();
+      logger.info('daemon: tower started, processing hooks');
+      // Keep alive — tower runs event loop via hook socket + fs.watch
+      await new Promise<void>(() => {});
+      return;
+    }
+
     // === Picker mode (one-shot, JSON-via-tmpfile) =========================
     if (opts.picker) {
       if (!opts.output) {

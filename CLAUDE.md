@@ -72,7 +72,7 @@ grep "error\|warn\|fail" /tmp/debug.log
 
 ## Version Strategy
 
-**현재 버전: 2.0.1**
+**현재 버전: 2.1.0**
 
 ### 규칙: 코드 변경 시 반드시 버전을 올려야 한다.
 

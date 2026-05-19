@@ -32,4 +32,26 @@ if [ "$SENT" = "0" ] && command -v flock >/dev/null 2>&1; then
   ) 9>"$QUEUE.lock"
 fi
 
+# Auto-start daemon when socket is unavailable — it will drain the queue on startup.
+# Use an exclusive lock so only one hook fires the start even under parallel invocations.
+# The daemon exits silently if another instance already holds the socket (EADDRINUSE).
+if [ "$SENT" = "0" ] && command -v flock >/dev/null 2>&1; then
+  PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+  POPMUX_BIN=""
+  if [ -n "$PLUGIN_ROOT" ] && [ -f "$PLUGIN_ROOT/bin/popmux.js" ]; then
+    POPMUX_BIN="node $PLUGIN_ROOT/bin/popmux.js"
+  elif command -v popmux >/dev/null 2>&1; then
+    POPMUX_BIN="popmux"
+  fi
+  if [ -n "$POPMUX_BIN" ]; then
+    DAEMON_LOCK="$QUEUE_DIR/daemon-start.lock"
+    mkdir -p "$QUEUE_DIR"
+    (
+      flock -n 9 || exit 0   # skip if another hook is already starting the daemon
+      # shellcheck disable=SC2086
+      nohup $POPMUX_BIN --daemon >> "$QUEUE_DIR/daemon.log" 2>&1 &
+    ) 9>"$DAEMON_LOCK"
+  fi
+fi
+
 exit 0
