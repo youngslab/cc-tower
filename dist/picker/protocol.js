@@ -68,7 +68,10 @@ export function emitReady() {
         _spawnTime = performance.now();
     const ms = Math.round(performance.now() - _spawnTime);
     try {
-        process.stderr.write(`READY ${ms}\n`);
+        // Only emit if stderr is not a tty — avoids stray "READY <ms>" line in
+        // tmux popups where stderr goes directly to the terminal.
+        if (!process.stderr.isTTY)
+            process.stderr.write(`READY ${ms}\n`);
     }
     catch { }
     _readyEmitted = true;
