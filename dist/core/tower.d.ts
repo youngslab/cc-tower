@@ -52,6 +52,7 @@ export declare class Tower extends EventEmitter {
      */
     private rehydrateFromState;
     private rehydrateNewSessions;
+    private readLastUserTask;
     private findPaneForPid;
     private drainEventQueue;
     private applyQueuedEvent;

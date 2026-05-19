@@ -72,7 +72,7 @@ grep "error\|warn\|fail" /tmp/debug.log
 
 ## Version Strategy
 
-**현재 버전: 1.1.1**
+**현재 버전: 2.0.1**
 
 ### 규칙: 코드 변경 시 반드시 버전을 올려야 한다.
 
@@ -101,6 +101,7 @@ npm version major
 | 1.0.0 | 초기 릴리즈 |
 | 1.1.0 | paneId-primary session identity 리팩토링 — /clear 시 label/tags 보존, state.json v2 TTL eviction |
 | 1.1.1 | fix: pane 기반 hook identity resolution 추가 — ephemeral PPID로 PID ancestry walk 실패 시 TMUX_PANE으로 직접 매칭 |
+| 2.0.1 | fix: picker readOnly mode에서 /rename label 미반영 — JSONL extractLabel 폴백(newest JSONL 포함), stale label 덮어쓰기, drainEventQueue PID liveness check, legacy non-pane identity 필터링 |
 
 ## Build & Publish
 

@@ -401,8 +401,9 @@ export class Tower extends EventEmitter {
                 continue;
             const paneId = identity.startsWith('%') ? identity : undefined;
             const isRemote = !!(entry.host && entry.host !== 'local');
-            // Skip local sessions whose tmux pane no longer exists
-            if (!isRemote && paneId && !livePanes.has(paneId))
+            // Skip local sessions that don't have a live tmux pane
+            // (covers: dead panes, legacy non-pane identities like '0', numeric PIDs)
+            if (!isRemote && !(paneId && livePanes.has(paneId)))
                 continue;
             const hasTmux = isRemote ? false : (paneId ? livePanes.has(paneId) : false);
             const projectName = entry.cwd.split('/').filter(Boolean).pop() ?? entry.cwd;
@@ -434,6 +435,28 @@ export class Tower extends EventEmitter {
                         catch { }
                     }
                 }
+                // Fallback: read directly from JSONL when sessions/<pid>.json has no name field
+                if (!sessionFileName && entry.cwd) {
+                    const projectDir = path.join(claudeDir, 'projects', cwdToSlug(entry.cwd));
+                    // Priority: 1) lastConversationId (persisted JSONL UUID), 2) sessionId, 3) newest file
+                    const convId = inst.lastConversationId;
+                    let jsonlPath = path.join(projectDir, `${convId ?? sessionId}.jsonl`);
+                    if (!fs.existsSync(jsonlPath) && convId) {
+                        jsonlPath = path.join(projectDir, `${sessionId}.jsonl`);
+                    }
+                    if (!fs.existsSync(jsonlPath)) {
+                        try {
+                            const files = fs.readdirSync(projectDir)
+                                .filter(f => f.endsWith('.jsonl'))
+                                .map(f => ({ p: path.join(projectDir, f), m: fs.statSync(path.join(projectDir, f)).mtimeMs }))
+                                .sort((a, b) => b.m - a.m);
+                            if (files.length > 0)
+                                jsonlPath = files[0].p;
+                        }
+                        catch { }
+                    }
+                    sessionFileName = agents.claude.extractLabel(jsonlPath);
+                }
             }
             catch { }
             const session = {
@@ -451,11 +474,14 @@ export class Tower extends EventEmitter {
                 toolCallCount: 0,
                 host: entry.host ?? 'local',
                 sshTarget: entry.sshTarget,
-                // Use /rename name only if user hasn't set a popmux label manually
-                ...(!entry.label && sessionFileName ? { label: sessionFileName } : {}),
+                // Prefer fresh /rename name from JSONL/sessions file over stale persisted label
+                ...(sessionFileName ? { label: sessionFileName } : {}),
             };
             try {
                 this.store.register(session);
+                const task = this.readLastUserTask(sessionId, entry.cwd);
+                if (task)
+                    this.store.update(sessionIdentity(session), { currentTask: task });
             }
             catch (err) {
                 logger.debug('tower: rehydrate skip', { sessionId, error: String(err) });
@@ -467,7 +493,9 @@ export class Tower extends EventEmitter {
     rehydrateNewSessions(livePanes, panePidMap) {
         const claudeDir = this.config.discovery.claude_dir.replace('~', os.homedir());
         const sessionsDir = path.join(claudeDir, 'sessions');
-        const registeredSids = new Set(this.store.getAll().map(s => s.sessionId));
+        // Only consider sessions with a live pane as "registered" — sessions registered under
+        // a dead/non-pane identity (e.g. '0', '%920') should still be matched to a live pane.
+        const registeredSids = new Set(this.store.getAll().filter(s => s.paneId && livePanes.has(s.paneId)).map(s => s.sessionId));
         let files;
         try {
             files = fs.readdirSync(sessionsDir).filter(f => f.endsWith('.json'));
@@ -508,6 +536,9 @@ export class Tower extends EventEmitter {
                 };
                 try {
                     this.store.register(session);
+                    const task = this.readLastUserTask(sid, cwd);
+                    if (task)
+                        this.store.update(sessionIdentity(session), { currentTask: task });
                     logger.info('tower: rehydrate discovered new session', { sid: sid.slice(0, 8), paneId, cwd });
                 }
                 catch (err) {
@@ -516,6 +547,29 @@ export class Tower extends EventEmitter {
             }
             catch { }
         }
+    }
+    readLastUserTask(sessionId, cwd) {
+        try {
+            const claudeDir = this.config.discovery.claude_dir.replace('~', os.homedir());
+            const jsonlPath = path.join(claudeDir, 'projects', cwdToSlug(cwd), `${sessionId}.jsonl`);
+            if (!fs.existsSync(jsonlPath))
+                return undefined;
+            const size = fs.statSync(jsonlPath).size;
+            const readSize = Math.min(size, 32768);
+            const buf = Buffer.alloc(readSize);
+            const fd = fs.openSync(jsonlPath, 'r');
+            fs.readSync(fd, buf, 0, readSize, size - readSize);
+            fs.closeSync(fd);
+            const lines = buf.toString('utf8').split('\n').reverse();
+            for (const line of lines) {
+                const parsed = parseJsonlLine(line);
+                if (parsed?.type === 'user' && parsed.userContent) {
+                    return cleanDisplayText(parsed.userContent).slice(0, 80);
+                }
+            }
+        }
+        catch { }
+        return undefined;
     }
     findPaneForPid(claudePid, panePidMap) {
         let current = claudePid;
@@ -665,6 +719,14 @@ export class Tower extends EventEmitter {
         };
         const newStatus = statusMap[event.event];
         if (newStatus) {
+            // Guard: don't mark as active if Claude process is already dead
+            const isActiveStatus = newStatus === 'thinking' || newStatus === 'executing' || newStatus === 'agent';
+            const claudePid = typeof event.pid === 'number' ? event.pid : 0;
+            if (isActiveStatus && claudePid > 0 && !isPidAlive(claudePid)) {
+                this.store.update(identity, { status: 'idle' });
+                logger.debug('tower: drainEventQueue: Claude PID dead, forcing idle', { identity, claudePid, event: event.event });
+                return;
+            }
             this.store.update(identity, { status: newStatus });
             logger.debug('tower: drainEventQueue: applied', { event: event.event, identity, newStatus });
         }
@@ -1166,6 +1228,7 @@ export class Tower extends EventEmitter {
                                 this.jsonlPaths.set(currentSess.sessionId, jp);
                                 this.jsonlWatcher.unwatch(currentSess.sessionId);
                                 this.jsonlWatcher.watch(currentSess.sessionId, jp);
+                                this.store.setInstanceConversationId(identity, path.basename(jp, '.jsonl'));
                                 logger.info('tower: JSONL path updated on idle', { identity, newPath: jp });
                             }
                         }
@@ -1198,6 +1261,7 @@ export class Tower extends EventEmitter {
         // h. Track JSONL path + start watcher
         this.jsonlPaths.set(info.sessionId, jsonlPath);
         this.jsonlWatcher.watch(info.sessionId, jsonlPath);
+        this.store.setInstanceConversationId(identity, path.basename(jsonlPath, '.jsonl'));
         // i. If no tmux, also start process monitor as extra signal
         if (!mapping.hasTmux) {
             this.processMonitor.startPolling(info.pid, this.config.tracking.process_scan_interval);
@@ -1605,6 +1669,8 @@ export class Tower extends EventEmitter {
                 if (fs.existsSync(newJsonl)) {
                     this.jsonlPaths.set(hookSid, newJsonl);
                     this.jsonlWatcher.watch(hookSid, newJsonl);
+                    if (identity)
+                        this.store.setInstanceConversationId(identity, path.basename(newJsonl, '.jsonl'));
                     // Read custom title from new JSONL
                     const customTitle = agents.claude.extractLabel(newJsonl);
                     if (customTitle) {
@@ -1630,6 +1696,8 @@ export class Tower extends EventEmitter {
                                 dirWatcher.close();
                                 this.jsonlPaths.set(hookSid, newJsonl);
                                 this.jsonlWatcher.watch(hookSid, newJsonl);
+                                if (capturedIdentity)
+                                    this.store.setInstanceConversationId(capturedIdentity, path.basename(newJsonl, '.jsonl'));
                                 const customTitle = agents.claude.extractLabel(newJsonl);
                                 if (customTitle) {
                                     this.store.updateMeta(capturedIdentity, { label: customTitle });

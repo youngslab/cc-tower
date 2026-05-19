@@ -66,6 +66,7 @@ interface PersistedInstance {
     favorite?: boolean;
     favoritedAt?: number;
     lastSessionId?: string;
+    lastConversationId?: string;
 }
 export declare function sessionIdentity(s: {
     paneId?: string;
@@ -89,6 +90,7 @@ export declare class SessionStore extends EventEmitter {
     unregister(identity: string): void;
     update(identity: string, patch: Partial<Session>): void;
     updateMeta(identity: string, patch: Partial<SessionMeta>): void;
+    setInstanceConversationId(identity: string, conversationId: string): void;
     reassociateMeta(oldSessionId: string, newSessionId: string): void;
     updateBySessionId(sessionId: string, patch: Partial<Session>): void;
     persist(): void;

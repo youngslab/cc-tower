@@ -76,6 +76,7 @@ interface PersistedInstance {
   favorite?: boolean;
   favoritedAt?: number;
   lastSessionId?: string;  // hook-confirmed sessionId — used on cold start when pid.json is stale
+  lastConversationId?: string;  // JSONL conversation UUID (filename), updated whenever JSONL path changes
 }
 
 interface PersistFormat {
@@ -269,6 +270,11 @@ export class SessionStore extends EventEmitter {
     this.emit('session-updated', this.get(identity)!);
   }
 
+  setInstanceConversationId(identity: string, conversationId: string): void {
+    const existing = this.persistedInstances.get(identity) ?? {};
+    this.persistedInstances.set(identity, { ...existing, lastConversationId: conversationId });
+  }
+
   reassociateMeta(oldSessionId: string, newSessionId: string): void {
     if (oldSessionId === newSessionId) return;
     const meta = this.sessionMeta.get(oldSessionId);
@@ -344,6 +350,9 @@ export class SessionStore extends EventEmitter {
       const instData: PersistedInstance = {};
       if (instance.favorite) { instData.favorite = instance.favorite; instData.favoritedAt = instance.favoritedAt; }
       instData.lastSessionId = instance.sessionId;
+      // Carry over lastConversationId from persistedInstances (set by Tower when JSONL path is resolved)
+      const pi = this.persistedInstances.get(identity);
+      if (pi?.lastConversationId) instData.lastConversationId = pi.lastConversationId;
       data.instances![identity] = instData;
     }
     for (const [sessionId, entry] of this.persistedMeta) {

@@ -191,6 +191,10 @@ export class SessionStore extends EventEmitter {
         this.persist();
         this.emit('session-updated', this.get(identity));
     }
+    setInstanceConversationId(identity, conversationId) {
+        const existing = this.persistedInstances.get(identity) ?? {};
+        this.persistedInstances.set(identity, { ...existing, lastConversationId: conversationId });
+    }
     reassociateMeta(oldSessionId, newSessionId) {
         if (oldSessionId === newSessionId)
             return;
@@ -276,6 +280,10 @@ export class SessionStore extends EventEmitter {
                 instData.favoritedAt = instance.favoritedAt;
             }
             instData.lastSessionId = instance.sessionId;
+            // Carry over lastConversationId from persistedInstances (set by Tower when JSONL path is resolved)
+            const pi = this.persistedInstances.get(identity);
+            if (pi?.lastConversationId)
+                instData.lastConversationId = pi.lastConversationId;
             data.instances[identity] = instData;
         }
         for (const [sessionId, entry] of this.persistedMeta) {
