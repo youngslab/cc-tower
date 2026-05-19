@@ -1106,8 +1106,18 @@ export class Tower extends EventEmitter {
             if (persistedConvId) {
                 const persistedPath = path.join(projectDir, `${persistedConvId}.jsonl`);
                 if (fs.existsSync(persistedPath)) {
-                    logger.debug('tower: using persisted lastConversationId for JSONL', { identity: earlyIdentity, sessionId: info.sessionId, convId: persistedConvId });
-                    jsonlPath = persistedPath;
+                    // Validate mtime: skip if the JSONL hasn't been touched within 2 hours before session
+                    // start — guards against a stale lastConversationId from a much older session on the
+                    // same pane being incorrectly reused for a completely new conversation.
+                    const mtime = fs.statSync(persistedPath).mtimeMs;
+                    const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
+                    if (mtime >= info.startedAt - TWO_HOURS_MS) {
+                        logger.debug('tower: using persisted lastConversationId for JSONL', { identity: earlyIdentity, sessionId: info.sessionId, convId: persistedConvId });
+                        jsonlPath = persistedPath;
+                    }
+                    else {
+                        logger.debug('tower: skipping stale lastConversationId (mtime too old)', { identity: earlyIdentity, convId: persistedConvId, mtime, startedAt: info.startedAt });
+                    }
                 }
             }
         }
