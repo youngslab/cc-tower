@@ -390,6 +390,8 @@ export class Tower extends EventEmitter {
         catch {
             livePanes = new Set();
         }
+        // Track convIds already assigned in this rehydration pass to prevent two instances sharing one JSONL
+        const assignedConvIds = new Set();
         for (const [identity, inst] of this.store.getPersistedInstanceEntries()) {
             const sessionId = inst.lastSessionId;
             if (!sessionId)
@@ -438,8 +440,10 @@ export class Tower extends EventEmitter {
                 // Fallback: read directly from JSONL when sessions/<pid>.json has no name field
                 if (!sessionFileName && entry.cwd) {
                     const projectDir = path.join(claudeDir, 'projects', cwdToSlug(entry.cwd));
-                    // Priority: 1) lastConversationId (persisted JSONL UUID), 2) sessionId, 3) newest file
-                    const convId = inst.lastConversationId;
+                    // Priority: 1) lastConversationId (persisted JSONL UUID, if not already claimed by another instance)
+                    //           2) sessionId, 3) newest unclaimed file
+                    const convId = inst.lastConversationId && !assignedConvIds.has(inst.lastConversationId)
+                        ? inst.lastConversationId : undefined;
                     let jsonlPath = path.join(projectDir, `${convId ?? sessionId}.jsonl`);
                     if (!fs.existsSync(jsonlPath) && convId) {
                         jsonlPath = path.join(projectDir, `${sessionId}.jsonl`);
@@ -450,11 +454,14 @@ export class Tower extends EventEmitter {
                                 .filter(f => f.endsWith('.jsonl'))
                                 .map(f => ({ p: path.join(projectDir, f), m: fs.statSync(path.join(projectDir, f)).mtimeMs }))
                                 .sort((a, b) => b.m - a.m);
-                            if (files.length > 0)
-                                jsonlPath = files[0].p;
+                            const unclaimed = files.find(f => !assignedConvIds.has(path.basename(f.p, '.jsonl')));
+                            if (unclaimed)
+                                jsonlPath = unclaimed.p;
                         }
                         catch { }
                     }
+                    const usedConvId = path.basename(jsonlPath, '.jsonl');
+                    assignedConvIds.add(usedConvId);
                     sessionFileName = agents.claude.extractLabel(jsonlPath);
                 }
             }
