@@ -474,6 +474,30 @@ export class Tower extends EventEmitter {
               if (unclaimed) jsonlPath = unclaimed.p;
             } catch {}
           }
+          // Even when a trusted JSONL was found via lastConversationId, check if a newer unclaimed
+          // JSONL exists in the same project dir. This detects /clear: Claude Code does not update
+          // sessions/{pid}.json, so the active conversation may have advanced beyond lastConvId.
+          if (jsonlTrusted && fs.existsSync(jsonlPath)) {
+            try {
+              const dir = path.dirname(jsonlPath);
+              const currentMtime = fs.statSync(jsonlPath).mtimeMs;
+              const files = fs.readdirSync(dir)
+                .filter(f => f.endsWith('.jsonl'))
+                .map(f => ({ p: path.join(dir, f), m: fs.statSync(path.join(dir, f)).mtimeMs }))
+                .filter(f => f.m > currentMtime && !assignedConvIds.has(path.basename(f.p, '.jsonl')))
+                .sort((a, b) => b.m - a.m);
+              if (files.length > 0) {
+                const newerPath = files[0]!.p;
+                logger.debug('tower: rehydrate switching to newer JSONL (post-/clear)', {
+                  identity, old: path.basename(jsonlPath, '.jsonl'), newer: path.basename(newerPath, '.jsonl'),
+                });
+                jsonlPath = newerPath;
+                // Still considered trusted: the newer JSONL was created by /clear on this session.
+                // If it has a /rename, we want that label; if not, extractLabel returns undefined
+                // and entry.label (the previous /rename name) is preserved via store.register.
+              }
+            } catch {}
+          }
           const usedConvId = path.basename(jsonlPath, '.jsonl');
           assignedConvIds.add(usedConvId);
           // Only use JSONL-derived label when trusted; prefer entry.label for fallback JSONL
@@ -864,11 +888,36 @@ export class Tower extends EventEmitter {
     const session = this.store.get(identity);
     if (!session) return;
     const sessionId = session.sessionId;
-    const jp = this.jsonlPaths.get(sessionId);
+    let jp = this.jsonlPaths.get(sessionId);
     if (!jp) return;
 
-    // Hook-based correction already switched the sessionId and JSONL watcher.
-    // Just refresh summaries from the current (hook-corrected) JSONL.
+    // Check if a newer JSONL exists in the same project directory. This handles /clear:
+    // Claude Code does not update sessions/{pid}.json on /clear, so hookSid === session.sessionId
+    // and the hook-mismatch detection at line ~1661 never fires. Instead we detect the newer JSONL
+    // here on the session-start event that fires when the user sends the first message after /clear.
+    try {
+      const dir = path.dirname(jp);
+      const currentMtime = fs.statSync(jp).mtimeMs;
+      const watchedJsonls = new Set(this.jsonlPaths.values());
+      const newer = fs.readdirSync(dir)
+        .filter(f => f.endsWith('.jsonl'))
+        .map(f => ({ p: path.join(dir, f), m: fs.statSync(path.join(dir, f)).mtimeMs }))
+        .filter(f => f.m > currentMtime && !watchedJsonls.has(f.p))
+        .sort((a, b) => b.m - a.m)[0];
+      if (newer) {
+        logger.info('tower: session-start detected newer JSONL (post-/clear)', {
+          identity, sessionId, old: path.basename(jp, '.jsonl'), newer: path.basename(newer.p, '.jsonl'),
+        });
+        this.jsonlWatcher.unwatch(sessionId);
+        jp = newer.p;
+        this.jsonlPaths.set(sessionId, jp);
+        this.jsonlWatcher.watch(sessionId, jp);
+        this.store.setInstanceConversationId(identity, path.basename(jp, '.jsonl'));
+        const customTitle = agents.claude.extractLabel(jp);
+        if (customTitle) this.store.updateMeta(identity, { label: customTitle });
+      }
+    } catch {}
+
     this.store.updateMeta(identity, { goalSummary: undefined, contextSummary: undefined, nextSteps: undefined });
     void this.refreshGoalSummary(identity, jp);
     void this.refreshContextSummary(identity, jp);
@@ -1259,24 +1308,26 @@ export class Tower extends EventEmitter {
       if (change.to === 'idle') {
         const currentSess = this.store.get(identity);
         let jp = currentSess ? this.jsonlPaths.get(currentSess.sessionId) : undefined;
-        // Re-check: use most recently modified JSONL (conversation ID may differ from session ID)
+        // Re-check: use most recently modified JSONL (conversation ID may differ from session ID).
+        // Only consider JSONLs newer than the current one, and exclude paths already watched by
+        // other sessions (prevents stealing another session's JSONL on multi-session projects).
         if (jp && currentSess) {
           try {
             const dir = path.dirname(jp);
-            const files = fs.readdirSync(dir)
+            const currentMtime = fs.statSync(jp).mtimeMs;
+            const watchedJsonls = new Set(this.jsonlPaths.values());
+            const newer = fs.readdirSync(dir)
               .filter(f => f.endsWith('.jsonl') && !f.includes('/'))
-              .map(f => ({ name: f, mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
-              .sort((a, b) => b.mtime - a.mtime);
-            if (files.length > 0) {
-              const newest = path.join(dir, files[0]!.name);
-              if (newest !== jp) {
-                jp = newest;
-                this.jsonlPaths.set(currentSess.sessionId, jp);
-                this.jsonlWatcher.unwatch(currentSess.sessionId);
-                this.jsonlWatcher.watch(currentSess.sessionId, jp);
-                this.store.setInstanceConversationId(identity, path.basename(jp, '.jsonl'));
-                logger.info('tower: JSONL path updated on idle', { identity, newPath: jp });
-              }
+              .map(f => ({ p: path.join(dir, f), m: fs.statSync(path.join(dir, f)).mtimeMs }))
+              .filter(f => f.m > currentMtime && !watchedJsonls.has(f.p))
+              .sort((a, b) => b.m - a.m)[0];
+            if (newer) {
+              jp = newer.p;
+              this.jsonlPaths.set(currentSess.sessionId, jp);
+              this.jsonlWatcher.unwatch(currentSess.sessionId);
+              this.jsonlWatcher.watch(currentSess.sessionId, jp);
+              this.store.setInstanceConversationId(identity, path.basename(jp, '.jsonl'));
+              logger.info('tower: JSONL path updated on idle', { identity, newPath: jp });
             }
           } catch {}
         }
