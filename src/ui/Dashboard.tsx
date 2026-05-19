@@ -103,15 +103,14 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
     if (input === '[' && sorted[cursor]) {
       const inFav = cursor < favGroupEnd;
       if (inFav && cursor > 0) {
+        // cursorIdentity stays as current session → auto-resolves to new position after re-render
         onSwapFavoriteOrder(sorted[cursor]!.sessionId, sorted[cursor - 1]!.sessionId);
-        moveCursor(cursor - 1);
       } else if (!inFav && cursor > favGroupEnd) {
         const idx = cursor - favGroupEnd;
         const newOrder = [...nonFavOrderRef.current];
         [newOrder[idx - 1], newOrder[idx]] = [newOrder[idx]!, newOrder[idx - 1]!];
         nonFavOrderRef.current = newOrder;
         onDisplayOrderChange(newOrder);
-        moveCursor(cursor - 1);
         forceUpdate();
       }
     }
@@ -119,14 +118,12 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
       const inFav = cursor < favGroupEnd;
       if (inFav && cursor < favGroupEnd - 1) {
         onSwapFavoriteOrder(sorted[cursor]!.sessionId, sorted[cursor + 1]!.sessionId);
-        moveCursor(cursor + 1);
       } else if (!inFav && cursor < sorted.length - 1) {
         const idx = cursor - favGroupEnd;
         const newOrder = [...nonFavOrderRef.current];
         [newOrder[idx], newOrder[idx + 1]] = [newOrder[idx + 1]!, newOrder[idx]!];
         nonFavOrderRef.current = newOrder;
         onDisplayOrderChange(newOrder);
-        moveCursor(cursor + 1);
         forceUpdate();
       }
     }
