@@ -1,5 +1,5 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useReducer } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { EmptyState } from './EmptyState.js';
 const STATUS_ICONS = {
@@ -12,6 +12,7 @@ const STATUS_ICONS = {
 export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, onCursorChange, onSwapFavoriteOrder, onSelect, onSend, onToggleFavorite, onNewSession, onRefresh, onKill, onGo, onQuit, onDisplayOrderChange, initialDisplayOrder, pickerMode }) {
     const [confirmQuit, setConfirmQuit] = useState(false);
     const [confirmKill, setConfirmKill] = useState(false);
+    const [, forceUpdate] = useReducer(x => x + 1, 0);
     // Stable order ref for non-favorites — order doesn't change on status updates
     // Initialize from persisted displayOrder on first mount
     const nonFavOrderRef = useRef(initialDisplayOrder);
@@ -81,26 +82,32 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
             const inFav = cursor < favGroupEnd;
             if (inFav && cursor > 0) {
                 onSwapFavoriteOrder(sorted[cursor].sessionId, sorted[cursor - 1].sessionId);
+                moveCursor(cursor - 1);
             }
             else if (!inFav && cursor > favGroupEnd) {
                 const idx = cursor - favGroupEnd;
-                const a = nonFavOrderRef.current[idx];
-                const b = nonFavOrderRef.current[idx - 1];
-                nonFavOrderRef.current[idx] = b;
-                nonFavOrderRef.current[idx - 1] = a;
+                const newOrder = [...nonFavOrderRef.current];
+                [newOrder[idx - 1], newOrder[idx]] = [newOrder[idx], newOrder[idx - 1]];
+                nonFavOrderRef.current = newOrder;
+                onDisplayOrderChange(newOrder);
+                moveCursor(cursor - 1);
+                forceUpdate();
             }
         }
         if (input === ']' && sorted[cursor]) {
             const inFav = cursor < favGroupEnd;
             if (inFav && cursor < favGroupEnd - 1) {
                 onSwapFavoriteOrder(sorted[cursor].sessionId, sorted[cursor + 1].sessionId);
+                moveCursor(cursor + 1);
             }
             else if (!inFav && cursor < sorted.length - 1) {
                 const idx = cursor - favGroupEnd;
-                const a = nonFavOrderRef.current[idx];
-                const b = nonFavOrderRef.current[idx + 1];
-                nonFavOrderRef.current[idx] = b;
-                nonFavOrderRef.current[idx + 1] = a;
+                const newOrder = [...nonFavOrderRef.current];
+                [newOrder[idx], newOrder[idx + 1]] = [newOrder[idx + 1], newOrder[idx]];
+                nonFavOrderRef.current = newOrder;
+                onDisplayOrderChange(newOrder);
+                moveCursor(cursor + 1);
+                forceUpdate();
             }
         }
         // Number keys: jump to session (1-9)
