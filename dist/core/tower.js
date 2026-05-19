@@ -441,14 +441,16 @@ export class Tower extends EventEmitter {
                 if (!sessionFileName && entry.cwd) {
                     const projectDir = path.join(claudeDir, 'projects', cwdToSlug(entry.cwd));
                     // Priority: 1) lastConversationId (persisted JSONL UUID, if not already claimed by another instance)
-                    //           2) sessionId, 3) newest unclaimed file
+                    //           2) sessionId, 3) newest unclaimed file (label untrusted — entry.label preferred)
                     const convId = inst.lastConversationId && !assignedConvIds.has(inst.lastConversationId)
                         ? inst.lastConversationId : undefined;
                     let jsonlPath = path.join(projectDir, `${convId ?? sessionId}.jsonl`);
+                    let jsonlTrusted = true; // label from trusted JSONL (matched by convId or sessionId)
                     if (!fs.existsSync(jsonlPath) && convId) {
                         jsonlPath = path.join(projectDir, `${sessionId}.jsonl`);
                     }
                     if (!fs.existsSync(jsonlPath)) {
+                        jsonlTrusted = false; // using fallback JSONL — label may not belong to this session
                         try {
                             const files = fs.readdirSync(projectDir)
                                 .filter(f => f.endsWith('.jsonl'))
@@ -462,7 +464,10 @@ export class Tower extends EventEmitter {
                     }
                     const usedConvId = path.basename(jsonlPath, '.jsonl');
                     assignedConvIds.add(usedConvId);
-                    sessionFileName = agents.claude.extractLabel(jsonlPath);
+                    // Only use JSONL-derived label when trusted; prefer entry.label for fallback JSONL
+                    if (jsonlTrusted || !entry.label) {
+                        sessionFileName = agents.claude.extractLabel(jsonlPath);
+                    }
                 }
             }
             catch { }
