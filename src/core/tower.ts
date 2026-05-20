@@ -409,6 +409,22 @@ export class Tower extends EventEmitter {
     // Track convIds already assigned in this rehydration pass to prevent two instances sharing one JSONL
     const assignedConvIds = new Set<string>();
 
+    // Pre-collect live sessionIds from sessions/{pid}.json — these are "reserved" filenames even if
+    // the corresponding instance hasn't been processed yet in this loop. Prevents registration-order
+    // races where a stale-lastConvId session steals the active JSONL of a sibling in the same cwd.
+    const liveSessionIds = new Set<string>();
+    try {
+      const claudeDir = this.config.discovery.claude_dir.replace('~', os.homedir());
+      const sessionsDir = path.join(claudeDir, 'sessions');
+      for (const f of fs.readdirSync(sessionsDir)) {
+        if (!f.endsWith('.json')) continue;
+        try {
+          const pidJson = JSON.parse(fs.readFileSync(path.join(sessionsDir, f), 'utf8'));
+          if (typeof pidJson.sessionId === 'string') liveSessionIds.add(pidJson.sessionId);
+        } catch {}
+      }
+    } catch {}
+
     for (const [identity, inst] of this.store.getPersistedInstanceEntries()) {
       const sessionId = inst.lastSessionId;
       if (!sessionId) continue;
@@ -470,7 +486,10 @@ export class Tower extends EventEmitter {
                 .filter(f => f.endsWith('.jsonl'))
                 .map(f => ({ p: path.join(projectDir, f), m: fs.statSync(path.join(projectDir, f)).mtimeMs }))
                 .sort((a, b) => b.m - a.m);
-              const unclaimed = files.find(f => !assignedConvIds.has(path.basename(f.p, '.jsonl')));
+              const unclaimed = files.find(f => {
+                const cid = path.basename(f.p, '.jsonl');
+                return !assignedConvIds.has(cid) && !liveSessionIds.has(cid);
+              });
               if (unclaimed) jsonlPath = unclaimed.p;
             } catch {}
           }
@@ -484,7 +503,10 @@ export class Tower extends EventEmitter {
               const files = fs.readdirSync(dir)
                 .filter(f => f.endsWith('.jsonl'))
                 .map(f => ({ p: path.join(dir, f), m: fs.statSync(path.join(dir, f)).mtimeMs }))
-                .filter(f => f.m > currentMtime && !assignedConvIds.has(path.basename(f.p, '.jsonl')))
+                .filter(f => {
+                  const cid = path.basename(f.p, '.jsonl');
+                  return f.m > currentMtime && !assignedConvIds.has(cid) && !liveSessionIds.has(cid);
+                })
                 .sort((a, b) => b.m - a.m);
               if (files.length > 0) {
                 const newerPath = files[0]!.p;
@@ -1179,6 +1201,20 @@ export class Tower extends EventEmitter {
             .map(([, v]) => v.lastConversationId)
             .filter(Boolean) as string[]
         );
+        // Also skip JSONLs whose filename matches a live session's sessionId from sessions/{pid}.json.
+        // This prevents a stale-lastConvId session from stealing the active JSONL of a not-yet-registered
+        // sibling in the same project directory (registration-order race between same-cwd sessions).
+        try {
+          const sessionsDir = path.join(this.config.discovery.claude_dir.replace('~', os.homedir()), 'sessions');
+          for (const f of fs.readdirSync(sessionsDir)) {
+            if (!f.endsWith('.json')) continue;
+            try {
+              const pidJson = JSON.parse(fs.readFileSync(path.join(sessionsDir, f), 'utf8'));
+              const liveSid: string | undefined = pidJson.sessionId;
+              if (liveSid && liveSid !== info.sessionId) claimedConvIds.add(liveSid);
+            } catch {}
+          }
+        } catch {}
         const files = fs.readdirSync(projectDir)
           .filter(f => f.endsWith('.jsonl') && !f.includes('/'))
           .map(f => ({ name: f, path: path.join(projectDir, f), mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
