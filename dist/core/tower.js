@@ -1906,12 +1906,9 @@ export class Tower extends EventEmitter {
             if (current) {
                 this.store.update(identity, { messageCount: current.messageCount + 1 });
             }
-            // Refresh summaries on user input — captures new task context immediately
-            const jp = current ? this.jsonlPaths.get(current.sessionId) : undefined;
-            if (jp) {
-                void this.refreshGoalSummary(identity, jp);
-                void this.refreshContextSummary(identity, jp);
-            }
+            // On user-prompt, immediately check for a newer JSONL — this fires right after /clear before
+            // any session-start event, so it's the earliest point to detect the new conversation.
+            void this.refreshSessionAfterResume(identity);
         }
         if (event.event === 'pre-tool') {
             const current = this.store.get(identity);
