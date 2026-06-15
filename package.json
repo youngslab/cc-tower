@@ -1,12 +1,13 @@
 {
   "name": "popmux",
-  "version": "2.1.0",
+  "version": "2.3.1",
   "description": "Claude Code Session Control Tower — monitor and interact with multiple Claude Code sessions in tmux",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
     "popmux": "bin/popmux.js",
-    "popmux-go": "bin/popmux-go"
+    "popmux-go": "bin/popmux-go",
+    "popmux-toggle": "bin/popmux-toggle"
   },
   "files": [
     "bin/",

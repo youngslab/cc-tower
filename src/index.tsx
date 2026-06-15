@@ -488,6 +488,69 @@ program
     }
   });
 
+// Setup tmux F12 toggle binding
+//
+// Why this exists: tmux's `run-shell` / `display-popup` inherit the tmux
+// SERVER's environment, which usually does not include the npm global bin dir.
+// So a bare `run-shell popmux-toggle` fails with 127 ("command not found").
+// This command resolves popmux-toggle's absolute install path at setup time and
+// writes a single, self-contained binding into ~/.tmux.conf — generic across
+// machines (the path is computed, never hand-hardcoded) and idempotent.
+program
+  .command('setup-tmux')
+  .description('Install the F12 picker-popup toggle binding into ~/.tmux.conf')
+  .option('--key <key>', 'tmux key to bind (root table)', 'F12')
+  .action((opts: { key: string }) => {
+    // Resolve the npm global bin dir — it holds the `popmux`/`popmux-go`/
+    // `popmux-toggle` command symlinks that the toggle script resolves relative
+    // to itself. (The package bin/ dir is NOT usable: there `popmux` is
+    // `popmux.js`, not a runnable `popmux` command.)
+    let binDir: string;
+    try {
+      binDir = path.join(execSync('npm prefix -g', { encoding: 'utf8' }).trim(), 'bin');
+    } catch {
+      console.error('✗ Could not determine npm global bin dir (is npm installed?).');
+      process.exit(1);
+    }
+    const togglePath = path.join(binDir, 'popmux-toggle');
+    if (!fs.existsSync(togglePath)) {
+      console.error(`✗ popmux-toggle not found at ${togglePath}`);
+      console.error('  Reinstall popmux so its binaries are linked, then retry:');
+      console.error('    npm install -g popmux   (or: npm link, for a dev checkout)');
+      process.exit(1);
+    }
+
+    const confPath = path.join(os.homedir(), '.tmux.conf');
+    let content = fs.existsSync(confPath) ? fs.readFileSync(confPath, 'utf8') : '';
+
+    // Drop any block we previously wrote, and any legacy hand-written binding
+    // (single- or multi-line if-shell form), so re-running is a clean upsert.
+    content = content.replace(/\n*# >>> popmux >>>[\s\S]*?# <<< popmux <<<\n*/g, '\n');
+    content = content.replace(/\n*# popmux: session picker popup\n(?:.*\\\n)*.*popmux-toggle.*\n?/g, '\n');
+    content = content.replace(/\n{3,}/g, '\n\n').replace(/\s*$/, '\n');
+
+    const block = [
+      '',
+      '# >>> popmux >>>',
+      '# Managed by `popmux setup-tmux` — toggles the session picker popup.',
+      `bind-key -T root ${opts.key} run-shell '${togglePath}'`,
+      '# <<< popmux <<<',
+      '',
+    ].join('\n');
+    fs.writeFileSync(confPath, content + block);
+
+    console.log(`✓ Bound ${opts.key} → ${togglePath}`);
+    console.log(`  Written to ${confPath}`);
+
+    // Apply to the running server if there is one (no-op otherwise).
+    try {
+      execSync(`tmux source-file ${confPath}`, { stdio: 'ignore' });
+      console.log('  Reloaded current tmux config.');
+    } catch {
+      console.log(`  Not in tmux (or no server) — run \`tmux source-file ${confPath}\` later.`);
+    }
+  });
+
 // Label
 program
   .command('label <session> <name>')
@@ -724,6 +787,29 @@ program
     const { ok, report } = checkSsh(host);
     console.log(report);
     process.exit(ok ? 0 : 1);
+  });
+
+// Doctor: diagnose and optionally repair state.json corruption
+program
+  .command('doctor')
+  .description('Diagnose state.json corruption (label/summary cross-contamination)')
+  .argument('[subcommand]', 'subcommand: sessions (default)', 'sessions')
+  .option('--apply', 'Apply repairs (default: dry-run)')
+  .option('--dry-run', 'Print findings without modifying state.json (default)')
+  .action(async (sub: string, opts: { apply?: boolean; dryRun?: boolean }) => {
+    if (sub !== 'sessions') {
+      console.error(`popmux doctor: unknown subcommand '${sub}'. Known: sessions`);
+      process.exit(2);
+    }
+    const { runDoctor, printDoctorReport } = await import('./cli/doctor.js');
+    try {
+      const report = runDoctor({ apply: opts.apply, dryRun: opts.dryRun });
+      printDoctorReport(report);
+      process.exit(report.findings.length === 0 ? 0 : (opts.apply ? 0 : 1));
+    } catch (err) {
+      console.error(`popmux doctor: ${String(err)}`);
+      process.exit(2);
+    }
   });
 
 // Internal: hook CLI fallback

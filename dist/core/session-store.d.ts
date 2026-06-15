@@ -67,6 +67,7 @@ interface PersistedInstance {
     favoritedAt?: number;
     lastSessionId?: string;
     lastConversationId?: string;
+    lastSeenAt?: number;
 }
 export declare function sessionIdentity(s: {
     paneId?: string;
@@ -80,18 +81,35 @@ export declare class SessionStore extends EventEmitter {
     private persistedMeta;
     private persistedInstances;
     private _displayOrder;
+    private _dropExpected;
     constructor(persistPath: string);
     getAll(): Session[];
     get(identity: string): Session | undefined;
     getByPid(pid: number): Session | undefined;
     getBySessionId(sessionId: string): Session | undefined;
     rekey(oldIdentity: string, newIdentity: string): void;
-    register(session: Session): void;
+    register(session: Session, opts?: {
+        chosenConversationId?: string;
+    }): void;
     unregister(identity: string): void;
     update(identity: string, patch: Partial<Session>): void;
     updateMeta(identity: string, patch: Partial<SessionMeta>): void;
     setInstanceConversationId(identity: string, conversationId: string): void;
     reassociateMeta(oldSessionId: string, newSessionId: string): void;
+    /**
+     * Per Principle 3 of the cross-contamination RCA: when a conversation rotates
+     * (stale-sid hook path, /clear), drop conversation-scoped metadata
+     * (label/goalSummary/contextSummary/nextSteps). Identity-scoped fields
+     * (favorite/favoritedAt/tags/sshTarget/projectName) are preserved and copied
+     * to the new sessionId key. The old key is removed (not merely emptied).
+     *
+     * Callers MUST invoke this BEFORE update({ sessionId }) on the same identity.
+     * Returns null if instance not found or no prior meta existed.
+     */
+    dropConversationScopedMeta(identity: string, newSessionId: string): {
+        droppedKeys: string[];
+        oldSid: string;
+    } | null;
     updateBySessionId(sessionId: string, patch: Partial<Session>): void;
     persist(): void;
     /** Synchronous persist — use at shutdown before process.exit() */

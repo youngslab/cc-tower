@@ -10,7 +10,7 @@
 import { parseSessionFile, scanProcesses, isHeadlessSession } from './detector.js';
 import { coldStartScan, coldStartLastTask, coldStartCustomTitle, } from './status-inferer.js';
 import { extractLabel } from './label-matcher.js';
-import { generateContextSummary, generateGoalSummary, generateNextSteps, clearSummaryCache, startLlmSession, stopLlmSession, getLlmSessionName, } from './summarizer.js';
+import { generateContextSummary, generateGoalSummary, generateNextSteps, generateAllSummaries, clearSummaryCache, startLlmSession, stopLlmSession, getLlmSessionName, } from './summarizer.js';
 export const ClaudeAgent = {
     // detector
     parseSessionFile,
@@ -26,6 +26,7 @@ export const ClaudeAgent = {
     generateContextSummary,
     generateGoalSummary,
     generateNextSteps,
+    generateAllSummaries,
     clearSummaryCache,
     startLlmSession,
     stopLlmSession,

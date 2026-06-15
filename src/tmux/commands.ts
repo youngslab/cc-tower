@@ -114,14 +114,6 @@ export const tmux = {
     }
   },
 
-  async renameSession(target: string, newName: string): Promise<void> {
-    try {
-      await execa('tmux', ['rename-session', '-t', target, newName]);
-    } catch (err) {
-      throw new Error(`tmux rename-session ${target} → ${newName} failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  },
-
   async killSession(name: string): Promise<void> {
     try {
       await execa('tmux', ['kill-session', '-t', name]);

@@ -10,6 +10,7 @@ export declare const agents: {
         readonly generateContextSummary: typeof import("./claude/summarizer.js").generateContextSummary;
         readonly generateGoalSummary: typeof import("./claude/summarizer.js").generateGoalSummary;
         readonly generateNextSteps: typeof import("./claude/summarizer.js").generateNextSteps;
+        readonly generateAllSummaries: typeof import("./claude/summarizer.js").generateAllSummaries;
         readonly clearSummaryCache: typeof import("./claude/summarizer.js").clearSummaryCache;
         readonly startLlmSession: typeof import("./claude/summarizer.js").startLlmSession;
         readonly stopLlmSession: typeof import("./claude/summarizer.js").stopLlmSession;

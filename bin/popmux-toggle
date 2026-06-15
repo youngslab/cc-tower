@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# popmux-toggle — open the popmux picker popup, or close it if already open.
+#
+# Single source of truth for popup open/close state. Unlike a naive touch-file
+# flag, the lock stores the owning PID and is validated for liveness on every
+# invocation, so a crashed/killed popup (lock never cleaned) self-heals on the
+# next keypress instead of wedging the toggle.
+#
+# Sibling binaries (popmux, popmux-go) are resolved by this script's own
+# location and passed as absolute paths, so the toggle works regardless of the
+# PATH that tmux's run-shell / display-popup inherits (the tmux server's
+# environment, which usually does NOT include the npm global bin dir).
+#
+# Intended as a tmux key-binding target (installed by `popmux setup-tmux`):
+#   bind-key -T root F12 run-shell '/abs/path/to/popmux-toggle'
+set -euo pipefail
+
+# Directory of this script *as invoked* (do NOT resolve the symlink target —
+# the npm bin dir holds the `popmux`/`popmux-go` command symlinks, whereas the
+# package bin dir holds `popmux.js`, which is not a runnable `popmux` command).
+SELF_DIR="$(cd "$(dirname "$0")" >/dev/null 2>&1 && pwd)"
+
+# popmux-go reads POPMUX_BIN to locate the popmux CLI; hand it an absolute path
+# so the picker command still resolves inside the popup's (server-env) shell.
+export POPMUX_BIN="${POPMUX_BIN:-$SELF_DIR/popmux}"
+
+RUNDIR="${XDG_RUNTIME_DIR:-/tmp}/popmux"
+LOCK="$RUNDIR/popup.lock"
+mkdir -p "$RUNDIR"
+
+# True iff a popup is currently open (lock present AND owning PID still alive).
+popup_alive() {
+  [ -f "$LOCK" ] || return 1
+  local pid
+  pid="$(cat "$LOCK" 2>/dev/null || true)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+if popup_alive; then
+  # Open → close it. The owner's EXIT trap below also removes the lock; the
+  # extra rm here is idempotent and covers a closer that wins the race.
+  tmux display-popup -C 2>/dev/null || true
+  rm -f "$LOCK"
+  exit 0
+fi
+
+# Closed (or stale lock from a dead owner) → open and take ownership.
+echo $$ >"$LOCK"
+trap 'rm -f "$LOCK"' EXIT
+"$SELF_DIR/popmux-go"

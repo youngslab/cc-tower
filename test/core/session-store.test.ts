@@ -469,6 +469,173 @@ describe('SessionStore', () => {
 
   // --- getPastSessionsByCwd excludes active sessions by sessionId ---
 
+  // --- Claim A regression: register() chosenConversationId guard ---
+
+  it('T6: register() does NOT override sessionId when lastConversationId !== chosenConvId', async () => {
+    const { writeFile, mkdir } = await import('node:fs/promises');
+    const { dirname } = await import('node:path');
+    // Pre-populate state with a persistedInstance under identity %X
+    const stateData = {
+      version: 3,
+      sessions: {},
+      instances: {
+        '%X': { lastSessionId: 'cached-sid-AAAA', lastConversationId: 'cached-convid-BBBB' },
+      },
+    };
+    await mkdir(dirname(persistPath), { recursive: true });
+    await writeFile(persistPath, JSON.stringify(stateData), 'utf8');
+    const store2 = new SessionStore(persistPath);
+    store2.restore();
+
+    // Now register with sessionId different from cache, and a chosenConvId that does NOT match
+    const session = makeSession({ paneId: '%X', pid: 999, sessionId: 'incoming-sid-CCCC' });
+    store2.register(session, { chosenConversationId: 'a-different-convid' });
+    // sessionId must remain the incoming one (no override)
+    expect(store2.get('%X')?.sessionId).toBe('incoming-sid-CCCC');
+  });
+
+  it('T7: register() DOES override sessionId when lastConversationId === chosenConvId', async () => {
+    const { writeFile, mkdir } = await import('node:fs/promises');
+    const { dirname } = await import('node:path');
+    const stateData = {
+      version: 3,
+      sessions: {},
+      instances: {
+        '%Y': { lastSessionId: 'cached-sid-DDDD', lastConversationId: 'matched-convid-EEEE' },
+      },
+    };
+    await mkdir(dirname(persistPath), { recursive: true });
+    await writeFile(persistPath, JSON.stringify(stateData), 'utf8');
+    const store2 = new SessionStore(persistPath);
+    store2.restore();
+
+    const session = makeSession({ paneId: '%Y', pid: 777, sessionId: 'incoming-sid-FFFF' });
+    store2.register(session, { chosenConversationId: 'matched-convid-EEEE' });
+    // sessionId was overridden by cache (because chosenConvId matches lastConversationId)
+    expect(store2.get('%Y')?.sessionId).toBe('cached-sid-DDDD');
+  });
+
+  it('T6b: register() with undefined chosenConvId NEVER overrides (fail-closed)', async () => {
+    const { writeFile, mkdir } = await import('node:fs/promises');
+    const { dirname } = await import('node:path');
+    const stateData = {
+      version: 3,
+      sessions: {},
+      instances: {
+        '%Z': { lastSessionId: 'cached-sid-GGGG', lastConversationId: 'something-HHHH' },
+      },
+    };
+    await mkdir(dirname(persistPath), { recursive: true });
+    await writeFile(persistPath, JSON.stringify(stateData), 'utf8');
+    const store2 = new SessionStore(persistPath);
+    store2.restore();
+
+    const session = makeSession({ paneId: '%Z', pid: 555, sessionId: 'incoming-sid-IIII' });
+    store2.register(session); // no chosenConversationId
+    expect(store2.get('%Z')?.sessionId).toBe('incoming-sid-IIII');
+  });
+
+  // --- Claim E regression: lastSeenAt TTL eviction ---
+
+  it('T8: _buildPersistData() evicts non-favorite persistedInstance entries older than 30 days', async () => {
+    const { writeFile, mkdir } = await import('node:fs/promises');
+    const { dirname } = await import('node:path');
+    const thirtyOneDaysAgoMs = Date.now() - 31 * 24 * 60 * 60 * 1000;
+    const fiveDaysAgoMs = Date.now() - 5 * 24 * 60 * 60 * 1000;
+    const stateData = {
+      version: 3,
+      sessions: {},
+      instances: {
+        '%stale': { lastSessionId: 'sid-stale', lastSeenAt: thirtyOneDaysAgoMs },
+        '%fresh': { lastSessionId: 'sid-fresh', lastSeenAt: fiveDaysAgoMs },
+        '%favStale': { lastSessionId: 'sid-favStale', favorite: true, favoritedAt: 1, lastSeenAt: thirtyOneDaysAgoMs },
+      },
+    };
+    await mkdir(dirname(persistPath), { recursive: true });
+    await writeFile(persistPath, JSON.stringify(stateData), 'utf8');
+    const store2 = new SessionStore(persistPath);
+    store2.restore();
+    store2.persistSync();
+
+    const raw = require('node:fs').readFileSync(persistPath, 'utf8');
+    const data = JSON.parse(raw);
+    expect(data.instances['%stale']).toBeUndefined(); // evicted
+    expect(data.instances['%fresh']).toBeDefined();   // kept (recent)
+    expect(data.instances['%favStale']).toBeDefined(); // kept (favorite)
+  });
+
+  it('T9: restore() backfills lastSeenAt for entries missing it', async () => {
+    const { writeFile, mkdir } = await import('node:fs/promises');
+    const { dirname } = await import('node:path');
+    const stateData = {
+      version: 3,
+      sessions: {
+        'sid-with-started': { startedAt: 12345 },
+      },
+      instances: {
+        '%noLast': { lastSessionId: 'sid-with-started' }, // missing lastSeenAt
+      },
+    };
+    await mkdir(dirname(persistPath), { recursive: true });
+    await writeFile(persistPath, JSON.stringify(stateData), 'utf8');
+    const store2 = new SessionStore(persistPath);
+    store2.restore();
+    // Backfilled to startedAt
+    const entries = store2.getPersistedInstanceEntries();
+    const noLast = entries.find(([id]) => id === '%noLast');
+    expect(noLast?.[1]?.lastSeenAt).toBe(12345);
+  });
+
+  // --- Claim D regression: dropConversationScopedMeta (Test I4) ---
+
+  it('I4: dropConversationScopedMeta drops conv-scoped meta and preserves identity-scoped meta', () => {
+    store.register(makeSession({ paneId: '%7', pid: 100, sessionId: 'A' }));
+    // Seed meta on sessionId A
+    store.updateMeta('%7', {
+      label: 'oldLabel',
+      goalSummary: 'oldGoal',
+      contextSummary: 'oldCtx',
+      nextSteps: 'oldNext',
+      tags: ['x'],
+    });
+
+    const result = store.dropConversationScopedMeta('%7', 'B');
+    expect(result).not.toBeNull();
+    expect(result?.oldSid).toBe('A');
+    expect(new Set(result?.droppedKeys ?? [])).toEqual(new Set(['label', 'goalSummary', 'contextSummary', 'nextSteps']));
+
+    // (a) sessionMeta[B] exists
+    const meta = (store as any).sessionMeta as Map<string, any>;
+    expect(meta.has('B')).toBe(true);
+    // (b-e) all conv-scoped fields dropped on B
+    const newMeta = meta.get('B');
+    expect(newMeta.label).toBeUndefined();
+    expect(newMeta.goalSummary).toBeUndefined();
+    expect(newMeta.contextSummary).toBeUndefined();
+    expect(newMeta.nextSteps).toBeUndefined();
+    // (h) tags preserved (identity-scoped within SessionMeta)
+    expect(newMeta.tags).toEqual(['x']);
+    // (k) old key removed (not merely emptied)
+    expect(meta.has('A')).toBe(false);
+  });
+
+  it('I4b: after dropConversationScopedMeta + update({ sessionId }), no WARN about silent mutation', () => {
+    // No simple way to assert log absence without mocking logger; this test confirms
+    // sequencing does not throw and meta state is correct.
+    store.register(makeSession({ paneId: '%7', pid: 100, sessionId: 'A' }));
+    store.updateMeta('%7', { label: 'oldLabel', goalSummary: 'g' });
+    expect(() => {
+      store.dropConversationScopedMeta('%7', 'B');
+      store.update('%7', { sessionId: 'B' });
+    }).not.toThrow();
+    expect(store.get('%7')?.sessionId).toBe('B');
+    expect(store.get('%7')?.label).toBeUndefined();
+  });
+
+  it('dropConversationScopedMeta returns null when instance not found', () => {
+    expect(store.dropConversationScopedMeta('nonexistent', 'new-sid')).toBeNull();
+  });
+
   it('getPastSessionsByCwd excludes active sessions correctly', () => {
     // Active session with paneId as identity
     store.register(makeSession({ paneId: '%7', pid: 100, sessionId: 'active-uuid', cwd: '/proj' }));

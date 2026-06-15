@@ -1,35 +1,31 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { logger } from '../../utils/logger.js';
 import { cleanDisplayText } from '../../utils/slug.js';
 
 /**
- * LLM-based context summarizer using parallel `claude --print` calls.
+ * LLM-based context summarizer using a single combined `claude --print` call.
  *
  * Architecture:
- * - Each summary request spawns an independent `claude --print` via `sh -c`
+ * - generateAllSummaries() issues ONE claude --print call for goal+context+nextSteps
  * - Fully async (spawn, not execSync) — does NOT block the event loop / UI
  * - No shared state, no context contamination between sessions
- * - ~8-10s per call (CLI startup), but parallel calls complete together
- * - Cache by content hash + persist in session store for instant cold start
+ * - Cache by sha256 content hash + persist in session store for instant cold start
  */
 
-// Cache: sessionId → { summary, hash }
-const cache = new Map<string, { summary: string; hash: string }>();
-const inflight = new Set<string>();
+export interface AllSummaries {
+  goal?: string;
+  context?: string;
+  nextSteps?: string;
+}
 
-// Goal cache: sessionId → { summary, hash }
-const goalCache = new Map<string, { summary: string; hash: string }>();
-const goalInflight = new Set<string>();
-
-// Next steps cache: sessionId → { summary, hash }
-const nextStepsCache = new Map<string, { summary: string; hash: string }>();
-const nextStepsInflight = new Set<string>();
+// Combined cache: sessionId → { result, hash }
+const allCache = new Map<string, { result: AllSummaries; hash: string }>();
+const allInflight = new Set<string>();
 
 /** Clear all cached summaries for a session so next call regenerates. */
 export function clearSummaryCache(sessionId: string): void {
-  cache.delete(sessionId);
-  goalCache.delete(sessionId);
-  nextStepsCache.delete(sessionId);
+  allCache.delete(sessionId);
 }
 
 export async function startLlmSession(): Promise<void> {}
@@ -37,119 +33,92 @@ export async function stopLlmSession(): Promise<void> {}
 export function getLlmSessionName(): string { return '_popmux_llm'; }
 
 /**
- * Generate a 1-line context summary using `claude --print`.
- * Fully async + non-blocking. Returns cached result if messages unchanged.
+ * Generate goal + context + nextSteps in ONE `claude --print` call.
+ * earlyMessages = first N turns (for goal detection)
+ * recentMessages = last N turns (for context + nextSteps)
+ * Returns cached result if content hash unchanged.
  */
-export async function generateContextSummary(
-  sessionId: string,
-  recentMessages: string,
-): Promise<string | undefined> {
-  const hash = simpleHash(recentMessages);
-  const cached = cache.get(sessionId);
-  if (cached && cached.hash === hash) return cached.summary;
-
-  if (inflight.has(sessionId)) return cached?.summary;
-
-  inflight.add(sessionId);
-  try {
-    const prompt = `Read the recent dev session messages below. Summarize what was accomplished (the result/outcome) in one line (max 50 words). Use the same language the user is using. Output ONLY the summary.\n\n${recentMessages.slice(-2500)}`;
-
-    const stdout = await runClaude(prompt);
-
-    if (stdout) {
-      const firstLine = stdout.trim().split('\n')[0] ?? '';
-      const summary = cleanDisplayText(firstLine).slice(0, 120);
-      if (summary && summary.length > 3) {
-        cache.set(sessionId, { summary, hash });
-        return summary;
-      }
-    }
-  } catch (err) {
-    logger.info('llm-summarizer: failed', { sessionId, error: String(err) });
-  } finally {
-    inflight.delete(sessionId);
-  }
-
-  return cached?.summary;
-}
-
-/**
- * Generate a 1-line goal summary using `claude --print`.
- * Generated once from early messages. Returns cached result if messages unchanged.
- */
-export async function generateGoalSummary(
+export async function generateAllSummaries(
   sessionId: string,
   earlyMessages: string,
-): Promise<string | undefined> {
-  const hash = simpleHash(earlyMessages);
-  const cached = goalCache.get(sessionId);
-  if (cached && cached.hash === hash) return cached.summary;
-
-  if (goalInflight.has(sessionId)) return cached?.summary;
-
-  goalInflight.add(sessionId);
-  try {
-    const prompt = `Read the recent dev session conversation below. What is the user currently trying to accomplish right now? Summarize their current intent/goal in one line (max 50 words). Use the same language the user is using. Output ONLY the summary.\n\n${earlyMessages.slice(-2500)}`;
-
-    const stdout = await runClaude(prompt);
-
-    if (stdout) {
-      const firstLine = stdout.trim().split('\n')[0] ?? '';
-      const summary = cleanDisplayText(firstLine).slice(0, 120);
-      if (summary && summary.length > 3) {
-        goalCache.set(sessionId, { summary, hash });
-        return summary;
-      }
-    }
-  } catch (err) {
-    logger.info('llm-summarizer: goal summary failed', { sessionId, error: String(err) });
-  } finally {
-    goalInflight.delete(sessionId);
-  }
-
-  return cached?.summary;
-}
-
-/**
- * Generate a next-steps suggestion using `claude --print`.
- * Called on idle transition. Returns undefined if no clear next step.
- */
-export async function generateNextSteps(
-  sessionId: string,
   recentMessages: string,
-): Promise<string | undefined> {
-  const hash = simpleHash(recentMessages);
-  const cached = nextStepsCache.get(sessionId);
-  if (cached && cached.hash === hash) return cached.summary;
+): Promise<AllSummaries | undefined> {
+  const hash = contentHash(earlyMessages + '\x00' + recentMessages);
+  const cached = allCache.get(sessionId);
+  if (cached && cached.hash === hash) return cached.result;
 
-  if (nextStepsInflight.has(sessionId)) return cached?.summary;
+  if (allInflight.has(sessionId)) return cached?.result;
 
-  nextStepsInflight.add(sessionId);
+  allInflight.add(sessionId);
   try {
-    const prompt = `Analyze this dev session and suggest what the user should do next. If the work is fully complete with no obvious next step, output "NONE". Max 30 words. Use the same language the user is using. Output ONLY the suggestion.\n\n${recentMessages.slice(-2500)}`;
+    const prompt =
+      `Read this dev session. Output ONLY a valid JSON object with these exact keys:\n` +
+      `{"goal":"one-line user intent (max 50 words)","context":"one-line what was accomplished (max 50 words)","nextSteps":"what to do next or NONE (max 30 words)"}\n` +
+      `Use the same language as the user. No explanation, no markdown, just the JSON.\n\n` +
+      `=== EARLY MESSAGES ===\n${earlyMessages.slice(0, 2000)}\n\n` +
+      `=== RECENT MESSAGES ===\n${recentMessages.slice(-2000)}`;
 
     const stdout = await runClaude(prompt);
+    if (!stdout) return cached?.result;
 
-    if (stdout) {
-      const firstLine = stdout.trim().split('\n')[0] ?? '';
-      const suggestion = cleanDisplayText(firstLine).slice(0, 120);
-      if (!suggestion || suggestion.length < 3 || suggestion.toUpperCase() === 'NONE') {
-        return undefined;
-      }
-      nextStepsCache.set(sessionId, { summary: suggestion, hash });
-      return suggestion;
+    const result = parseAllSummariesOutput(stdout);
+    if (result) {
+      allCache.set(sessionId, { result, hash });
+      return result;
     }
   } catch (err) {
-    logger.info('llm-summarizer: next steps failed', { sessionId, error: String(err) });
+    logger.info('llm-summarizer: generateAllSummaries failed', { sessionId, error: String(err) });
   } finally {
-    nextStepsInflight.delete(sessionId);
+    allInflight.delete(sessionId);
   }
 
-  return cached?.summary;
+  return cached?.result;
+}
+
+function parseAllSummariesOutput(raw: string): AllSummaries | undefined {
+  // Extract JSON from output (handle markdown code blocks)
+  const jsonMatch = raw.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) return undefined;
+  try {
+    const parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
+    const result: AllSummaries = {};
+    if (typeof parsed['goal'] === 'string') {
+      const g = cleanDisplayText(parsed['goal']).slice(0, 120);
+      if (g.length > 3) result.goal = g;
+    }
+    if (typeof parsed['context'] === 'string') {
+      const c = cleanDisplayText(parsed['context']).slice(0, 120);
+      if (c.length > 3) result.context = c;
+    }
+    if (typeof parsed['nextSteps'] === 'string') {
+      const n = cleanDisplayText(parsed['nextSteps']).slice(0, 120);
+      if (n.length > 3 && n.toUpperCase() !== 'NONE') result.nextSteps = n;
+    }
+    return (result.goal || result.context) ? result : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// Keep individual exports for remote SSH path (used in tower.ts remote helpers)
+export async function generateContextSummary(sessionId: string, recentMessages: string): Promise<string | undefined> {
+  const res = await generateAllSummaries(sessionId, recentMessages, recentMessages);
+  return res?.context;
+}
+
+export async function generateGoalSummary(sessionId: string, earlyMessages: string): Promise<string | undefined> {
+  const res = await generateAllSummaries(sessionId, earlyMessages, earlyMessages);
+  return res?.goal;
+}
+
+export async function generateNextSteps(sessionId: string, recentMessages: string): Promise<string | undefined> {
+  const res = await generateAllSummaries(sessionId, recentMessages, recentMessages);
+  return res?.nextSteps;
 }
 
 /**
- * Spawn `claude --print` via `sh -c` — fully async, non-blocking.
+ * Spawn `claude --print` — fully async, non-blocking.
+ * stderr is kept separate to avoid polluting the output.
  */
 function runClaude(prompt: string): Promise<string> {
   return new Promise((resolve) => {
@@ -163,7 +132,7 @@ function runClaude(prompt: string): Promise<string> {
 
     let out = '';
     child.stdout.on('data', (d: Buffer) => { out += d.toString(); });
-    child.stderr.on('data', (d: Buffer) => { out += d.toString(); });
+    // stderr intentionally discarded — do not mix into output
 
     const timer = setTimeout(() => {
       child.kill();
@@ -182,10 +151,6 @@ function runClaude(prompt: string): Promise<string> {
   });
 }
 
-function simpleHash(str: string): string {
-  let h = 0;
-  for (let i = 0; i < str.length; i++) {
-    h = ((h << 5) - h + str.charCodeAt(i)) | 0;
-  }
-  return h.toString(36);
+function contentHash(str: string): string {
+  return createHash('sha256').update(str).digest('hex').slice(0, 16);
 }

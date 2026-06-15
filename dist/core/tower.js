@@ -11,10 +11,11 @@ import { Summarizer } from './summarizer.js';
 import { Notifier } from './notifier.js';
 import { mapPidToPane } from '../tmux/pane-mapper.js';
 import { isHeadlessProcess, isPidAlive, getPpid } from '../utils/pid-resolver.js';
-import { tmux } from '../tmux/commands.js';
 import { cwdToSlug, cleanDisplayText, isInternalMessage } from '../utils/slug.js';
 import { agents } from '../agents/registry.js';
 import { logger } from '../utils/logger.js';
+import { ConversationResolver } from './conversation-resolver.js';
+import { ConversationLedger } from './conversation-ledger.js';
 import { parseJsonlLine } from '../utils/jsonl-parser.js';
 import { ConnectionManager } from '../ssh/connection-manager.js';
 import { RemoteDiscovery } from '../ssh/remote-discovery.js';
@@ -44,6 +45,8 @@ export class Tower extends EventEmitter {
     skipColdStart;
     skipSummary;
     readOnly;
+    resolver;
+    ledger;
     constructor(config, opts) {
         super();
         this.config = config ?? loadConfig();
@@ -63,6 +66,14 @@ export class Tower extends EventEmitter {
         const popmuxSocket = path.join(runtimeDir, 'popmux.sock');
         const legacySocket = path.join(runtimeDir, 'cc-tower.sock');
         this.store = new SessionStore(persistPath);
+        const claudeDirResolved = (config ?? loadConfig()).discovery.claude_dir.replace('~', os.homedir());
+        this.resolver = new ConversationResolver(claudeDirResolved, {
+            skipContentProbes: opts?.skipColdStart ?? false,
+        });
+        // Ledger disabled in skipColdStart / readOnly / picker mode
+        if (!opts?.skipColdStart) {
+            this.ledger = new ConversationLedger();
+        }
         this.discovery = new DiscoveryEngine({
             scan_interval: this.config.discovery.scan_interval,
             claude_dir: this.config.discovery.claude_dir.replace('~', os.homedir()),
@@ -430,6 +441,7 @@ export class Tower extends EventEmitter {
             const projectName = entry.cwd.split('/').filter(Boolean).pop() ?? entry.cwd;
             // Read /rename name from session file — look up by sessionId since pid may not be persisted
             let sessionFileName;
+            let rehydrateUsedConvId;
             try {
                 const claudeDir = this.config.discovery.claude_dir.replace('~', os.homedir());
                 const sessionsDir = path.join(claudeDir, 'sessions');
@@ -456,68 +468,36 @@ export class Tower extends EventEmitter {
                         catch { }
                     }
                 }
-                // Fallback: read directly from JSONL when sessions/<pid>.json has no name field
-                if (!sessionFileName && entry.cwd) {
+                // Resolve JSONL via ConversationResolver (handles /clear, worktree fallback, claim dedup)
+                if (entry.cwd) {
                     const projectDir = path.join(claudeDir, 'projects', cwdToSlug(entry.cwd));
-                    // Priority: 1) lastConversationId (persisted JSONL UUID, if not already claimed by another instance)
-                    //           2) sessionId, 3) newest unclaimed file (label untrusted — entry.label preferred)
-                    const convId = inst.lastConversationId && !assignedConvIds.has(inst.lastConversationId)
-                        ? inst.lastConversationId : undefined;
-                    let jsonlPath = path.join(projectDir, `${convId ?? sessionId}.jsonl`);
-                    let jsonlTrusted = true; // label from trusted JSONL (matched by convId or sessionId)
-                    if (!fs.existsSync(jsonlPath) && convId) {
-                        jsonlPath = path.join(projectDir, `${sessionId}.jsonl`);
-                    }
-                    if (!fs.existsSync(jsonlPath)) {
-                        jsonlTrusted = false; // using fallback JSONL — label may not belong to this session
-                        try {
-                            const files = fs.readdirSync(projectDir)
-                                .filter(f => f.endsWith('.jsonl'))
-                                .map(f => ({ p: path.join(projectDir, f), m: fs.statSync(path.join(projectDir, f)).mtimeMs }))
-                                .sort((a, b) => b.m - a.m);
-                            const unclaimed = files.find(f => {
-                                const cid = path.basename(f.p, '.jsonl');
-                                return !assignedConvIds.has(cid) && !liveSessionIds.has(cid);
-                            });
-                            if (unclaimed)
-                                jsonlPath = unclaimed.p;
-                        }
-                        catch { }
-                    }
-                    // Even when a trusted JSONL was found via lastConversationId, check if a newer unclaimed
-                    // JSONL exists in the same project dir. This detects /clear: Claude Code does not update
-                    // sessions/{pid}.json, so the active conversation may have advanced beyond lastConvId.
-                    if (jsonlTrusted && fs.existsSync(jsonlPath)) {
-                        try {
-                            const dir = path.dirname(jsonlPath);
-                            const currentMtime = fs.statSync(jsonlPath).mtimeMs;
-                            const files = fs.readdirSync(dir)
-                                .filter(f => f.endsWith('.jsonl'))
-                                .map(f => ({ p: path.join(dir, f), m: fs.statSync(path.join(dir, f)).mtimeMs }))
-                                .filter(f => {
-                                const cid = path.basename(f.p, '.jsonl');
-                                return f.m > currentMtime && !assignedConvIds.has(cid) && !liveSessionIds.has(cid);
-                            })
-                                .sort((a, b) => b.m - a.m);
-                            if (files.length > 0) {
-                                const newerPath = files[0].p;
-                                logger.debug('tower: rehydrate switching to newer JSONL (post-/clear)', {
-                                    identity, old: path.basename(jsonlPath, '.jsonl'), newer: path.basename(newerPath, '.jsonl'),
-                                });
-                                jsonlPath = newerPath;
-                                // Still considered trusted: the newer JSONL was created by /clear on this session.
-                                // If it has a /rename, we want that label; if not, extractLabel returns undefined
-                                // and entry.label (the previous /rename name) is preserved via store.register.
-                            }
-                        }
-                        catch { }
-                    }
+                    const rehydrateResult = this.resolver.claim({
+                        paneId,
+                        pid: entry.pid ?? 0,
+                        cwd: entry.cwd,
+                        hookSid: sessionId,
+                        hookTimestampMs: Date.now(),
+                        hookEvent: 'rehydrate',
+                        persistedConversationId: inst.lastConversationId,
+                    });
+                    const jsonlPath = rehydrateResult.evidence.jsonlPath
+                        ?? path.join(projectDir, `${inst.lastConversationId ?? sessionId}.jsonl`);
                     const usedConvId = path.basename(jsonlPath, '.jsonl');
+                    rehydrateUsedConvId = usedConvId;
                     assignedConvIds.add(usedConvId);
-                    // Only use JSONL-derived label when trusted; prefer entry.label for fallback JSONL
-                    if (jsonlTrusted || !entry.label) {
+                    // Claim C fix: only overwrite the pid.json-derived label with the JSONL's
+                    // custom-title when the resolver claimed this JSONL with ≥medium confidence
+                    // AND the resolved convId matches the JSONL we are actually using.
+                    const labelConfident = (rehydrateResult.confidence === 'medium' || rehydrateResult.confidence === 'high')
+                        && rehydrateResult.conversationId === usedConvId;
+                    if (labelConfident) {
                         sessionFileName = agents.claude.extractLabel(jsonlPath);
                     }
+                    logger.debug('tower: rehydrate resolver', {
+                        identity, convId: rehydrateResult.conversationId,
+                        confidence: rehydrateResult.confidence, reason: rehydrateResult.reason,
+                        labelApplied: labelConfident,
+                    });
                 }
             }
             catch { }
@@ -540,7 +520,7 @@ export class Tower extends EventEmitter {
                 ...(sessionFileName ? { label: sessionFileName } : {}),
             };
             try {
-                this.store.register(session);
+                this.store.register(session, { chosenConversationId: rehydrateUsedConvId });
                 const task = this.readLastUserTask(sessionId, entry.cwd);
                 if (task)
                     this.store.update(sessionIdentity(session), { currentTask: task });
@@ -878,32 +858,6 @@ export class Tower extends EventEmitter {
         }
     }
     /**
-     * Renames the tmux session containing the given pane to `claude-{projectName}`.
-     * Skips if: session already has the correct name, is the Tower's own session,
-     * or already belongs to a different project (starts with "claude-" but differs).
-     */
-    async ensureTmuxSessionName(paneId, projectName) {
-        const targetName = `claude-${projectName}`;
-        try {
-            const panes = await tmux.listPanes();
-            const pane = panes.find(p => p.paneId === paneId);
-            if (!pane)
-                return;
-            if (pane.sessionName === targetName)
-                return;
-            // Don't rename Tower's own session or sessions already dedicated to another project
-            if (pane.sessionName === 'claude-popmux')
-                return;
-            if (pane.sessionName.startsWith('claude-') && pane.sessionName !== targetName)
-                return;
-            await tmux.renameSession(pane.sessionName, targetName);
-            logger.info('tower: renamed tmux session', { from: pane.sessionName, to: targetName, paneId });
-        }
-        catch (err) {
-            logger.debug('tower: could not rename tmux session', { paneId, projectName, error: String(err) });
-        }
-    }
-    /**
      * Called when session-start hook fires for an already-idle session (e.g. /resume).
      * Claude Code does not update sessions/{pid}.json on /resume, so discovery never emits
      * session-changed and the FSM stays idle→idle (no state-change). This method detects
@@ -917,28 +871,39 @@ export class Tower extends EventEmitter {
         let jp = this.jsonlPaths.get(sessionId);
         if (!jp)
             return;
-        // Check if a newer JSONL exists in the same project directory. This handles /clear:
-        // Claude Code does not update sessions/{pid}.json on /clear, so hookSid === session.sessionId
-        // and the hook-mismatch detection at line ~1661 never fires. Instead we detect the newer JSONL
-        // here on the session-start event that fires when the user sends the first message after /clear.
+        // Use resolver to detect /clear: Claude Code does not update sessions/{pid}.json on /clear,
+        // so hookSid === session.sessionId and hook-mismatch detection never fires.
+        // The resolver checks mtime ordering and returns a newer JSONL if one was created.
         try {
-            const dir = path.dirname(jp);
-            const currentMtime = fs.statSync(jp).mtimeMs;
-            const watchedJsonls = new Set(this.jsonlPaths.values());
-            const newer = fs.readdirSync(dir)
-                .filter(f => f.endsWith('.jsonl'))
-                .map(f => ({ p: path.join(dir, f), m: fs.statSync(path.join(dir, f)).mtimeMs }))
-                .filter(f => f.m > currentMtime && !watchedJsonls.has(f.p))
-                .sort((a, b) => b.m - a.m)[0];
-            if (newer) {
-                logger.info('tower: session-start detected newer JSONL (post-/clear)', {
-                    identity, sessionId, old: path.basename(jp, '.jsonl'), newer: path.basename(newer.p, '.jsonl'),
+            const result = this.resolver.claim({
+                paneId: session.paneId,
+                pid: session.pid,
+                cwd: session.cwd,
+                hookSid: sessionId,
+                hookTimestampMs: Date.now(),
+                hookEvent: 'user-prompt',
+                currentConversationId: this.store.getPersistedInstanceEntries()
+                    .find(([id]) => id === identity)?.[1]?.lastConversationId,
+            });
+            if (result.rotated && result.conversationId && result.evidence.jsonlPath) {
+                const newConvId = result.conversationId;
+                const newPath = result.evidence.jsonlPath;
+                const prevConvId = path.basename(jp, '.jsonl');
+                logger.info('tower: session-start detected newer JSONL via resolver (post-/clear)', {
+                    identity, sessionId, old: prevConvId, newer: newConvId,
+                    confidence: result.confidence, reason: result.reason,
+                });
+                this.ledger?.append({
+                    ts: new Date().toISOString(), identity, from: prevConvId, to: newConvId,
+                    trigger: 'user-prompt', confidence: result.confidence, reason: result.reason,
+                    claimTableSize: this.resolver.snapshotClaimTable().size,
+                    evidence: { mtimeMs: result.evidence.mtimeMs, size: result.evidence.size, lastLineTimestampMs: result.evidence.lastLineTimestampMs },
                 });
                 this.jsonlWatcher.unwatch(sessionId);
-                jp = newer.p;
+                jp = newPath;
                 this.jsonlPaths.set(sessionId, jp);
                 this.jsonlWatcher.watch(sessionId, jp);
-                this.store.setInstanceConversationId(identity, path.basename(jp, '.jsonl'));
+                this.store.setInstanceConversationId(identity, newConvId);
                 const customTitle = agents.claude.extractLabel(jp);
                 if (customTitle)
                     this.store.updateMeta(identity, { label: customTitle });
@@ -949,90 +914,57 @@ export class Tower extends EventEmitter {
         void this.refreshGoalSummary(identity, jp);
         void this.refreshContextSummary(identity, jp);
     }
-    async refreshGoalSummary(identity, jsonlPath) {
+    /**
+     * Refresh goal + context + nextSteps in a single combined LLM call.
+     * Reads earlyContext (head) for goal, recentContext (tail) for context/nextSteps.
+     */
+    async refreshAllSummaries(identity, jsonlPath) {
         if (this.skipSummary)
             return;
         try {
             const session = this.store.get(identity);
             const sessionId = session?.sessionId ?? identity;
-            logger.info('tower: refreshing goal summary', { identity, jsonlPath });
-            const earlyMessages = await this.jsonlWatcher.readRecentContext(jsonlPath, 15);
-            if (!earlyMessages) {
-                logger.info('tower: no early messages found for goal', { identity });
+            logger.info('tower: refreshing all summaries', { identity, jsonlPath });
+            const [earlyMessages, recentMessages] = await Promise.all([
+                this.jsonlWatcher.readEarlyContext(jsonlPath, 15),
+                this.jsonlWatcher.readRecentContext(jsonlPath, 15),
+            ]);
+            if (!recentMessages || recentMessages.length < 20) {
+                logger.info('tower: messages too short for LLM summary', { identity });
                 this.store.update(identity, { summaryLoading: false });
                 return;
             }
-            if (earlyMessages.length < 20) {
-                logger.info('tower: early messages too short for goal summary', { identity, len: earlyMessages.length });
-                return;
-            }
-            logger.info('tower: calling LLM for goal summary', { identity, msgLen: earlyMessages.length });
-            const summary = await agents.claude.generateGoalSummary(sessionId, earlyMessages);
-            if (summary) {
-                logger.info('tower: goal summary received', { identity, summary });
-                this.store.updateMeta(identity, { goalSummary: summary });
+            this.store.update(identity, { summaryLoading: true });
+            logger.info('tower: calling LLM for all summaries', { identity });
+            const result = await agents.claude.generateAllSummaries(sessionId, earlyMessages ?? recentMessages, recentMessages);
+            if (result) {
+                if (result.goal)
+                    this.store.updateMeta(identity, { goalSummary: result.goal });
+                if (result.context)
+                    this.store.updateMeta(identity, { contextSummary: result.context });
+                if (result.nextSteps)
+                    this.store.updateMeta(identity, { nextSteps: result.nextSteps });
+                logger.info('tower: all summaries received', { identity, goal: result.goal, context: result.context });
             }
             else {
-                logger.info('tower: LLM returned no goal summary', { identity });
+                logger.info('tower: LLM returned no summaries', { identity });
             }
+            this.store.update(identity, { summaryLoading: false });
         }
         catch (err) {
-            logger.info('tower: goal summary error', { identity, error: String(err) });
+            logger.info('tower: all summaries error', { identity, error: String(err) });
+            this.store.update(identity, { summaryLoading: false });
         }
+    }
+    // Aliases kept for call-sites that invoke individual refresh methods
+    async refreshGoalSummary(identity, jsonlPath) {
+        return this.refreshAllSummaries(identity, jsonlPath);
     }
     async refreshContextSummary(identity, jsonlPath) {
-        if (this.skipSummary)
-            return;
-        try {
-            const session = this.store.get(identity);
-            const sessionId = session?.sessionId ?? identity;
-            logger.info('tower: refreshing context summary', { identity, jsonlPath });
-            const recentMessages = await this.jsonlWatcher.readRecentContext(jsonlPath, 15);
-            if (!recentMessages) {
-                logger.info('tower: no recent messages found', { identity });
-                this.store.update(identity, { summaryLoading: false });
-                return;
-            }
-            // Skip if messages are too short to summarize meaningfully
-            if (recentMessages.length < 20) {
-                logger.info('tower: messages too short for LLM summary', { identity, len: recentMessages.length });
-                return;
-            }
-            logger.info('tower: calling LLM for summary', { identity, msgLen: recentMessages.length });
-            this.store.update(identity, { summaryLoading: true });
-            const summary = await agents.claude.generateContextSummary(sessionId, recentMessages);
-            if (summary) {
-                logger.info('tower: context summary received', { identity, summary });
-                this.store.updateMeta(identity, { contextSummary: summary });
-                this.store.update(identity, { summaryLoading: false });
-            }
-            else {
-                logger.info('tower: LLM returned no summary', { identity });
-                this.store.update(identity, { summaryLoading: false });
-            }
-        }
-        catch (err) {
-            logger.info('tower: context summary error', { identity, error: String(err) });
-        }
+        return this.refreshAllSummaries(identity, jsonlPath);
     }
     async refreshNextSteps(identity, jsonlPath) {
-        if (this.skipSummary)
-            return;
-        try {
-            const session = this.store.get(identity);
-            const sessionId = session?.sessionId ?? identity;
-            const recentMessages = await this.jsonlWatcher.readRecentContext(jsonlPath, 15);
-            if (!recentMessages || recentMessages.length < 20)
-                return;
-            const suggestion = await agents.claude.generateNextSteps(sessionId, recentMessages);
-            if (suggestion) {
-                logger.info('tower: next steps received', { identity, suggestion });
-                this.store.updateMeta(identity, { nextSteps: suggestion });
-            }
-        }
-        catch (err) {
-            logger.info('tower: next steps error', { identity, error: String(err) });
-        }
+        return this.refreshAllSummaries(identity, jsonlPath);
     }
     async refreshRemoteNextSteps(compositeId, config, jsonlPath) {
         try {
@@ -1167,120 +1099,29 @@ export class Tower extends EventEmitter {
                 }
             }
         }
-        // b. Compute JSONL path (with fallback to latest file if sessionId doesn't match)
+        // b. Compute JSONL path via ConversationResolver
         const claudeDir = this.config.discovery.claude_dir.replace('~', os.homedir());
         const slug = cwdToSlug(info.cwd);
         const projectDir = path.join(claudeDir, 'projects', slug);
-        let jsonlPath = path.join(projectDir, `${info.sessionId}.jsonl`);
-        // Priority 0: if exact sessionId.jsonl doesn't exist, use lastConversationId persisted from a
-        // previous registration before falling back to newest-JSONL scan (which can race with siblings).
-        // Use paneId (or pid string) as the identity key — same logic as sessionIdentity().
         const earlyIdentity = mapping.paneId ?? String(info.pid);
-        if (!fs.existsSync(jsonlPath) && !opts.skipJsonlFallback) {
-            const persistedConvId = this.store.getPersistedInstanceEntries()
-                .find(([id]) => id === earlyIdentity)?.[1]?.lastConversationId;
-            if (persistedConvId) {
-                const persistedPath = path.join(projectDir, `${persistedConvId}.jsonl`);
-                if (fs.existsSync(persistedPath)) {
-                    // Validate mtime: skip if the JSONL hasn't been touched within 2 hours before session
-                    // start — guards against a stale lastConversationId from a much older session on the
-                    // same pane being incorrectly reused for a completely new conversation.
-                    const mtime = fs.statSync(persistedPath).mtimeMs;
-                    const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
-                    if (mtime >= info.startedAt - TWO_HOURS_MS) {
-                        logger.debug('tower: using persisted lastConversationId for JSONL', { identity: earlyIdentity, sessionId: info.sessionId, convId: persistedConvId });
-                        jsonlPath = persistedPath;
-                    }
-                    else {
-                        logger.debug('tower: skipping stale lastConversationId (mtime too old)', { identity: earlyIdentity, convId: persistedConvId, mtime, startedAt: info.startedAt });
-                    }
-                }
-            }
-        }
-        // Check for a newer JSONL only when the exact sessionId file does not exist.
-        // After /clear, Claude Code immediately creates the new JSONL as an empty file,
-        // so exactExists===true but size===0 → do NOT fallback (it's a fresh session).
-        // After stale discovery (sessions/{pid}.json has old sessionId), the exact file
-        // is missing entirely → use newest JSONL in the directory.
-        // skipJsonlFallback: additional override for runtime /clear detection.
-        try {
-            const exactExists = fs.existsSync(jsonlPath);
-            const exactSize = exactExists ? fs.statSync(jsonlPath).size : 0;
-            if (!exactExists && !opts.skipJsonlFallback) {
-                // Skip JSONLs already watched by another active session (prevents same-cwd sessions sharing a JSONL)
-                const watchedJsonls = new Set(this.jsonlPaths.values());
-                // Also skip JSONLs claimed by another instance's lastConversationId (guards against registration-order races)
-                const claimedConvIds = new Set(this.store.getPersistedInstanceEntries()
-                    .filter(([id]) => id !== earlyIdentity)
-                    .map(([, v]) => v.lastConversationId)
-                    .filter(Boolean));
-                // Also skip JSONLs whose filename matches a live session's sessionId from sessions/{pid}.json.
-                // This prevents a stale-lastConvId session from stealing the active JSONL of a not-yet-registered
-                // sibling in the same project directory (registration-order race between same-cwd sessions).
-                try {
-                    const sessionsDir = path.join(this.config.discovery.claude_dir.replace('~', os.homedir()), 'sessions');
-                    for (const f of fs.readdirSync(sessionsDir)) {
-                        if (!f.endsWith('.json'))
-                            continue;
-                        try {
-                            const pidJson = JSON.parse(fs.readFileSync(path.join(sessionsDir, f), 'utf8'));
-                            const liveSid = pidJson.sessionId;
-                            if (liveSid && liveSid !== info.sessionId)
-                                claimedConvIds.add(liveSid);
-                        }
-                        catch { }
-                    }
-                }
-                catch { }
-                const files = fs.readdirSync(projectDir)
-                    .filter(f => f.endsWith('.jsonl') && !f.includes('/'))
-                    .map(f => ({ name: f, path: path.join(projectDir, f), mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
-                    .sort((a, b) => b.mtime - a.mtime);
-                const candidate = files.find(f => {
-                    const convId = path.basename(f.path, '.jsonl');
-                    return f.path !== jsonlPath && !watchedJsonls.has(f.path) && !claimedConvIds.has(convId);
-                });
-                if (candidate) {
-                    logger.debug('tower: using fallback JSONL (exact missing — stale discovery)', {
-                        sessionId: info.sessionId,
-                        exact: path.basename(jsonlPath),
-                        fallback: candidate.name,
-                    });
-                    jsonlPath = candidate.path;
-                }
-                // Worktree fallback: Claude Code worktrees use a different project slug
-                // (e.g., slug + '--claude-worktrees-branch'). Search sibling project dirs.
-                if (!candidate) {
-                    const projectsDir = path.join(claudeDir, 'projects');
-                    try {
-                        const siblingDirs = fs.readdirSync(projectsDir)
-                            .filter(d => d !== slug && d.startsWith(slug + '-'));
-                        for (const dir of siblingDirs) {
-                            const siblingJsonl = path.join(projectsDir, dir, `${info.sessionId}.jsonl`);
-                            if (fs.existsSync(siblingJsonl)) {
-                                logger.info('tower: found JSONL in worktree project dir', {
-                                    sessionId: info.sessionId,
-                                    baseSlug: slug,
-                                    worktreeDir: dir,
-                                });
-                                jsonlPath = siblingJsonl;
-                                break;
-                            }
-                        }
-                    }
-                    catch { }
-                }
-            }
-            else {
-                logger.debug('tower: using exact JSONL', {
-                    sessionId: info.sessionId,
-                    file: path.basename(jsonlPath),
-                    exists: exactExists,
-                    size: exactSize,
-                });
-            }
-        }
-        catch { }
+        const persistedConvId = this.store.getPersistedInstanceEntries()
+            .find(([id]) => id === earlyIdentity)?.[1]?.lastConversationId;
+        this.resolver.invalidateCache(info.cwd);
+        const resolveResult = this.resolver.claim({
+            paneId: mapping.paneId,
+            pid: info.pid,
+            cwd: info.cwd,
+            hookSid: info.sessionId,
+            hookTimestampMs: info.startedAt,
+            hookEvent: 'session-start',
+            persistedConversationId: persistedConvId,
+        });
+        let jsonlPath = resolveResult.evidence.jsonlPath
+            ?? path.join(projectDir, `${info.sessionId}.jsonl`);
+        logger.debug('tower: registerSession resolver', {
+            sessionId: info.sessionId, convId: resolveResult.conversationId,
+            confidence: resolveResult.confidence, reason: resolveResult.reason,
+        });
         // c. Cold start: determine current state + last task from JSONL
         // skipColdStart (picker --no-cold-start) bypasses JSONL scans entirely.
         const initialState = this.skipColdStart ? 'idle' : agents.claude.coldStartScan(jsonlPath);
@@ -1307,7 +1148,18 @@ export class Tower extends EventEmitter {
             host: info.host ?? 'local',
             sshTarget: info.sshTarget,
         };
-        this.store.register(session);
+        const registerChosenConvId = path.basename(jsonlPath, '.jsonl');
+        this.store.register(session, { chosenConversationId: registerChosenConvId });
+        // Observability (Step 6 / Amendment 3): debug trail of register decisions.
+        logger.debug('tower: register decision', {
+            event: 'register',
+            identity: sessionIdentity(session),
+            hookSid: info.sessionId.slice(0, 12),
+            chosenConvId: registerChosenConvId.slice(0, 12),
+            persistedConvId: persistedConvId?.slice(0, 12),
+            persistedSid: this.store.getPersistedInstanceEntries()
+                .find(([id]) => id === sessionIdentity(session))?.[1]?.lastSessionId?.slice(0, 12),
+        });
         // register() may have corrected sessionId via cache — update JSONL path if changed
         const registeredSession = this.store.get(sessionIdentity(session));
         if (registeredSession && registeredSession.sessionId !== info.sessionId) {
@@ -1326,11 +1178,7 @@ export class Tower extends EventEmitter {
         if (customTitle) {
             this.store.updateMeta(sessionIdentity(session), { label: customTitle });
         }
-        // f. Rename tmux session to claude-{projectName} for local sessions with a pane
-        if (mapping.paneId && !info.host) {
-            void this.ensureTmuxSessionName(mapping.paneId, projectName);
-        }
-        // g. Create state machine
+        // f. Create state machine
         const identity = sessionIdentity(session);
         const fsm = new SessionStateMachine(info.sessionId, initialState);
         fsm.on('state-change', (change) => {
@@ -1357,21 +1205,34 @@ export class Tower extends EventEmitter {
                 // other sessions (prevents stealing another session's JSONL on multi-session projects).
                 if (jp && currentSess) {
                     try {
-                        const dir = path.dirname(jp);
-                        const currentMtime = fs.statSync(jp).mtimeMs;
-                        const watchedJsonls = new Set(this.jsonlPaths.values());
-                        const newer = fs.readdirSync(dir)
-                            .filter(f => f.endsWith('.jsonl') && !f.includes('/'))
-                            .map(f => ({ p: path.join(dir, f), m: fs.statSync(path.join(dir, f)).mtimeMs }))
-                            .filter(f => f.m > currentMtime && !watchedJsonls.has(f.p))
-                            .sort((a, b) => b.m - a.m)[0];
-                        if (newer) {
-                            jp = newer.p;
+                        const result = this.resolver.claim({
+                            paneId: currentSess.paneId,
+                            pid: currentSess.pid,
+                            cwd: currentSess.cwd,
+                            hookSid: currentSess.sessionId,
+                            hookTimestampMs: Date.now(),
+                            hookEvent: 'stop',
+                            currentConversationId: this.store.getPersistedInstanceEntries()
+                                .find(([id]) => id === identity)?.[1]?.lastConversationId,
+                        });
+                        if (result.rotated && result.conversationId && result.evidence.jsonlPath) {
+                            const prevConvId = jp ? path.basename(jp, '.jsonl') : null;
+                            jp = result.evidence.jsonlPath;
                             this.jsonlPaths.set(currentSess.sessionId, jp);
                             this.jsonlWatcher.unwatch(currentSess.sessionId);
                             this.jsonlWatcher.watch(currentSess.sessionId, jp);
-                            this.store.setInstanceConversationId(identity, path.basename(jp, '.jsonl'));
-                            logger.info('tower: JSONL path updated on idle', { identity, newPath: jp });
+                            this.store.setInstanceConversationId(identity, result.conversationId);
+                            logger.info('tower: JSONL path updated on idle via resolver', {
+                                identity, newPath: jp, confidence: result.confidence, reason: result.reason,
+                            });
+                            this.ledger?.append({
+                                ts: new Date().toISOString(), identity, from: prevConvId, to: result.conversationId,
+                                trigger: 'stop', confidence: result.confidence, reason: result.reason,
+                                claimTableSize: this.resolver.snapshotClaimTable().size,
+                                evidence: { mtimeMs: result.evidence.mtimeMs, size: result.evidence.size, lastLineTimestampMs: result.evidence.lastLineTimestampMs },
+                                ...(result.persistedConvIdSeen ? { persistedConvIdSeen: result.persistedConvIdSeen, chosenVsPersistedSame: result.persistedConvIdSeen === result.conversationId } : {}),
+                                ...(result.claimRejectedReason ? { claimRejectedReason: result.claimRejectedReason } : {}),
+                            });
                         }
                     }
                     catch { }
@@ -1399,7 +1260,7 @@ export class Tower extends EventEmitter {
             }
         });
         this.stateMachines.set(identity, fsm);
-        // h. Track JSONL path + start watcher
+        // g. Track JSONL path + start watcher
         this.jsonlPaths.set(info.sessionId, jsonlPath);
         this.jsonlWatcher.watch(info.sessionId, jsonlPath);
         this.store.setInstanceConversationId(identity, path.basename(jsonlPath, '.jsonl'));
@@ -1624,6 +1485,7 @@ export class Tower extends EventEmitter {
             clearInterval(remoteTimer);
             this.remotePollers.delete(sessionId);
         }
+        this.resolver.release(identity);
         this.store.unregister(identity);
     }
     deregisterSession(sessionId) {
@@ -1644,6 +1506,7 @@ export class Tower extends EventEmitter {
         // Clean up watchers
         this.jsonlWatcher.unwatch(sessionId);
         this.jsonlPaths.delete(sessionId);
+        this.resolver.release(identity);
         this.processMonitor.stopPolling(session.pid);
         // Clean up remote poller if any
         const remoteTimer = this.remotePollers.get(sessionId);
@@ -1758,36 +1621,30 @@ export class Tower extends EventEmitter {
                 });
                 const claudeDir = this.config.discovery.claude_dir.replace('~', os.homedir());
                 const slug = cwdToSlug(session.cwd);
-                let newJsonl = path.join(claudeDir, 'projects', slug, `${hookSid}.jsonl`);
-                // Worktree fallback: if exact path doesn't exist, search sibling project dirs
-                // with the same base slug (e.g., slug + '--claude-worktrees-branch').
-                if (!fs.existsSync(newJsonl)) {
-                    const projectsDir = path.join(claudeDir, 'projects');
-                    try {
-                        const siblingDirs = fs.readdirSync(projectsDir)
-                            .filter(d => d !== slug && d.startsWith(slug + '-'));
-                        for (const dir of siblingDirs) {
-                            const siblingJsonl = path.join(projectsDir, dir, `${hookSid}.jsonl`);
-                            if (fs.existsSync(siblingJsonl)) {
-                                logger.info('tower: found JSONL in worktree project dir (hook session change)', {
-                                    hookSid,
-                                    baseSlug: slug,
-                                    worktreeDir: dir,
-                                });
-                                newJsonl = siblingJsonl;
-                                break;
-                            }
-                        }
-                    }
-                    catch { }
-                }
+                // Use resolver for JSONL selection (handles exact match + worktree fallback + same-CWD safety)
+                this.resolver.invalidateCache(session.cwd);
+                const staleSidResolve = this.resolver.claim({
+                    paneId: session.paneId,
+                    pid: session.pid,
+                    cwd: session.cwd,
+                    hookSid,
+                    hookTimestampMs: event.ts ?? Date.now(),
+                    hookEvent: event.event,
+                });
+                let newJsonl = staleSidResolve.evidence.jsonlPath
+                    ?? path.join(claudeDir, 'projects', slug, `${hookSid}.jsonl`);
                 // favorite is now instance-level (not session-level), no migration needed
                 // Remove stale hookSid cache entry to prevent old sessionId re-matching
                 this.hookSidToIdentity.delete(session.sessionId);
                 // Unwatch old JSONL
                 this.jsonlWatcher.unwatch(session.sessionId);
                 this.jsonlPaths.delete(session.sessionId);
-                // Update sessionId in store (this switches sessionMeta key — old meta is orphaned)
+                // Claim D fix: per Principle 3, drop conversation-scoped meta
+                // (label/goalSummary/contextSummary/nextSteps) BEFORE rotating sessionId.
+                // Identity-scoped fields (tags + the Instance-level favorite/sshTarget/projectName)
+                // are preserved on the new sessionId key.
+                const metaDropResult = this.store.dropConversationScopedMeta(identity, hookSid);
+                // Update sessionId in store (this switches sessionMeta key — old meta dropped above)
                 // Also revive dead sessions and reset FSM — /resume or /clear means the instance is alive again
                 this.store.update(identity, { sessionId: hookSid, status: 'idle' });
                 // Sync discovery's known map so it doesn't override this correction on next scan
@@ -1806,6 +1663,22 @@ export class Tower extends EventEmitter {
                     this.store.update(capturedId, { status: change.to, lastActivity: new Date() });
                 });
                 this.stateMachines.set(identity, newFsm);
+                // Record ledger entry for stale-sid rotation
+                const prevConvId = this.jsonlPaths.get(session.sessionId)
+                    ? path.basename(this.jsonlPaths.get(session.sessionId), '.jsonl') : session.sessionId;
+                {
+                    const chosenConvId = staleSidResolve.conversationId ?? path.basename(newJsonl, '.jsonl');
+                    this.ledger?.append({
+                        ts: new Date().toISOString(), identity: identity, from: prevConvId,
+                        to: chosenConvId,
+                        trigger: event.event, confidence: staleSidResolve.confidence, reason: staleSidResolve.reason,
+                        claimTableSize: this.resolver.snapshotClaimTable().size,
+                        evidence: { mtimeMs: staleSidResolve.evidence.mtimeMs, size: staleSidResolve.evidence.size, lastLineTimestampMs: staleSidResolve.evidence.lastLineTimestampMs },
+                        ...(staleSidResolve.persistedConvIdSeen ? { persistedConvIdSeen: staleSidResolve.persistedConvIdSeen, chosenVsPersistedSame: staleSidResolve.persistedConvIdSeen === chosenConvId } : {}),
+                        ...(staleSidResolve.claimRejectedReason ? { claimRejectedReason: staleSidResolve.claimRejectedReason } : {}),
+                        ...(metaDropResult ? { metaDropped: { identity: identity, oldSessionId: metaDropResult.oldSid, newSessionId: hookSid, droppedKeys: metaDropResult.droppedKeys } } : {}),
+                    });
+                }
                 // Watch new JSONL if it exists, or wait for it to appear
                 if (fs.existsSync(newJsonl)) {
                     this.jsonlPaths.set(hookSid, newJsonl);
@@ -1915,6 +1788,10 @@ export class Tower extends EventEmitter {
             if (current) {
                 this.store.update(identity, { toolCallCount: current.toolCallCount + 1 });
             }
+        }
+        // On post-tool, check for /clear (new JSONL may have appeared)
+        if (event.event === 'post-tool') {
+            void this.refreshSessionAfterResume(identity);
         }
     }
     handleJsonlEvent(sessionId, parsed) {

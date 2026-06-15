@@ -1,5 +1,5 @@
 import React, { useState, useRef, useReducer } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text, useInput, useStdout } from 'ink';
 import { Session } from '../core/session-store.js';
 import { EmptyState } from './EmptyState.js';
 
@@ -151,6 +151,44 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
   const nonTmuxStart = stableNonFavorites.findIndex(s => !s.hasTmux);
   const nonTmuxSortedStart = nonTmuxStart >= 0 ? favorites.length + nonTmuxStart : -1;
 
+  // Scroll viewport: keep cursor visible when terminal is small
+  const { stdout } = useStdout();
+  const termHeight = stdout?.rows ?? 40;
+
+  const itemRowHeight = (s: Session, i: number): number => {
+    let h = 2; // main row + spacer
+    if (s.status === 'idle' && s.nextSteps) h += 1;
+    if (hasFavorites && hasNonFavorites && i === favorites.length) h += 1; // fav separator
+    if (i === nonTmuxSortedStart && nonTmuxSortedStart > 0) h += 1; // non-tmux separator
+    return h;
+  };
+
+  const FIXED_OVERHEAD = 7; // header(1) + footer-marginTop(1) + footer-rows(2) + scroll-hints(2) + buffer(1)
+  const available = Math.max(4, termHeight - FIXED_OVERHEAD);
+  const heights = sorted.map(itemRowHeight);
+
+  let viewStart = 0, viewEnd = sorted.length;
+  if (sorted.length > 0) {
+    let used = heights[cursor] ?? 2;
+    viewStart = cursor;
+    viewEnd = cursor + 1;
+    while (viewStart > 0 && used + (heights[viewStart - 1] ?? 2) <= available) {
+      viewStart--;
+      used += heights[viewStart] ?? 2;
+    }
+    while (viewEnd < sorted.length && used + (heights[viewEnd] ?? 2) <= available) {
+      used += heights[viewEnd] ?? 2;
+      viewEnd++;
+    }
+    // back-fill from start if room remains
+    while (viewStart > 0 && used + (heights[viewStart - 1] ?? 2) <= available) {
+      viewStart--;
+      used += heights[viewStart] ?? 2;
+    }
+  }
+  const showScrollUp = viewStart > 0;
+  const showScrollDown = viewEnd < sorted.length;
+
   return (
     <Box flexDirection="column">
       {/* Header */}
@@ -162,8 +200,14 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
         <Text bold dimColor>{pad('GOAL', maxTaskWidth)}</Text>
       </Box>
 
-      {/* Session rows */}
-      {sorted.map((session, i) => {
+      {/* Scroll hint — items above viewport */}
+      {showScrollUp && (
+        <Text dimColor>  ↑ {viewStart} more</Text>
+      )}
+
+      {/* Session rows (scroll viewport) */}
+      {sorted.slice(viewStart, viewEnd).map((session, localI) => {
+        const i = viewStart + localI;
         const isCursor = i === cursor;
         const isDim = !session.hasTmux || session.status === 'dead';
         const { icon, color } = STATUS_ICONS[session.status] ?? STATUS_ICONS['idle']!;
@@ -204,6 +248,11 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
           </React.Fragment>
         );
       })}
+
+      {/* Scroll hint — items below viewport */}
+      {showScrollDown && (
+        <Text dimColor>  ↓ {sorted.length - viewEnd} more</Text>
+      )}
 
       {sorted.length === 0 && (
         <EmptyState inTmux={tmuxCount > 0} hookInstalled={true} />

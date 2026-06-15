@@ -72,7 +72,7 @@ grep "error\|warn\|fail" /tmp/debug.log
 
 ## Version Strategy
 
-**현재 버전: 2.1.0**
+**현재 버전: 2.3.1**
 
 ### 규칙: 코드 변경 시 반드시 버전을 올려야 한다.
 
@@ -102,6 +102,11 @@ npm version major
 | 1.1.0 | paneId-primary session identity 리팩토링 — /clear 시 label/tags 보존, state.json v2 TTL eviction |
 | 1.1.1 | fix: pane 기반 hook identity resolution 추가 — ephemeral PPID로 PID ancestry walk 실패 시 TMUX_PANE으로 직접 매칭 |
 | 2.0.1 | fix: picker readOnly mode에서 /rename label 미반영 — JSONL extractLabel 폴백(newest JSONL 포함), stale label 덮어쓰기, drainEventQueue PID liveness check, legacy non-pane identity 필터링 |
+| 2.2.3 | fix: session label/summary cross-contamination — resolver persistedMatch tightened; register() requires chosenConvId match; stale-sid path drops conversation-scoped meta (Claim D); lastSeenAt TTL eviction; doctor command |
+| 2.2.4 | fix: /rename label not visible on first popup open — updateMeta label changes now persist synchronously (bypass 2s debounce) |
+| 2.2.5 | fix: LLM summarization — single combined claude call (3→1), readEarlyContext for goal (head not tail), stderr separated, sha256 hash |
+| 2.3.1 | refactor: tmux session 자동 리네임 기능 제거 — `tmux.renameSession()`, `ensureTmuxSessionName()` 및 호출부/테스트 삭제 (더 이상 세션 이름을 `claude-{projectName}`으로 바꾸지 않음) |
+| 2.3.0 | feat: `popmux setup-tmux` + shipped `bin/popmux-toggle` — F12 popup toggle now a package artifact. Single-source PID-liveness lock (self-heals on crash), consistent XDG lock path, absolute sibling-bin resolution (no tmux PATH dependency), idempotent managed block in ~/.tmux.conf. Replaces hand-made orphan toggle + dual-layer if-shell logic. |
 
 ## Build & Publish
 

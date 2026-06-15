@@ -77,6 +77,7 @@ interface PersistedInstance {
   favoritedAt?: number;
   lastSessionId?: string;  // hook-confirmed sessionId — used on cold start when pid.json is stale
   lastConversationId?: string;  // JSONL conversation UUID (filename), updated whenever JSONL path changes
+  lastSeenAt?: number;  // epoch ms — used to evict stale entries during persist (Claim E)
 }
 
 interface PersistFormat {
@@ -99,6 +100,10 @@ export class SessionStore extends EventEmitter {
   private persistedMeta: Map<string, PersistedEntry> = new Map(); // pre-loaded from state.json
   private persistedInstances: Map<string, PersistedInstance> = new Map(); // v3: keyed by identity (paneId)
   private _displayOrder: string[] = []; // persisted display order (sessionIds)
+  // Transient flag set by dropConversationScopedMeta() and consumed by the next
+  // update({ sessionId }) for the same identity. Detects regressions where
+  // callers mutate sessionId without dropping conversation-scoped meta first.
+  private _dropExpected: string | undefined;
 
   constructor(private persistPath: string) {
     super();
@@ -148,7 +153,7 @@ export class SessionStore extends EventEmitter {
     logger.debug('session-store: rekeyed session', { oldIdentity, newIdentity });
   }
 
-  register(session: Session): void {
+  register(session: Session, opts?: { chosenConversationId?: string }): void {
     // Skip duplicate registration (same PID already registered under a different identity)
     const existingByPid = Array.from(this.instances.values()).find(i => i.pid === session.pid && i.pid > 0);
     if (existingByPid) {
@@ -159,6 +164,7 @@ export class SessionStore extends EventEmitter {
         return;
       }
     }
+    const chosenConversationId = opts?.chosenConversationId;
     if (!session.projectName) {
       session.projectName = cwdToSlug(session.cwd);
     }
@@ -182,18 +188,30 @@ export class SessionStore extends EventEmitter {
         session.favorite = persistedInst.favorite;
         session.favoritedAt = persistedInst.favoritedAt;
       }
-      // Use cached sessionId if pid.json is stale (different from last known)
+      // Use cached sessionId if pid.json is stale (different from last known).
+      // Only apply when lastConversationId still matches the JSONL the caller resolved —
+      // prevents stale override after /clear (which advances lastConversationId).
       // But skip if another active instance already claims this sessionId (collision from /resume)
       if (persistedInst.lastSessionId && persistedInst.lastSessionId !== session.sessionId) {
+        // Claim A fix: persisted hint may override sessionId ONLY when lastConversationId
+        // matches the convId the resolver actually chose for THIS registration.
+        // If chosenConversationId is undefined, refuse to override (fail-closed).
+        const convMatchesCache = persistedInst.lastConversationId !== undefined
+          && chosenConversationId !== undefined
+          && persistedInst.lastConversationId === chosenConversationId;
         const alreadyClaimed = Array.from(this.instances.values()).some(i => i.sessionId === persistedInst.lastSessionId);
-        if (!alreadyClaimed) {
+        if (!alreadyClaimed && convMatchesCache) {
           logger.info('session-store: using cached sessionId (pid.json stale)', {
             identity, stale: session.sessionId.slice(0, 12), cached: persistedInst.lastSessionId!.slice(0, 12),
+            chosenConvId: chosenConversationId?.slice(0, 12),
           });
           session.sessionId = persistedInst.lastSessionId;
         } else {
-          logger.info('session-store: cached sessionId already claimed by another instance, skipping', {
+          logger.info('session-store: skipping cached sessionId override', {
             identity, cached: persistedInst.lastSessionId!.slice(0, 12),
+            chosenConvId: chosenConversationId?.slice(0, 12),
+            persistedConvId: persistedInst.lastConversationId?.slice(0, 12),
+            reason: alreadyClaimed ? 'already_claimed' : (chosenConversationId === undefined ? 'no_chosen_convid' : 'conv_mismatch'),
           });
         }
       }
@@ -250,6 +268,18 @@ export class SessionStore extends EventEmitter {
     }
 
     if (Object.keys(instancePatch).length > 0) {
+      // Detect sessionId mutation without prior dropConversationScopedMeta call.
+      // Callers MUST call dropConversationScopedMeta(identity, newSid) before
+      // update({ sessionId }) — see Claim D fix in RCA plan.
+      if ('sessionId' in instancePatch && instancePatch.sessionId !== instance.sessionId) {
+        if (this._dropExpected !== identity) {
+          logger.warn('session-store: update() called with sessionId change without prior dropConversationScopedMeta', {
+            identity, from: instance.sessionId.slice(0, 12), to: String(instancePatch.sessionId).slice(0, 12),
+          });
+        } else {
+          this._dropExpected = undefined;
+        }
+      }
       Object.assign(instance, instancePatch);
     }
     if (hasMeta) {
@@ -266,7 +296,12 @@ export class SessionStore extends EventEmitter {
     if (!instance) return;
     const existing = this.sessionMeta.get(instance.sessionId) ?? {} as SessionMeta;
     this.sessionMeta.set(instance.sessionId, { ...existing, ...patch });
-    this.persist();
+    // label changes must be visible to the next popup open immediately (no 2s debounce)
+    if ('label' in patch) {
+      this.persistSync();
+    } else {
+      this.persist();
+    }
     this.emit('session-updated', this.get(identity)!);
   }
 
@@ -281,6 +316,42 @@ export class SessionStore extends EventEmitter {
     if (!meta) return;
     this.sessionMeta.set(newSessionId, meta);
     this.sessionMeta.delete(oldSessionId);
+  }
+
+  /**
+   * Per Principle 3 of the cross-contamination RCA: when a conversation rotates
+   * (stale-sid hook path, /clear), drop conversation-scoped metadata
+   * (label/goalSummary/contextSummary/nextSteps). Identity-scoped fields
+   * (favorite/favoritedAt/tags/sshTarget/projectName) are preserved and copied
+   * to the new sessionId key. The old key is removed (not merely emptied).
+   *
+   * Callers MUST invoke this BEFORE update({ sessionId }) on the same identity.
+   * Returns null if instance not found or no prior meta existed.
+   */
+  dropConversationScopedMeta(identity: string, newSessionId: string): { droppedKeys: string[]; oldSid: string } | null {
+    const instance = this.instances.get(identity);
+    if (!instance) return null;
+    const oldSid = instance.sessionId;
+    const meta = this.sessionMeta.get(oldSid);
+    // Always set the marker so the next update({ sessionId }) does not warn,
+    // even if there was no prior meta.
+    this._dropExpected = identity;
+    if (!meta) return null;
+
+    // Preserve only identity-scoped fields per Principle 3.
+    const identityScoped: SessionMeta = {};
+    if (meta.tags !== undefined) identityScoped.tags = meta.tags;
+
+    const droppedKeys: string[] = [];
+    if (meta.label !== undefined) droppedKeys.push('label');
+    if (meta.goalSummary !== undefined) droppedKeys.push('goalSummary');
+    if (meta.contextSummary !== undefined) droppedKeys.push('contextSummary');
+    if (meta.nextSteps !== undefined) droppedKeys.push('nextSteps');
+
+    this.sessionMeta.set(newSessionId, identityScoped);
+    this.sessionMeta.delete(oldSid);
+    logger.debug('session-store: dropped conversation-scoped meta', { identity, oldSid: oldSid.slice(0, 12), newSid: newSessionId.slice(0, 12), droppedKeys });
+    return { droppedKeys, oldSid };
   }
 
   updateBySessionId(sessionId: string, patch: Partial<Session>): void {
@@ -329,6 +400,8 @@ export class SessionStore extends EventEmitter {
   private _buildPersistData(): PersistFormat {
     const data: PersistFormat = { version: 3, sessions: {}, instances: {}, displayOrder: this._displayOrder };
     const liveSessionIds = new Set<string>();
+    const now = Date.now();
+    const INSTANCE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days (Claim E)
     for (const [identity, instance] of this.instances) {
       if (instance.status === 'dead') continue;
       liveSessionIds.add(instance.sessionId);
@@ -350,6 +423,8 @@ export class SessionStore extends EventEmitter {
       const instData: PersistedInstance = {};
       if (instance.favorite) { instData.favorite = instance.favorite; instData.favoritedAt = instance.favoritedAt; }
       instData.lastSessionId = instance.sessionId;
+      // Claim E: stamp lastSeenAt for every live instance written.
+      instData.lastSeenAt = now;
       // Carry over lastConversationId from persistedInstances (set by Tower when JSONL path is resolved)
       const pi = this.persistedInstances.get(identity);
       if (pi?.lastConversationId) instData.lastConversationId = pi.lastConversationId;
@@ -359,7 +434,16 @@ export class SessionStore extends EventEmitter {
       if (!liveSessionIds.has(sessionId)) data.sessions[sessionId] = entry;
     }
     for (const [identity, inst] of this.persistedInstances) {
-      if (!this.instances.has(identity)) data.instances![identity] = inst;
+      if (this.instances.has(identity)) continue;
+      // Claim E: skip non-favorite entries with missing or stale lastSeenAt (>30 days).
+      if (!inst.favorite) {
+        const lastSeen = inst.lastSeenAt;
+        if (lastSeen === undefined || (now - lastSeen) > INSTANCE_TTL_MS) {
+          logger.debug('session-store: evicting stale persisted instance', { identity, lastSeenAt: lastSeen });
+          continue;
+        }
+      }
+      data.instances![identity] = inst;
     }
     return data;
   }
@@ -487,6 +571,12 @@ export class SessionStore extends EventEmitter {
       const instances = (data as { instances?: Record<string, PersistedInstance> }).instances;
       if (instances) {
         for (const [identity, inst] of Object.entries(instances)) {
+          // Claim E: backfill lastSeenAt for older state.json that didn't write it.
+          // Use startedAt of the matching session entry if available, else now (one-shot grace).
+          if (inst.lastSeenAt === undefined) {
+            const sessEntry = inst.lastSessionId ? data.sessions[inst.lastSessionId] : undefined;
+            inst.lastSeenAt = sessEntry?.startedAt ?? now;
+          }
           this.persistedInstances.set(identity, inst);
         }
       }
