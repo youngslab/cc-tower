@@ -121,12 +121,6 @@ npx vitest run
 npx tsc && npm publish
 ```
 
-## Git Push Rules
-
-- Remote uses SSH alias `github-youngslab` (configured in `~/.ssh/config`)
-- Before push, amend author to: `Jaeyoung Park <jaeyoungs.park@gmail.com>`
-- Remote URL: `git@github-youngslab:youngslab/popmux.git`
-
 ## Project Structure
 
 - `src/` — TypeScript source (ESM-only, ink v5 + React)
