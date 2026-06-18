@@ -156,14 +156,14 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
   const termHeight = stdout?.rows ?? 40;
 
   const itemRowHeight = (s: Session, i: number): number => {
-    let h = 2; // main row + spacer
+    let h = 3; // name row + summary row + spacer
     if (s.status === 'idle' && s.nextSteps) h += 1;
     if (hasFavorites && hasNonFavorites && i === favorites.length) h += 1; // fav separator
     if (i === nonTmuxSortedStart && nonTmuxSortedStart > 0) h += 1; // non-tmux separator
     return h;
   };
 
-  const FIXED_OVERHEAD = 7; // header(1) + footer-marginTop(1) + footer-rows(2) + scroll-hints(2) + buffer(1)
+  const FIXED_OVERHEAD = 6; // footer-marginTop(1) + footer-rows(2) + scroll-hints(2) + buffer(1)
   const available = Math.max(4, termHeight - FIXED_OVERHEAD);
   const heights = sorted.map(itemRowHeight);
 
@@ -189,23 +189,17 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
   const showScrollUp = viewStart > 0;
   const showScrollDown = viewEnd < sorted.length;
 
+  // Left gutter width for continuation lines (=> summary, ↳ next): aligns under the name
+  const INDENT = 8;
+
   return (
     <Box flexDirection="column">
-      {/* Header */}
-      <Box>
-        <Text bold dimColor>{pad('', 4)}</Text>
-        <Text bold dimColor>{pad('LABEL', 16)}</Text>
-        <Text bold dimColor>{pad('', 3)}</Text>
-        <Text bold dimColor>{pad('SESSION', 14)}</Text>
-        <Text bold dimColor>{pad('GOAL', maxTaskWidth)}</Text>
-      </Box>
-
       {/* Scroll hint — items above viewport */}
       {showScrollUp && (
         <Text dimColor>  ↑ {viewStart} more</Text>
       )}
 
-      {/* Session rows (scroll viewport) */}
+      {/* Session blocks (scroll viewport) */}
       {sorted.slice(viewStart, viewEnd).map((session, localI) => {
         const i = viewStart + localI;
         const isCursor = i === cursor;
@@ -215,7 +209,12 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
         const showNonTmuxSep = i === nonTmuxSortedStart && nonTmuxSortedStart > 0;
         const showFavSep = hasFavorites && hasNonFavorites && i === favorites.length;
 
-        const labelText = (session.favorite ? '★ ' : '') + (session.sshTarget ? '⌁ ' : '') + session.projectName;
+        // Name = "label · workspace" when named, else just the workspace (no raw session id)
+        const markers = (session.favorite ? '★ ' : '') + (session.sshTarget ? '⌁ ' : '');
+        const nameText = markers + (session.label ? `${session.label} · ${session.projectName}` : session.projectName);
+        const summaryText = session.summaryLoading
+          ? '⟳ summarizing...'
+          : (session.goalSummary ?? session.contextSummary ?? session.currentTask ?? 'New session');
 
         return (
           <React.Fragment key={identityOf(session)}>
@@ -225,23 +224,25 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
             {showNonTmuxSep && (
               <Text dimColor>{'· · · ·'.repeat(5)} (monitor-only)</Text>
             )}
+            {/* Line 1: name · workspace */}
             <Box>
-              <Text inverse={isCursor} color={isCursor ? 'cyan' : undefined} bold={isCursor}>{isCursor ? '▸' : ' '}</Text>
-              <Text inverse={isCursor} color={isCursor ? 'cyan' : undefined} dimColor={!isCursor}>{pad(`${i + 1}`, 3)}</Text>
-              <Text inverse={isCursor} color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{pad(labelText, 16)}</Text>
-              <Text inverse={isCursor}> </Text>
-              <Text inverse={isCursor} color={isCursor ? 'cyan' : color}>{pad(icon, 2)}</Text>
-              <Text inverse={isCursor} dimColor={!isCursor}>{pad(truncate(session.label ?? session.sessionId.slice(0, 8), 12), 14)}</Text>
-              <Text inverse={isCursor} color={isCursor ? 'cyan' : undefined} dimColor={!isCursor && isDim}>{truncate(session.summaryLoading ? '⟳ summarizing...' : (session.goalSummary ?? session.contextSummary ?? session.currentTask ?? 'New session'), maxTaskWidth)}</Text>
+              <Text color={isCursor ? 'cyan' : undefined} bold={isCursor}>{isCursor ? '▸' : ' '}</Text>
+              <Text color={isCursor ? 'cyan' : undefined} dimColor={!isCursor}> {pad(`${i + 1}`, 2)} </Text>
+              <Text color={isCursor ? 'cyan' : color}>{icon} </Text>
+              <Text color={isCursor ? 'cyan' : undefined} bold={isCursor} dimColor={!isCursor && isDim}>{truncate(nameText, maxTaskWidth)}</Text>
+              {session.sshTarget && <Text dimColor>  (remote)</Text>}
             </Box>
+            {/* Line 2: => summary */}
+            <Box>
+              <Text>{' '.repeat(INDENT)}</Text>
+              <Text dimColor>{'=> '}</Text>
+              <Text dimColor={!isCursor && isDim}>{truncate(summaryText, maxTaskWidth)}</Text>
+            </Box>
+            {/* Line 3 (idle only): ↳ next step */}
             {session.status === 'idle' && session.nextSteps && (
               <Box>
-                <Text>{' '}</Text>
-                <Text>{pad('', 3)}</Text>
-                <Text>{pad('', 16)}</Text>
-                <Text>{pad('', 3)}</Text>
-                <Text>{pad('', 14)}</Text>
-                <Text color="yellow">↳ {truncate(session.nextSteps, maxTaskWidth - 2)}</Text>
+                <Text>{' '.repeat(INDENT)}</Text>
+                <Text color="yellow">↳ {truncate(session.nextSteps, maxTaskWidth)}</Text>
               </Box>
             )}
             <Box height={1} />

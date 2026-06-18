@@ -418,7 +418,7 @@ export function App({ tower, pickerMode, outputPath }: Props) {
           <Dashboard
             sessions={sessions}
             tmuxCount={tmuxCount}
-            maxTaskWidth={Math.max(10, boxWidth - 43)}
+            maxTaskWidth={Math.max(20, boxWidth - 16)}
             cursorIdentity={cursorIdentity}
             onCursorChange={setCursorIdentity}
             onSwapFavoriteOrder={handleSwapFavoriteOrder}

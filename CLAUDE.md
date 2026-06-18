@@ -72,7 +72,7 @@ grep "error\|warn\|fail" /tmp/debug.log
 
 ## Version Strategy
 
-**현재 버전: 2.3.1**
+**현재 버전: 2.4.0**
 
 ### 규칙: 코드 변경 시 반드시 버전을 올려야 한다.
 
@@ -105,6 +105,7 @@ npm version major
 | 2.2.3 | fix: session label/summary cross-contamination — resolver persistedMatch tightened; register() requires chosenConvId match; stale-sid path drops conversation-scoped meta (Claim D); lastSeenAt TTL eviction; doctor command |
 | 2.2.4 | fix: /rename label not visible on first popup open — updateMeta label changes now persist synchronously (bypass 2s debounce) |
 | 2.2.5 | fix: LLM summarization — single combined claude call (3→1), readEarlyContext for goal (head not tail), stderr separated, sha256 hash |
+| 2.4.0 | feat: Dashboard 2-line block 레이아웃 — `이름 · workspace` / `=> summary` / `↳ next` 구조로 변경. 이름(label) 미설정 시 session id 대신 workspace만 표시 (raw id 노이즈 제거), remote는 `(remote)` 표기, summary 전폭 사용 |
 | 2.3.1 | refactor: tmux session 자동 리네임 기능 제거 — `tmux.renameSession()`, `ensureTmuxSessionName()` 및 호출부/테스트 삭제 (더 이상 세션 이름을 `claude-{projectName}`으로 바꾸지 않음) |
 | 2.3.0 | feat: `popmux setup-tmux` + shipped `bin/popmux-toggle` — F12 popup toggle now a package artifact. Single-source PID-liveness lock (self-heals on crash), consistent XDG lock path, absolute sibling-bin resolution (no tmux PATH dependency), idempotent managed block in ~/.tmux.conf. Replaces hand-made orphan toggle + dual-layer if-shell logic. |
 
