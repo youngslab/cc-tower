@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import type { ScannedSession } from './session-scanner.js';
 export interface TurnSummary {
     timestamp: Date;
     transition: string;
@@ -141,6 +142,23 @@ export declare class SessionStore extends EventEmitter {
     }>;
     /** Returns all past sessions across all hosts, sorted by most recent. */
     getAllPastSessions(): Array<{
+        sessionId: string;
+        cwd: string;
+        startedAt: number;
+        label?: string;
+        goalSummary?: string;
+        contextSummary?: string;
+        sshTarget?: string;
+    }>;
+    /**
+     * Merge on-disk scanned sessions with state.json metadata for the resume picker.
+     * Union by sessionId: scanned (local disk) provides cwd/startedAt for the many
+     * sessions popmux never tracked; state.json wins for human metadata
+     * (label/goalSummary/contextSummary/sshTarget) and contributes persisted-only
+     * sessions not on local disk (e.g. remote). Currently-active sessions are
+     * excluded; result is sorted most-recent-first.
+     */
+    getAllResumableSessions(scanned: ScannedSession[], scanComplete?: boolean): Array<{
         sessionId: string;
         cwd: string;
         startedAt: number;

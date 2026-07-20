@@ -3,6 +3,7 @@ import { Box, Text, useInput } from 'ink';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { fuzzyMatch } from './fuzzy.js';
 
 export interface HostOption {
   name: string;
@@ -38,16 +39,6 @@ interface Props {
   getPastSessionsByTarget: (sshTarget?: string) => PastSessionByCwd[];
   getAllPastSessions: () => PastSessionByCwd[];
   onDeleteSession: (sessionId: string) => void;
-}
-
-function fuzzyMatch(query: string, target: string): boolean {
-  const q = query.toLowerCase();
-  const t = target.toLowerCase();
-  let qi = 0;
-  for (let ti = 0; ti < t.length && qi < q.length; ti++) {
-    if (t[ti] === q[qi]) qi++;
-  }
-  return qi === q.length;
 }
 
 function remoteListDirs(host: HostOption, dir: string): string[] {

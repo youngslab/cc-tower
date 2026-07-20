@@ -53,7 +53,9 @@ function makeSession(overrides: Partial<Session> = {}): Session {
   } as Session;
 }
 
-function makeMockStore(sessions: Session[]) {
+type PastEntry = { sessionId: string; cwd: string; startedAt: number; label?: string; sshTarget?: string };
+
+function makeMockStore(sessions: Session[], pastSessions: PastEntry[] = []) {
   const ee = new EventEmitter();
   return {
     getAll: () => sessions,
@@ -63,19 +65,24 @@ function makeMockStore(sessions: Session[]) {
     displayOrder: [] as string[],
     getPastSessionsByCwd: () => [],
     getPastSessionsByTarget: () => [],
-    getAllPastSessions: () => [],
+    getAllPastSessions: () => pastSessions,
+    getAllResumableSessions: (_scanned: unknown) => pastSessions,
     deletePersistedSession: vi.fn(),
   };
 }
 
-function makeMockTower(sessions: Session[] = [makeSession()]) {
-  const store = makeMockStore(sessions);
+function makeMockTower(sessions: Session[] = [makeSession()], pastSessions: PastEntry[] = []) {
+  const store = makeMockStore(sessions, pastSessions);
   return {
     store,
+    scanner: {
+      isScanned: () => true,
+      ensureScanned: () => Promise.resolve(),
+      getCached: () => [],
+    },
     config: {
       keys: { close: 'Ctrl-d' },
       hosts: [],
-      commands: { confirm_when_busy: false },
       claude_args: undefined,
     },
     start: vi.fn().mockResolvedValue(undefined),
@@ -150,27 +157,32 @@ describe('picker keys (ink-testing-library)', () => {
     unmount();
   });
 
-  // ── Test 2: '/' → SendInput view, text → Enter → action: 'send' ──────────
-  it('/ opens SendInput and Enter submits send JSON', async () => {
-    const session = makeSession({ paneId: '%7', sessionId: 'send-sess' });
-    const tower = makeMockTower([session]);
+  // ── Test 2: '/' → fuzzy search → select moves cursor → Enter → go ─────────
+  it('/ opens search; selecting a named session moves the cursor there', async () => {
+    const alpha = makeSession({ paneId: '%5', sessionId: 's-alpha', label: 'alpha' });
+    const beta = makeSession({ paneId: '%7', sessionId: 's-beta', label: 'beta' });
+    const tower = makeMockTower([alpha, beta]);
 
     const { stdin, unmount } = render(
       <App tower={tower} pickerMode={true} outputPath={outputPath} />,
     );
 
     await settle();
-    stdin.write('/'); // open SendInput for highlighted session
+    stdin.write('/'); // open search overlay
     await settle();
-    stdin.write('hello world'); // type message
+    stdin.write('beta'); // filter to the second session
     await settle();
-    stdin.write('\r'); // submit
+    stdin.write('\r'); // select → cursor moves to beta, overlay closes (no JSON yet)
+    await settle();
+    expect(fs.existsSync(outputPath)).toBe(false); // selecting in search never writes JSON
+
+    stdin.write('\r'); // dashboard Enter → go on the now-highlighted session
     await settle(200);
 
     expect(fs.existsSync(outputPath)).toBe(true);
     const result = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
-    expect(result.action).toBe('send');
-    expect(result.text).toBe('hello world');
+    expect(result.action).toBe('go');
+    expect(result.sessionId).toBe('s-beta');
     expect(result.paneId).toBe('%7');
 
     unmount();
@@ -219,9 +231,9 @@ describe('picker keys (ink-testing-library)', () => {
     unmount();
   });
 
-  // ── Test 5: ESC in SendInput → action: 'cancel' ───────────────────────────
-  it('ESC in SendInput view writes cancel JSON', async () => {
-    const session = makeSession({ paneId: '%9' });
+  // ── Test 5: ESC in search → no JSON, back on dashboard ─────────────────────
+  it('ESC in search closes the overlay without writing JSON', async () => {
+    const session = makeSession({ paneId: '%9', sessionId: 's-esc', label: 'gamma' });
     const tower = makeMockTower([session]);
 
     const { stdin, unmount } = render(
@@ -229,14 +241,90 @@ describe('picker keys (ink-testing-library)', () => {
     );
 
     await settle();
-    stdin.write('/'); // open SendInput
+    stdin.write('/'); // open search
     await settle();
-    stdin.write('\x1b'); // ESC → cancel from SendInput
+    stdin.write('\x1b'); // ESC → just close the overlay
+    await settle(200);
+
+    // Cancelling search writes nothing and does not exit the popup.
+    expect(fs.existsSync(outputPath)).toBe(false);
+
+    // Still on the dashboard and interactive: Enter now emits a go action.
+    stdin.write('\r');
+    await settle(200);
+    expect(fs.existsSync(outputPath)).toBe(true);
+    const result = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
+    expect(result.action).toBe('go');
+    expect(result.sessionId).toBe('s-esc');
+
+    unmount();
+  });
+
+  // ── Test 6: 'R' → resume search → Enter on local past → action:'new' ───────
+  it("R opens resume search; selecting a local past session writes new JSON with resumeSessionId", async () => {
+    const localPast = { sessionId: 'past-local', cwd: '/home/me/projA', startedAt: 1, label: 'alpha' };
+    const remotePast = { sessionId: 'past-remote', cwd: '/home/me/projR', startedAt: 2, label: 'remoteproj', sshTarget: 'me@host' };
+    const tower = makeMockTower([makeSession()], [localPast, remotePast]);
+
+    const { stdin, unmount } = render(
+      <App tower={tower} pickerMode={true} outputPath={outputPath} />,
+    );
+
+    await settle();
+    stdin.write('R'); // open resume search
+    await settle();
+    stdin.write('alpha'); // filter to the local past session
+    await settle();
+    stdin.write('\r'); // resurrect → action:'new'
     await settle(200);
 
     expect(fs.existsSync(outputPath)).toBe(true);
     const result = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
-    expect(result.action).toBe('cancel');
+    expect(result.action).toBe('new');
+    expect(result.resumeSessionId).toBe('past-local');
+    expect(result.cwd).toBe('/home/me/projA');
+    expect(result.host).toBe('local');
+    expect(result.sshTarget).toBe(null);
+
+    unmount();
+  });
+
+  // ── Test 7: remote past sessions are hidden in picker mode ────────────────
+  it('R resume search hides remote past sessions in picker mode', async () => {
+    const localPast = { sessionId: 'past-local', cwd: '/home/me/projA', startedAt: 1, label: 'alphalocal' };
+    const remotePast = { sessionId: 'past-remote', cwd: '/home/me/projR', startedAt: 2, label: 'betaremote', sshTarget: 'me@host' };
+    const tower = makeMockTower([makeSession()], [localPast, remotePast]);
+
+    const { stdin, lastFrame, unmount } = render(
+      <App tower={tower} pickerMode={true} outputPath={outputPath} />,
+    );
+
+    await settle();
+    stdin.write('R');
+    await settle();
+    const frame = lastFrame()!;
+    expect(frame).toContain('alphalocal');     // local shown
+    expect(frame).not.toContain('betaremote'); // remote filtered out in picker
+
+    unmount();
+  });
+
+  // ── Test 8: non-picker resume search includes remote past sessions ────────
+  it('R resume search includes remote past sessions in non-picker mode', async () => {
+    const localPast = { sessionId: 'past-local', cwd: '/home/me/projA', startedAt: 1, label: 'alphalocal' };
+    const remotePast = { sessionId: 'past-remote', cwd: '/home/me/projR', startedAt: 2, label: 'betaremote', sshTarget: 'me@host' };
+    const tower = makeMockTower([makeSession()], [localPast, remotePast]);
+
+    const { stdin, lastFrame, unmount } = render(
+      <App tower={tower} pickerMode={false} />,
+    );
+
+    await settle();
+    stdin.write('R');
+    await settle();
+    const frame = lastFrame()!;
+    expect(frame).toContain('alphalocal');
+    expect(frame).toContain('betaremote'); // remote included in non-picker
 
     unmount();
   });

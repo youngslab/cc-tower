@@ -1,6 +1,6 @@
-import { jsxs as _jsxs, jsx as _jsx } from "react/jsx-runtime";
+import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
 import React, { useState, useRef, useReducer } from 'react';
-import { Box, Text, useInput, useStdout } from 'ink';
+import { Box, Text, useInput } from 'ink';
 import { EmptyState } from './EmptyState.js';
 const STATUS_ICONS = {
     executing: { icon: '●', color: 'green' },
@@ -9,7 +9,7 @@ const STATUS_ICONS = {
     idle: { icon: '○', color: 'white' },
     dead: { icon: '✕', color: 'red' },
 };
-export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, onCursorChange, onSwapFavoriteOrder, onSelect, onSend, onToggleFavorite, onNewSession, onRefresh, onKill, onGo, onQuit, onDisplayOrderChange, initialDisplayOrder, pickerMode }) {
+export function Dashboard({ sessions, tmuxCount, maxTaskWidth, termWidth, termHeight, headerHeight, cursorIdentity, onCursorChange, onSwapFavoriteOrder, onSelect, onOpenSearch, onOpenResumeSearch, onToggleFavorite, onNewSession, onRefresh, onKill, onGo, onQuit, onDisplayOrderChange, initialDisplayOrder, pickerMode }) {
     const [confirmQuit, setConfirmQuit] = useState(false);
     const [confirmKill, setConfirmKill] = useState(false);
     const [, forceUpdate] = useReducer(x => x + 1, 0);
@@ -116,8 +116,10 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
         // Actions
         if (key.return && sorted[cursor])
             onSelect(sorted[cursor]);
-        if (input === '/' && sorted[cursor])
-            onSend(sorted[cursor]);
+        if (input === '/')
+            onOpenSearch();
+        if (input === 'R')
+            onOpenResumeSearch();
         if (input === 'f' && sorted[cursor])
             onToggleFavorite(sorted[cursor]);
         if (input === 'r' && sorted[cursor])
@@ -141,9 +143,6 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
     const hasNonFavorites = stableNonFavorites.length > 0;
     const nonTmuxStart = stableNonFavorites.findIndex(s => !s.hasTmux);
     const nonTmuxSortedStart = nonTmuxStart >= 0 ? favorites.length + nonTmuxStart : -1;
-    // Scroll viewport: keep cursor visible when terminal is small
-    const { stdout } = useStdout();
-    const termHeight = stdout?.rows ?? 40;
     const itemRowHeight = (s, i) => {
         let h = 3; // name row + summary row + spacer
         if (s.status === 'idle' && s.nextSteps)
@@ -154,10 +153,16 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
             h += 1; // non-tmux separator
         return h;
     };
-    const FIXED_OVERHEAD = 6; // footer-marginTop(1) + footer-rows(2) + scroll-hints(2) + buffer(1)
-    const available = Math.max(4, termHeight - FIXED_OVERHEAD);
+    // footer-marginTop(1) + legend-row(1) + keys-rows(2, always split — see footer
+    // below) + scroll-hints(2, always reserved — see below). headerHeight accounts
+    // for the logo/border rows App.tsx already renders above us — without it
+    // we'd overestimate how much vertical room is left and overflow past the
+    // real terminal height.
+    const FIXED_OVERHEAD = 6;
+    const available = Math.max(4, termHeight - headerHeight - FIXED_OVERHEAD);
     const heights = sorted.map(itemRowHeight);
     let viewStart = 0, viewEnd = sorted.length;
+    let usedItemRows = 0;
     if (sorted.length > 0) {
         let used = heights[cursor] ?? 2;
         viewStart = cursor;
@@ -175,12 +180,20 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
             viewStart--;
             used += heights[viewStart] ?? 2;
         }
+        usedItemRows = used;
     }
     const showScrollUp = viewStart > 0;
     const showScrollDown = viewEnd < sorted.length;
     // Left gutter width for continuation lines (=> summary, ↳ next): aligns under the name
     const INDENT = 8;
-    return (_jsxs(Box, { flexDirection: "column", children: [showScrollUp && (_jsxs(Text, { dimColor: true, children: ["  \u2191 ", viewStart, " more"] })), sorted.slice(viewStart, viewEnd).map((session, localI) => {
+    // Anchor the footer to the very bottom of the screen (with a 1-row gap below
+    // it) instead of right after the list, which otherwise leaves a ragged gap
+    // mid-screen whenever there are too few sessions to fill the viewport.
+    // A precisely-sized blank spacer (rather than a fixed-height flex column,
+    // which made Ink/yoga misbehave and visibly wrap the footer text) fills the
+    // exact leftover space: available room minus the rows the list actually used.
+    const spacerRows = Math.max(0, available - usedItemRows);
+    return (_jsxs(Box, { flexDirection: "column", children: [_jsx(Text, { dimColor: true, children: showScrollUp ? `  ↑ ${viewStart} more` : ' ' }), sorted.slice(viewStart, viewEnd).map((session, localI) => {
                 const i = viewStart + localI;
                 const isCursor = i === cursor;
                 const isDim = !session.hasTmux || session.status === 'dead';
@@ -194,7 +207,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
                     ? '⟳ summarizing...'
                     : (session.goalSummary ?? session.contextSummary ?? session.currentTask ?? 'New session');
                 return (_jsxs(React.Fragment, { children: [showFavSep && (_jsxs(Text, { dimColor: true, children: ['─'.repeat(60), " favorites \u2191"] })), showNonTmuxSep && (_jsxs(Text, { dimColor: true, children: ['· · · ·'.repeat(5), " (monitor-only)"] })), _jsxs(Box, { children: [_jsx(Text, { color: isCursor ? 'cyan' : undefined, bold: isCursor, children: isCursor ? '▸' : ' ' }), _jsxs(Text, { color: isCursor ? 'cyan' : undefined, dimColor: !isCursor, children: [" ", pad(`${i + 1}`, 2), " "] }), _jsxs(Text, { color: isCursor ? 'cyan' : color, children: [icon, " "] }), _jsx(Text, { color: isCursor ? 'cyan' : undefined, bold: isCursor, dimColor: !isCursor && isDim, children: truncate(nameText, maxTaskWidth) }), session.sshTarget && _jsx(Text, { dimColor: true, children: "  (remote)" })] }), _jsxs(Box, { children: [_jsx(Text, { children: ' '.repeat(INDENT) }), _jsx(Text, { dimColor: true, children: '=> ' }), _jsx(Text, { dimColor: !isCursor && isDim, children: truncate(summaryText, maxTaskWidth) })] }), session.status === 'idle' && session.nextSteps && (_jsxs(Box, { children: [_jsx(Text, { children: ' '.repeat(INDENT) }), _jsxs(Text, { color: "yellow", children: ["\u21B3 ", truncate(session.nextSteps, maxTaskWidth)] })] })), _jsx(Box, { height: 1 })] }, identityOf(session)));
-            }), showScrollDown && (_jsxs(Text, { dimColor: true, children: ["  \u2193 ", sorted.length - viewEnd, " more"] })), sorted.length === 0 && (_jsx(EmptyState, { inTmux: tmuxCount > 0, hookInstalled: true })), confirmKill && sorted[cursor] && (_jsxs(Box, { marginTop: 1, borderStyle: "round", borderColor: "red", paddingX: 2, paddingY: 0, justifyContent: "center", children: [_jsxs(Text, { color: "red", children: ["Kill ", sorted[cursor].label ?? sorted[cursor].projectName, " (PID ", sorted[cursor].pid, ")?  "] }), _jsx(Text, { bold: true, color: "green", children: "[y] Yes  " }), _jsx(Text, { bold: true, color: "red", children: "[n] No" })] })), confirmQuit && (_jsxs(Box, { marginTop: 1, borderStyle: "round", borderColor: "yellow", paddingX: 2, paddingY: 0, justifyContent: "center", children: [_jsx(Text, { color: "yellow", children: "Quit popmux?  " }), _jsx(Text, { bold: true, color: "green", children: "[y] Yes  " }), _jsx(Text, { bold: true, color: "red", children: "[n] No" })] })), !confirmQuit && (_jsxs(Box, { marginTop: 1, flexDirection: "column", children: [_jsxs(Box, { children: [_jsx(Text, { dimColor: true, children: "  " }), _jsx(Text, { color: "green", children: "\u25CF" }), _jsx(Text, { dimColor: true, children: " Running  " }), _jsx(Text, { color: "yellow", children: "\u25D0" }), _jsx(Text, { dimColor: true, children: " Thinking  " }), _jsx(Text, { color: "cyan", children: "\u25D1" }), _jsx(Text, { dimColor: true, children: " Agent  " }), _jsx(Text, { color: "white", children: "\u25CB" }), _jsx(Text, { dimColor: true, children: " Idle  " }), _jsx(Text, { color: "red", children: "\u2715" }), _jsx(Text, { dimColor: true, children: " Dead" })] }), _jsx(Box, { children: _jsxs(Text, { dimColor: true, children: ["  [j/k] Nav  [1-9] Jump  [", `[/]`, "] Reorder  \u2502  [Enter] Detail  [g] Go  [/] Send  \u2502  [f] Fav  [n] New  [r] Refresh  [x] Kill  [q] Quit"] }) })] }))] }));
+            }), sorted.length > 0 && (_jsx(Text, { dimColor: true, children: showScrollDown ? `  ↓ ${sorted.length - viewEnd} more` : ' ' })), sorted.length === 0 && (_jsx(EmptyState, { inTmux: tmuxCount > 0, hookInstalled: true })), spacerRows > 0 && _jsx(Box, { height: spacerRows }), confirmKill && sorted[cursor] && (_jsxs(Box, { marginTop: 1, borderStyle: "round", borderColor: "red", paddingX: 2, paddingY: 0, justifyContent: "center", children: [_jsxs(Text, { color: "red", children: ["Kill ", sorted[cursor].label ?? sorted[cursor].projectName, " (PID ", sorted[cursor].pid, ")?  "] }), _jsx(Text, { bold: true, color: "green", children: "[y] Yes  " }), _jsx(Text, { bold: true, color: "red", children: "[n] No" })] })), confirmQuit && (_jsxs(Box, { marginTop: 1, borderStyle: "round", borderColor: "yellow", paddingX: 2, paddingY: 0, justifyContent: "center", children: [_jsx(Text, { color: "yellow", children: "Quit popmux?  " }), _jsx(Text, { bold: true, color: "green", children: "[y] Yes  " }), _jsx(Text, { bold: true, color: "red", children: "[n] No" })] })), !confirmQuit && (_jsxs(Box, { marginTop: 1, flexDirection: "column", children: [_jsxs(Box, { children: [_jsx(Text, { dimColor: true, children: "  " }), _jsx(Text, { color: "green", children: "\u25CF" }), _jsx(Text, { dimColor: true, children: " Running  " }), _jsx(Text, { color: "yellow", children: "\u25D0" }), _jsx(Text, { dimColor: true, children: " Thinking  " }), _jsx(Text, { color: "cyan", children: "\u25D1" }), _jsx(Text, { dimColor: true, children: " Agent  " }), _jsx(Text, { color: "white", children: "\u25CB" }), _jsx(Text, { dimColor: true, children: " Idle  " }), _jsx(Text, { color: "red", children: "\u2715" }), _jsx(Text, { dimColor: true, children: " Dead" })] }), _jsx(Box, { children: _jsxs(Text, { dimColor: true, children: ["  [j/k] Nav  [1-9] Jump  [", `[/]`, "] Reorder  \u2502  [Enter] Detail  [g] Go"] }) }), _jsx(Box, { children: _jsx(Text, { dimColor: true, children: "  [/] Search  [R] Resume  \u2502  [f] Fav  [n] New  [r] Refresh  [x] Kill  [q] Quit" }) })] }))] }));
 }
 import stringWidth from 'string-width';
 function centerPad(str, len) {

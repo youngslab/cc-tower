@@ -46,10 +46,6 @@ export interface Config {
     keys: {
         close: string;
     };
-    commands: {
-        confirm_before_send: boolean;
-        confirm_when_busy: boolean;
-    };
     claude_args: string;
     hosts: HostConfig[];
 }

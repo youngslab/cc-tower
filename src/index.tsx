@@ -8,7 +8,6 @@ import path from 'node:path';
 import os from 'node:os';
 import { Tower } from './core/tower.js';
 import { App } from './ui/App.js';
-import { tmux } from './tmux/commands.js';
 import { logger, setTuiMode } from './utils/logger.js';
 import { loadConfig } from './config/loader.js';
 import { markSpawn } from './picker/protocol.js';
@@ -18,6 +17,19 @@ import { disableLegacyCcTowerPlugin } from './migrate/legacy-plugin.js';
 // Mark spawn time as early as possible — used by --picker --output to compute
 // "READY <ms>" perf SLO for sub-second popup spawn.
 markSpawn();
+
+// Resolve claude's absolute path instead of relying on PATH lookup inside a
+// spawned tmux pane's shell — see the `spawn` command below for why.
+function resolveClaudeBin(): string {
+  const candidates = [
+    path.join(os.homedir(), '.local', 'bin', 'claude'),
+    path.join(os.homedir(), '.npm-global', 'bin', 'claude'),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return 'claude'; // fall back to PATH lookup
+}
 
 const APP_VERSION = (() => {
   try {
@@ -272,34 +284,6 @@ program
       const active = sessions.filter(s => s.status !== 'dead').length;
       const idle = sessions.filter(s => s.status === 'idle').length;
       console.log(`${sessions.length} sessions (${active} active, ${idle} idle)`);
-    }
-    await tower.stop();
-  });
-
-// Send command
-program
-  .command('send <session> <message>')
-  .action(async (sessionArg, message) => {
-    const tower = new Tower(undefined, { skipHooks: true });
-    await tower.start();
-    const sessions = tower.store.getAll();
-    const s = sessions.find(s => s.sessionId.startsWith(sessionArg) || s.label === sessionArg || s.paneId === sessionArg);
-    if (!s) {
-      console.log(`Session not found: ${sessionArg}`);
-    } else if (s.sshTarget) {
-      const escaped = message.replace(/'/g, "'\\''");
-      const cmd = `ssh ${s.sshTarget} "tmux send-keys -t ${s.paneId} '${escaped}' Enter"`;
-      await new Promise<void>((resolve) => {
-        const child = spawn('sh', ['-c', cmd], { stdio: 'inherit' });
-        child.on('close', () => resolve());
-        child.on('error', () => resolve());
-      });
-      console.log(`Sent to ${s.label ?? s.projectName} (${s.sshTarget}:${s.paneId})`);
-    } else if (!s.paneId) {
-      console.log('Session has no tmux pane');
-    } else {
-      await tmux.sendKeys(s.paneId, message);
-      console.log(`Sent to ${s.label ?? s.projectName} (${s.paneId})`);
     }
     await tower.stop();
   });
@@ -764,7 +748,15 @@ program
       process.exit(2);
     }
     // Build the claude command. Resume takes precedence; otherwise fresh.
-    const claudeBin = 'claude';
+    //
+    // Resolve an absolute path rather than trusting PATH: this command is
+    // dispatched from popmux-go, itself invoked via `tmux run-shell` (the F12
+    // binding). run-shell processes get tmux's bare server-default PATH
+    // (/usr/bin, /bin, ...), NOT the interactive shell's PATH — so a `claude`
+    // installed under ~/.local/bin (a common install location) resolves fine
+    // when popmux is run directly from a terminal, but 404s as "command not
+    // found" here, killing the new pane before the user can see why.
+    const claudeBin = resolveClaudeBin();
     const claudeArgs = opts.resume ? ['--resume', opts.resume] : [];
     const cmd = `${claudeBin} ${claudeArgs.map((a) => JSON.stringify(a)).join(' ')}`.trim();
     // Spawn in a new tmux window in the current session.

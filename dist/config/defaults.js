@@ -38,10 +38,6 @@ export const defaults = {
     keys: {
         close: 'Escape',
     },
-    commands: {
-        confirm_before_send: true,
-        confirm_when_busy: true,
-    },
     claude_args: '',
     hosts: [],
 };

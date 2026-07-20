@@ -47,10 +47,6 @@ export interface Config {
   keys: {
     close: string;                   // key to back from detail, default 'Escape'
   };
-  commands: {
-    confirm_before_send: boolean;
-    confirm_when_busy: boolean;
-  };
   claude_args: string;  // extra args for new Claude sessions, e.g., '--dangerously-skip-permissions'
   hosts: HostConfig[];
 }
@@ -94,10 +90,6 @@ export const defaults: Config = {
   },
   keys: {
     close: 'Escape',
-  },
-  commands: {
-    confirm_before_send: true,
-    confirm_when_busy: true,
   },
   claude_args: '',
   hosts: [],

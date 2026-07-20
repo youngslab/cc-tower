@@ -5,7 +5,6 @@ import { Session } from '../core/session-store.js';
 interface Props {
   session: Session;
   onBack: () => void;
-  onSend: (session: Session) => void;
 }
 
 const STATUS_ICONS: Record<string, { icon: string; color: string }> = {
@@ -16,10 +15,9 @@ const STATUS_ICONS: Record<string, { icon: string; color: string }> = {
   dead: { icon: '✕', color: 'red' },
 };
 
-export function DetailView({ session, onBack, onSend }: Props) {
+export function DetailView({ session, onBack }: Props) {
   useInput((input, key) => {
     if (input === 'b' || key.escape) onBack();
-    if (input === '/') onSend(session);
   });
 
   const elapsed = formatDuration(Date.now() - session.startedAt.getTime());
@@ -109,7 +107,7 @@ export function DetailView({ session, onBack, onSend }: Props) {
       )}
 
       <Box marginTop={1}>
-        <Text dimColor>[/] Send  [b] Back</Text>
+        <Text dimColor>[b] Back</Text>
       </Box>
     </Box>
   );

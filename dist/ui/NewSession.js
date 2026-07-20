@@ -4,16 +4,7 @@ import { Box, Text, useInput } from 'ink';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-function fuzzyMatch(query, target) {
-    const q = query.toLowerCase();
-    const t = target.toLowerCase();
-    let qi = 0;
-    for (let ti = 0; ti < t.length && qi < q.length; ti++) {
-        if (t[ti] === q[qi])
-            qi++;
-    }
-    return qi === q.length;
-}
+import { fuzzyMatch } from './fuzzy.js';
 function remoteListDirs(host, dir) {
     try {
         const cmd = `ls -1 -d ${dir}/*/ 2>/dev/null | xargs -I{} basename {}`;

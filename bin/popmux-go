@@ -85,14 +85,6 @@ case "$ACTION" in
       "$POPMUX" mirror --host "$HOST" --pane "$PANE" --ssh-target "$SSH"
     fi
     ;;
-  send)
-    SID=$(jq -r .sessionId <"$OUT")
-    # R5 decision: single-line read only — no multi-line / no editor escape.
-    read -e -p "Send to ${SID}: " MSG || MSG=""
-    if [[ -n "${MSG:-}" ]]; then
-      "$POPMUX" send "$SID" "$MSG"
-    fi
-    ;;
   new)
     CWD=$(jq -r .cwd <"$OUT")
     HOST=$(jq -r .host <"$OUT")

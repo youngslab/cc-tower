@@ -17,15 +17,6 @@ describe('picker/protocol — serialize', () => {
         agentId: 'claude',
       },
       {
-        action: 'send',
-        sessionId: 'abc-123',
-        paneId: '%4',
-        host: 'remote-1',
-        sshTarget: 'me@host',
-        agentId: 'claude',
-        text: 'continue',
-      },
-      {
         action: 'new',
         cwd: '/tmp/x',
         host: 'local',

@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { Config } from '../config/defaults.js';
 import { DiscoveryEngine } from './discovery.js';
 import { SessionStore } from './session-store.js';
+import { SessionScanner } from './session-scanner.js';
 import { HookReceiver } from './hook-receiver.js';
 import { JsonlWatcher } from './jsonl-watcher.js';
 import { ProcessMonitor } from './process-monitor.js';
@@ -11,6 +12,8 @@ import { Notifier } from './notifier.js';
 export declare class Tower extends EventEmitter {
     config: Config;
     store: SessionStore;
+    /** Lazily scans ~/.claude/projects for all resumable sessions (resume picker). */
+    scanner: SessionScanner;
     discovery: DiscoveryEngine;
     hookReceiver: HookReceiver;
     jsonlWatcher: JsonlWatcher;

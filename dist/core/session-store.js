@@ -448,6 +448,54 @@ export class SessionStore extends EventEmitter {
         }
         return Array.from(seen.values());
     }
+    /**
+     * Merge on-disk scanned sessions with state.json metadata for the resume picker.
+     * Union by sessionId: scanned (local disk) provides cwd/startedAt for the many
+     * sessions popmux never tracked; state.json wins for human metadata
+     * (label/goalSummary/contextSummary/sshTarget) and contributes persisted-only
+     * sessions not on local disk (e.g. remote). Currently-active sessions are
+     * excluded; result is sorted most-recent-first.
+     */
+    getAllResumableSessions(scanned, scanComplete = false) {
+        const merged = new Map();
+        // 1. Scanned local-disk sessions — cwd/startedAt from JSONL content; the
+        //    `/rename` customTitle becomes the label.
+        for (const s of scanned) {
+            merged.set(s.sessionId, { sessionId: s.sessionId, cwd: s.cwd, startedAt: s.startedAt, label: s.customTitle });
+        }
+        // 2. Overlay state.json metadata; add persisted-only (e.g. remote) sessions.
+        for (const [sessionId, entry] of this.persistedMeta) {
+            const base = merged.get(sessionId);
+            // Once a full disk scan has run, a persisted-only local (no sshTarget)
+            // entry not found on disk is stale/deleted — hide it rather than
+            // resurrecting a session that no longer exists. Remote entries
+            // (sshTarget set) can never be confirmed by the local scan, so they
+            // always remain eligible.
+            if (scanComplete && !base && !entry.sshTarget)
+                continue;
+            const cwd = base?.cwd ?? entry.cwd;
+            if (!cwd)
+                continue; // can't resurrect without a cwd
+            merged.set(sessionId, {
+                sessionId,
+                cwd,
+                startedAt: base?.startedAt ?? entry.startedAt ?? 0,
+                // Scanned customTitle (the JSONL's actual `/rename` record) wins over a
+                // persisted state.json label — the latter can be a stale fallback name
+                // cached before the label was successfully read (e.g. a late /rename
+                // that landed past the scanner's old head-only read window).
+                label: base?.label ?? entry.label,
+                goalSummary: entry.goalSummary,
+                contextSummary: entry.contextSummary,
+                sshTarget: entry.sshTarget,
+            });
+        }
+        // 3. Exclude currently-active sessions, sort recent-first.
+        const activeIds = new Set(this.getAll().map(s => s.sessionId));
+        const out = Array.from(merged.values()).filter(s => !activeIds.has(s.sessionId));
+        out.sort((a, b) => b.startedAt - a.startedAt);
+        return out;
+    }
     /** Removes a past session from persistedMeta and rewrites state.json immediately. */
     deletePersistedSession(sessionId) {
         this.persistedMeta.delete(sessionId);

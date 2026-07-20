@@ -7,14 +7,6 @@ export type PickerAction = {
     sshTarget: string | null;
     agentId: string;
 } | {
-    action: 'send';
-    sessionId: string;
-    paneId: string;
-    host: string;
-    sshTarget: string | null;
-    agentId: string;
-    text: string;
-} | {
     action: 'new';
     cwd: string;
     host: string;

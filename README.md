@@ -13,7 +13,7 @@ all your sessions, jump straight in.
 prefix + Space  →  popmux popup
                    ┌──────────────┐
                    │ ● local-1    │  Enter — jump to that session
-                   │ ○ local-2    │  /     — send a message
+                   │ ○ local-2    │  /     — search sessions
                    │ ◐ remote-A   │  q     — cancel
                    └──────────────┘
 ```
@@ -46,7 +46,6 @@ The wrapper does the orchestration:
 2. The picker writes a single-line JSON action to the tmpfile and exits
 3. The wrapper reads the JSON and dispatches:
    - `go` → `tmux switch-client` (local) or `popmux mirror` (remote)
-   - `send` → `popmux send`
    - `new` → `popmux spawn`
 
 ## Architecture
@@ -65,7 +64,7 @@ popmux is organized in three layers:
 └────────────────────┬────────────────────────────────┘
                      │ CLI calls
 ┌────────────────────▼────────────────────────────────┐
-│  Orchestrator (popmux mirror / send / spawn)        │
+│  Orchestrator (popmux mirror / spawn)               │
 │  Node — manages mirror windows, SSH, state          │
 └─────────────────────────────────────────────────────┘
 ```
@@ -147,7 +146,6 @@ Optional but recommended:
 | `popmux` | Full TUI dashboard |
 | `popmux --picker --output <path>` | Picker mode (used by popmux-go) |
 | `popmux list [--json]` | Print sessions to stdout |
-| `popmux send <session> <message>` | Send a message to a session |
 | `popmux spawn --cwd <p> [--host <h>] [--ssh-target <t>] [--resume <id>]` | Spawn a new claude session |
 | `popmux mirror --host <h> --pane <p> --ssh-target <t>` | Manage remote mirror windows |
 | `popmux mirror --clean` / `--list` | Mirror maintenance |
@@ -190,10 +188,6 @@ notifications:
     on_error: true
     on_cost_threshold: 5.0     # USD
     on_session_death: true
-
-commands:
-  confirm_before_send: true    # confirm when sending to session
-  confirm_when_busy: true      # confirm if session is thinking/executing
 
 # SSH Remote hosts
 hosts:

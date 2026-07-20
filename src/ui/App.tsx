@@ -10,16 +10,17 @@ const _require = createRequire(import.meta.url);
 const { version: APP_VERSION } = _require('../../package.json') as { version: string };
 import { Session } from '../core/session-store.js';
 import { useSessionStore } from './hooks/useSessionStore.js';
-import { useTmux } from './hooks/useTmux.js';
 import { tmux } from '../tmux/commands.js';
 import { Dashboard } from './Dashboard.js';
 import { DetailView } from './DetailView.js';
-import { SendInput } from './SendInput.js';
+import { SessionSearch } from './SessionSearch.js';
+import { ResumeSearch } from './ResumeSearch.js';
+import { resolveHostBySsh } from './host-resolve.js';
 import { NewSession, PastSession, PastSessionByCwd } from './NewSession.js';
 import { getRecentProjects, RecentProject } from '../utils/recent-projects.js';
 import { writeAndExit, emitReady } from '../picker/protocol.js';
 
-type View = 'dashboard' | 'detail' | 'send' | 'new-session';
+type View = 'dashboard' | 'detail' | 'search' | 'resume-search' | 'new-session';
 
 interface Props {
   tower: Tower;
@@ -35,7 +36,6 @@ interface Props {
 export function App({ tower, pickerMode, outputPath }: Props) {
   const { exit } = useApp();
   const { sessions, tmuxCount } = useSessionStore(tower.store);
-  const { send } = useTmux(tower.config.keys.close);
   const [view, setView] = useState<View>('dashboard');
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
@@ -78,30 +78,34 @@ export function App({ tower, pickerMode, outputPath }: Props) {
     setView('detail');
   }, [pickerMode, outputPath]);
 
-  const handleSend = useCallback((session: Session) => {
-    // In picker mode, route through the local SendInput so the user can type a
-    // message inline; only emit JSON once they submit. (Empty text = cancel.)
-    setSelectedSession(session);
-    setView('send');
+  const handleOpenSearch = useCallback(() => {
+    setView('search');
   }, []);
 
-  const handleSendText = useCallback(async (text: string) => {
-    if (pickerMode && outputPath && selectedSession) {
-      writeAndExit(outputPath, {
-        action: 'send',
-        sessionId: selectedSession.sessionId,
-        paneId: selectedSession.paneId ?? '',
-        host: selectedSession.host ?? 'local',
-        sshTarget: selectedSession.sshTarget ?? null,
-        agentId: 'claude',
-        text,
-      });
-    }
-    if (selectedSession) {
-      await send(selectedSession, text);
-    }
-    setView(view === 'send' ? 'dashboard' : 'detail');
-  }, [selectedSession, send, view, pickerMode, outputPath]);
+  // Resume picker scan state: `scanGen` bumps on scan completion to refresh the
+  // open overlay (its useMemo deps on generation); `resumeScanning` drives the
+  // "scanning…" footer on the first cold scan only.
+  const [scanGen, setScanGen] = useState(0);
+  const [resumeScanning, setResumeScanning] = useState(false);
+
+  const handleOpenResumeSearch = useCallback(() => {
+    setView('resume-search');
+    if (!tower.scanner.isScanned()) setResumeScanning(true);
+    // Always ensure (incremental re-scan of changed dirs is cheap); refresh the
+    // overlay when it resolves.
+    void tower.scanner.ensureScanned().then(() => {
+      setResumeScanning(false);
+      setScanGen(g => g + 1);
+    });
+  }, [tower]);
+
+  // Search selection moves the dashboard cursor to the chosen session — it does
+  // NOT navigate (that stays on the `g` key). Works in both normal and picker
+  // mode: cursorIdentity is the controlled cursor for the underlying dashboard.
+  const handleSearchSelect = useCallback((session: Session) => {
+    setCursorIdentity(session.paneId ?? String(session.pid));
+    setView('dashboard');
+  }, []);
 
   const handleBack = useCallback(() => {
     setView('dashboard');
@@ -321,6 +325,19 @@ export function App({ tower, pickerMode, outputPath }: Props) {
     }
   }, [tower]);
 
+  // Resurrect a dead/past session: launch a new tmux session running
+  // `claude --resume <id>` via the existing handleNewSession path.
+  const handleResumeSelect = useCallback(async (past: PastSessionByCwd) => {
+    const host = resolveHostBySsh(tower.config.hosts, past.sshTarget);
+    if (past.sshTarget && !host) {
+      // Remote host no longer configured — silent no-op (no toast infra; B4).
+      setView('dashboard');
+      return;
+    }
+    setView('dashboard');
+    await handleNewSession(past.cwd, host, past.sessionId);
+  }, [tower, handleNewSession]);
+
   const handleQuit = useCallback(async () => {
     if (pickerMode && outputPath) {
       writeAndExit(outputPath, { action: 'cancel' });
@@ -373,19 +390,28 @@ export function App({ tower, pickerMode, outputPath }: Props) {
     );
   }
 
-  // Dynamic sizing: use 70% of terminal width
-  const boxWidth = Math.max(MIN_WIDTH, Math.min(termWidth - 4, Math.floor(termWidth * 0.7)));
+  // Fullscreen layout: the popup is sized to (near) the whole terminal now, so
+  // a centered, width-capped bordered box is both wasted space and a source of
+  // resize glitches (Dashboard's scroll math didn't know how many rows the
+  // header/border/padding ate, so it could compute more content than actually
+  // fit on-screen — the terminal itself would then scroll mid-frame, leaving
+  // stale/overlapping text). Use the full width/height directly, no border.
+  const contentPaddingX = 3;
+  // Rows the header block above Dashboard occupies, so Dashboard's viewport
+  // math can account for the real remaining height (not just termHeight).
+  const bigLogo = view === 'dashboard' && termHeight >= 30;
+  const compactLogo = view === 'dashboard' && termHeight >= 20 && termHeight < 30;
+  const LOGO_MARGIN_TOP = 1; // small gap so the logo isn't flush against the screen's top edge
+  const headerHeight = bigLogo ? 7 : compactLogo ? 3 : 0; // logo/compact rows + top gap + 1 spacer row
 
   return (
     <Box
       width={termWidth}
       height={termHeight}
       flexDirection="column"
-      alignItems="center"
-      justifyContent="center"
     >
-      {view === 'dashboard' && termHeight >= 30 && (
-        <Box width={boxWidth} justifyContent="flex-start" alignItems="flex-end" marginBottom={0}>
+      {bigLogo && (
+        <Box justifyContent="flex-start" alignItems="flex-end" marginTop={LOGO_MARGIN_TOP} marginBottom={1} paddingX={contentPaddingX}>
           <Box flexDirection="column">
             <Text color="cyan">{' ██████╗  ██████╗ ████████╗'}</Text>
             <Text color="cyan">{'██╔════╝ ██╔════╝ ╚══██╔══╝'}</Text>
@@ -399,8 +425,8 @@ export function App({ tower, pickerMode, outputPath }: Props) {
           </Box>
         </Box>
       )}
-      {view === 'dashboard' && termHeight >= 20 && termHeight < 30 && (
-        <Box width={boxWidth} justifyContent="flex-start" alignItems="center" marginBottom={0}>
+      {compactLogo && (
+        <Box justifyContent="flex-start" alignItems="center" marginTop={LOGO_MARGIN_TOP} marginBottom={1} paddingX={contentPaddingX}>
           <Text color="cyan" bold>◆ CCT</Text>
           <Text dimColor> v{APP_VERSION}</Text>
           <Text dimColor>  {sessions.length} sessions</Text>
@@ -408,22 +434,23 @@ export function App({ tower, pickerMode, outputPath }: Props) {
       )}
       <Box
         flexDirection="column"
-        borderStyle="round"
-        borderColor="cyan"
-        paddingX={2}
-        paddingY={1}
-        width={boxWidth}
+        paddingX={contentPaddingX}
+        width={termWidth}
       >
         {view === 'dashboard' && (
           <Dashboard
             sessions={sessions}
             tmuxCount={tmuxCount}
-            maxTaskWidth={Math.max(20, boxWidth - 16)}
+            termWidth={termWidth}
+            termHeight={termHeight}
+            headerHeight={headerHeight}
+            maxTaskWidth={Math.max(20, termWidth - 2 * contentPaddingX - 16)}
             cursorIdentity={cursorIdentity}
             onCursorChange={setCursorIdentity}
             onSwapFavoriteOrder={handleSwapFavoriteOrder}
             onSelect={handleSelect}
-            onSend={handleSend}
+            onOpenSearch={handleOpenSearch}
+            onOpenResumeSearch={handleOpenResumeSearch}
             onToggleFavorite={handleToggleFavorite}
             onRefresh={handleRefresh}
             onKill={handleKill}
@@ -458,21 +485,32 @@ export function App({ tower, pickerMode, outputPath }: Props) {
           <DetailView
             session={selectedSession}
             onBack={handleBack}
-            onSend={handleSend}
           />
         )}
 
-        {view === 'send' && selectedSession && (
-          <SendInput
-            session={selectedSession}
-            confirmWhenBusy={tower.config.commands.confirm_when_busy}
-            onSend={handleSendText}
-            onCancel={() => {
-              if (pickerMode && outputPath) {
-                writeAndExit(outputPath, { action: 'cancel' });
-              }
-              setView('dashboard');
+        {view === 'search' && (
+          <SessionSearch
+            sessions={sessions}
+            onSelect={handleSearchSelect}
+            onCancel={() => setView('dashboard')}
+          />
+        )}
+
+        {view === 'resume-search' && (
+          <ResumeSearch
+            getSessions={() => {
+              // All resumable sessions on disk (~/.claude/projects) merged with
+              // state.json metadata — not just the few popmux tracked live.
+              const all = tower.store.getAllResumableSessions(tower.scanner.getCached(), tower.scanner.isScanned());
+              // Picker mode can't resurrect remote sessions (popmux spawn remote
+              // is a B4 stub), so hide them where they'd dead-end.
+              return pickerMode ? all.filter(s => !s.sshTarget) : all;
             }}
+            generation={scanGen}
+            scanning={resumeScanning}
+            onSelect={handleResumeSelect}
+            onCancel={() => setView('dashboard')}
+            termHeight={termHeight}
           />
         )}
       </Box>

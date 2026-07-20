@@ -4,6 +4,8 @@ import { Config } from '../config/defaults.js';
 import { loadConfig } from '../config/loader.js';
 import { DiscoveryEngine, SessionInfo } from './discovery.js';
 import { SessionStore, Session, sessionIdentity } from './session-store.js';
+import { SessionScanner } from './session-scanner.js';
+import { resolveQueuedStatus } from './queued-status.js';
 import { HookReceiver } from './hook-receiver.js';
 import { JsonlWatcher } from './jsonl-watcher.js';
 import { ProcessMonitor } from './process-monitor.js';
@@ -31,6 +33,8 @@ import os from 'node:os';
 export class Tower extends EventEmitter {
   config: Config;
   store: SessionStore;
+  /** Lazily scans ~/.claude/projects for all resumable sessions (resume picker). */
+  scanner: SessionScanner;
   discovery: DiscoveryEngine;
   hookReceiver: HookReceiver;
   jsonlWatcher: JsonlWatcher;
@@ -74,6 +78,8 @@ export class Tower extends EventEmitter {
 
     this.store = new SessionStore(persistPath);
     const claudeDirResolved = (config ?? loadConfig()).discovery.claude_dir.replace('~', os.homedir());
+    // Lazy: not scanned until the resume picker (R) first asks for it.
+    this.scanner = new SessionScanner(path.join(claudeDirResolved, 'projects'));
     this.resolver = new ConversationResolver(claudeDirResolved, {
       skipContentProbes: opts?.skipColdStart ?? false,
     });
@@ -406,13 +412,18 @@ export class Tower extends EventEmitter {
     // Get live tmux panes + pane shell PIDs once
     let livePanes: Set<string>;
     const panePidMap = new Map<number, string>(); // shell_pid → paneId
+    // Panes whose current foreground command is actually claude — a paneId existing
+    // (e.g. reused by tmux for an unrelated shell after the original claude process
+    // exited) is not proof that the persisted session is still live in it.
+    const claudePanes = new Set<string>();
     try {
-      const out = execSync('tmux list-panes -a -F "#{pane_id} #{pane_pid}"', { encoding: 'utf8', timeout: 2000 });
+      const out = execSync('tmux list-panes -a -F "#{pane_id} #{pane_pid} #{pane_current_command}"', { encoding: 'utf8', timeout: 2000 });
       livePanes = new Set();
       for (const line of out.trim().split('\n').filter(Boolean)) {
-        const [paneId, pid] = line.split(' ');
+        const [paneId, pid, cmd] = line.split(' ');
         if (paneId) livePanes.add(paneId);
         if (paneId && pid) panePidMap.set(parseInt(pid), paneId);
+        if (paneId && cmd && /claude/i.test(cmd)) claudePanes.add(paneId);
       }
     } catch {
       livePanes = new Set();
@@ -447,11 +458,12 @@ export class Tower extends EventEmitter {
       const paneId = identity.startsWith('%') ? identity : undefined;
       const isRemote = !!(entry.host && entry.host !== 'local');
 
-      // Skip local sessions that don't have a live tmux pane
-      // (covers: dead panes, legacy non-pane identities like '0', numeric PIDs)
-      if (!isRemote && !(paneId && livePanes.has(paneId))) continue;
+      // Skip local sessions that don't have a live tmux pane still running claude
+      // (covers: dead panes, legacy non-pane identities like '0', numeric PIDs,
+      // and panes tmux has recycled for an unrelated shell/process)
+      if (!isRemote && !(paneId && claudePanes.has(paneId))) continue;
 
-      const hasTmux = isRemote ? false : (paneId ? livePanes.has(paneId) : false);
+      const hasTmux = isRemote ? false : (paneId ? claudePanes.has(paneId) : false);
       const projectName = entry.cwd.split('/').filter(Boolean).pop() ?? entry.cwd;
 
       // Read /rename name from session file — look up by sessionId since pid may not be persisted
@@ -754,29 +766,11 @@ export class Tower extends EventEmitter {
       return;
     }
 
-    // Step 5: apply status update (no FSM — readOnly mode only)
-    const statusMap: Record<string, Session['status']> = {
-      'pre-tool': 'executing',
-      'post-tool': 'idle',
-      'user-prompt': 'thinking',
-      'thinking': 'thinking',
-      'session-start': 'idle',
-      'session-end': 'dead',
-      'agent-start': 'agent',
-      'agent-end': 'idle',
-      'stop': 'idle',
-      'executing': 'executing',
-    };
-    const newStatus = statusMap[event.event];
+    // Step 5: apply status update (no FSM — readOnly mode only). Liveness is
+    // gated on the session's pane, NOT event.pid (the ephemeral hook-wrapper PID,
+    // already dead by drain time — using it forced every active status to idle).
+    const newStatus = resolveQueuedStatus(event, livePanes);
     if (newStatus) {
-      // Guard: don't mark as active if Claude process is already dead
-      const isActiveStatus = newStatus === 'thinking' || newStatus === 'executing' || newStatus === 'agent';
-      const claudePid = typeof event.pid === 'number' ? event.pid : 0;
-      if (isActiveStatus && claudePid > 0 && !isPidAlive(claudePid)) {
-        this.store.update(identity, { status: 'idle' });
-        logger.debug('tower: drainEventQueue: Claude PID dead, forcing idle', { identity, claudePid, event: event.event });
-        return;
-      }
       this.store.update(identity, { status: newStatus });
       logger.debug('tower: drainEventQueue: applied', { event: event.event, identity, newStatus });
     }

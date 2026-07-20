@@ -8,18 +8,18 @@ import { homedir } from 'node:os';
 const _require = createRequire(import.meta.url);
 const { version: APP_VERSION } = _require('../../package.json');
 import { useSessionStore } from './hooks/useSessionStore.js';
-import { useTmux } from './hooks/useTmux.js';
 import { tmux } from '../tmux/commands.js';
 import { Dashboard } from './Dashboard.js';
 import { DetailView } from './DetailView.js';
-import { SendInput } from './SendInput.js';
+import { SessionSearch } from './SessionSearch.js';
+import { ResumeSearch } from './ResumeSearch.js';
+import { resolveHostBySsh } from './host-resolve.js';
 import { NewSession } from './NewSession.js';
 import { getRecentProjects } from '../utils/recent-projects.js';
 import { writeAndExit, emitReady } from '../picker/protocol.js';
 export function App({ tower, pickerMode, outputPath }) {
     const { exit } = useApp();
     const { sessions, tmuxCount } = useSessionStore(tower.store);
-    const { send } = useTmux(tower.config.keys.close);
     const [view, setView] = useState('dashboard');
     const [selectedSession, setSelectedSession] = useState(null);
     const [recentProjects, setRecentProjects] = useState([]);
@@ -70,29 +70,32 @@ export function App({ tower, pickerMode, outputPath }) {
         setSelectedSession(session);
         setView('detail');
     }, [pickerMode, outputPath]);
-    const handleSend = useCallback((session) => {
-        // In picker mode, route through the local SendInput so the user can type a
-        // message inline; only emit JSON once they submit. (Empty text = cancel.)
-        setSelectedSession(session);
-        setView('send');
+    const handleOpenSearch = useCallback(() => {
+        setView('search');
     }, []);
-    const handleSendText = useCallback(async (text) => {
-        if (pickerMode && outputPath && selectedSession) {
-            writeAndExit(outputPath, {
-                action: 'send',
-                sessionId: selectedSession.sessionId,
-                paneId: selectedSession.paneId ?? '',
-                host: selectedSession.host ?? 'local',
-                sshTarget: selectedSession.sshTarget ?? null,
-                agentId: 'claude',
-                text,
-            });
-        }
-        if (selectedSession) {
-            await send(selectedSession, text);
-        }
-        setView(view === 'send' ? 'dashboard' : 'detail');
-    }, [selectedSession, send, view, pickerMode, outputPath]);
+    // Resume picker scan state: `scanGen` bumps on scan completion to refresh the
+    // open overlay (its useMemo deps on generation); `resumeScanning` drives the
+    // "scanning…" footer on the first cold scan only.
+    const [scanGen, setScanGen] = useState(0);
+    const [resumeScanning, setResumeScanning] = useState(false);
+    const handleOpenResumeSearch = useCallback(() => {
+        setView('resume-search');
+        if (!tower.scanner.isScanned())
+            setResumeScanning(true);
+        // Always ensure (incremental re-scan of changed dirs is cheap); refresh the
+        // overlay when it resolves.
+        void tower.scanner.ensureScanned().then(() => {
+            setResumeScanning(false);
+            setScanGen(g => g + 1);
+        });
+    }, [tower]);
+    // Search selection moves the dashboard cursor to the chosen session — it does
+    // NOT navigate (that stays on the `g` key). Works in both normal and picker
+    // mode: cursorIdentity is the controlled cursor for the underlying dashboard.
+    const handleSearchSelect = useCallback((session) => {
+        setCursorIdentity(session.paneId ?? String(session.pid));
+        setView('dashboard');
+    }, []);
     const handleBack = useCallback(() => {
         setView('dashboard');
         setSelectedSession(null);
@@ -311,6 +314,18 @@ export function App({ tower, pickerMode, outputPath }) {
             catch { }
         }
     }, [tower]);
+    // Resurrect a dead/past session: launch a new tmux session running
+    // `claude --resume <id>` via the existing handleNewSession path.
+    const handleResumeSelect = useCallback(async (past) => {
+        const host = resolveHostBySsh(tower.config.hosts, past.sshTarget);
+        if (past.sshTarget && !host) {
+            // Remote host no longer configured — silent no-op (no toast infra; B4).
+            setView('dashboard');
+            return;
+        }
+        setView('dashboard');
+        await handleNewSession(past.cwd, host, past.sessionId);
+    }, [tower, handleNewSession]);
     const handleQuit = useCallback(async () => {
         if (pickerMode && outputPath) {
             writeAndExit(outputPath, { action: 'cancel' });
@@ -354,18 +369,31 @@ export function App({ tower, pickerMode, outputPath }) {
     if (termWidth < MIN_WIDTH || termHeight < MIN_HEIGHT) {
         return (_jsx(Box, { width: termWidth, height: termHeight, alignItems: "center", justifyContent: "center", children: _jsxs(Text, { color: "yellow", children: ["Terminal too small (", termWidth, "x", termHeight, "). Need at least ", MIN_WIDTH, "x", MIN_HEIGHT, "."] }) }));
     }
-    // Dynamic sizing: use 70% of terminal width
-    const boxWidth = Math.max(MIN_WIDTH, Math.min(termWidth - 4, Math.floor(termWidth * 0.7)));
-    return (_jsxs(Box, { width: termWidth, height: termHeight, flexDirection: "column", alignItems: "center", justifyContent: "center", children: [view === 'dashboard' && termHeight >= 30 && (_jsxs(Box, { width: boxWidth, justifyContent: "flex-start", alignItems: "flex-end", marginBottom: 0, children: [_jsxs(Box, { flexDirection: "column", children: [_jsx(Text, { color: "cyan", children: ' ██████╗  ██████╗ ████████╗' }), _jsx(Text, { color: "cyan", children: '██╔════╝ ██╔════╝ ╚══██╔══╝' }), _jsx(Text, { color: "cyan", children: '██║      ██║         ██║' }), _jsx(Text, { color: "cyan", children: '╚██████╗ ╚██████╗    ██║' }), _jsx(Text, { color: "cyan", children: ' ╚═════╝  ╚═════╝    ╚═╝' })] }), _jsxs(Box, { flexDirection: "column", justifyContent: "flex-end", marginLeft: 2, children: [_jsxs(Text, { dimColor: true, children: ["v", APP_VERSION] }), _jsxs(Text, { dimColor: true, children: [sessions.length, " sessions"] })] })] })), view === 'dashboard' && termHeight >= 20 && termHeight < 30 && (_jsxs(Box, { width: boxWidth, justifyContent: "flex-start", alignItems: "center", marginBottom: 0, children: [_jsx(Text, { color: "cyan", bold: true, children: "\u25C6 CCT" }), _jsxs(Text, { dimColor: true, children: [" v", APP_VERSION] }), _jsxs(Text, { dimColor: true, children: ["  ", sessions.length, " sessions"] })] })), _jsxs(Box, { flexDirection: "column", borderStyle: "round", borderColor: "cyan", paddingX: 2, paddingY: 1, width: boxWidth, children: [view === 'dashboard' && (_jsx(Dashboard, { sessions: sessions, tmuxCount: tmuxCount, maxTaskWidth: Math.max(20, boxWidth - 16), cursorIdentity: cursorIdentity, onCursorChange: setCursorIdentity, onSwapFavoriteOrder: handleSwapFavoriteOrder, onSelect: handleSelect, onSend: handleSend, onToggleFavorite: handleToggleFavorite, onRefresh: handleRefresh, onKill: handleKill, onGo: handleGo, onNewSession: handleOpenNewSession, onQuit: handleQuit, pickerMode: pickerMode, initialDisplayOrder: tower.store.displayOrder, onDisplayOrderChange: (order) => { tower.store.displayOrder = order; } })), view === 'new-session' && (_jsx(NewSession, { projects: recentProjects, hosts: tower.config.hosts.map(h => ({ name: h.name, ssh: h.ssh, commandPrefix: h.command_prefix })), onSelect: handleNewSession, onCancel: () => {
+    // Fullscreen layout: the popup is sized to (near) the whole terminal now, so
+    // a centered, width-capped bordered box is both wasted space and a source of
+    // resize glitches (Dashboard's scroll math didn't know how many rows the
+    // header/border/padding ate, so it could compute more content than actually
+    // fit on-screen — the terminal itself would then scroll mid-frame, leaving
+    // stale/overlapping text). Use the full width/height directly, no border.
+    const contentPaddingX = 3;
+    // Rows the header block above Dashboard occupies, so Dashboard's viewport
+    // math can account for the real remaining height (not just termHeight).
+    const bigLogo = view === 'dashboard' && termHeight >= 30;
+    const compactLogo = view === 'dashboard' && termHeight >= 20 && termHeight < 30;
+    const LOGO_MARGIN_TOP = 1; // small gap so the logo isn't flush against the screen's top edge
+    const headerHeight = bigLogo ? 7 : compactLogo ? 3 : 0; // logo/compact rows + top gap + 1 spacer row
+    return (_jsxs(Box, { width: termWidth, height: termHeight, flexDirection: "column", children: [bigLogo && (_jsxs(Box, { justifyContent: "flex-start", alignItems: "flex-end", marginTop: LOGO_MARGIN_TOP, marginBottom: 1, paddingX: contentPaddingX, children: [_jsxs(Box, { flexDirection: "column", children: [_jsx(Text, { color: "cyan", children: ' ██████╗  ██████╗ ████████╗' }), _jsx(Text, { color: "cyan", children: '██╔════╝ ██╔════╝ ╚══██╔══╝' }), _jsx(Text, { color: "cyan", children: '██║      ██║         ██║' }), _jsx(Text, { color: "cyan", children: '╚██████╗ ╚██████╗    ██║' }), _jsx(Text, { color: "cyan", children: ' ╚═════╝  ╚═════╝    ╚═╝' })] }), _jsxs(Box, { flexDirection: "column", justifyContent: "flex-end", marginLeft: 2, children: [_jsxs(Text, { dimColor: true, children: ["v", APP_VERSION] }), _jsxs(Text, { dimColor: true, children: [sessions.length, " sessions"] })] })] })), compactLogo && (_jsxs(Box, { justifyContent: "flex-start", alignItems: "center", marginTop: LOGO_MARGIN_TOP, marginBottom: 1, paddingX: contentPaddingX, children: [_jsx(Text, { color: "cyan", bold: true, children: "\u25C6 CCT" }), _jsxs(Text, { dimColor: true, children: [" v", APP_VERSION] }), _jsxs(Text, { dimColor: true, children: ["  ", sessions.length, " sessions"] })] })), _jsxs(Box, { flexDirection: "column", paddingX: contentPaddingX, width: termWidth, children: [view === 'dashboard' && (_jsx(Dashboard, { sessions: sessions, tmuxCount: tmuxCount, termWidth: termWidth, termHeight: termHeight, headerHeight: headerHeight, maxTaskWidth: Math.max(20, termWidth - 2 * contentPaddingX - 16), cursorIdentity: cursorIdentity, onCursorChange: setCursorIdentity, onSwapFavoriteOrder: handleSwapFavoriteOrder, onSelect: handleSelect, onOpenSearch: handleOpenSearch, onOpenResumeSearch: handleOpenResumeSearch, onToggleFavorite: handleToggleFavorite, onRefresh: handleRefresh, onKill: handleKill, onGo: handleGo, onNewSession: handleOpenNewSession, onQuit: handleQuit, pickerMode: pickerMode, initialDisplayOrder: tower.store.displayOrder, onDisplayOrderChange: (order) => { tower.store.displayOrder = order; } })), view === 'new-session' && (_jsx(NewSession, { projects: recentProjects, hosts: tower.config.hosts.map(h => ({ name: h.name, ssh: h.ssh, commandPrefix: h.command_prefix })), onSelect: handleNewSession, onCancel: () => {
                             if (pickerMode && outputPath) {
                                 writeAndExit(outputPath, { action: 'cancel' });
                             }
                             setView('dashboard');
-                        }, getPastSessions: getPastSessions, getPastSessionsByTarget: getPastSessionsByTarget, getAllPastSessions: () => tower.store.getAllPastSessions(), onDeleteSession: (id) => tower.store.deletePersistedSession(id) })), view === 'detail' && selectedSession && (_jsx(DetailView, { session: selectedSession, onBack: handleBack, onSend: handleSend })), view === 'send' && selectedSession && (_jsx(SendInput, { session: selectedSession, confirmWhenBusy: tower.config.commands.confirm_when_busy, onSend: handleSendText, onCancel: () => {
-                            if (pickerMode && outputPath) {
-                                writeAndExit(outputPath, { action: 'cancel' });
-                            }
-                            setView('dashboard');
-                        } }))] })] }));
+                        }, getPastSessions: getPastSessions, getPastSessionsByTarget: getPastSessionsByTarget, getAllPastSessions: () => tower.store.getAllPastSessions(), onDeleteSession: (id) => tower.store.deletePersistedSession(id) })), view === 'detail' && selectedSession && (_jsx(DetailView, { session: selectedSession, onBack: handleBack })), view === 'search' && (_jsx(SessionSearch, { sessions: sessions, onSelect: handleSearchSelect, onCancel: () => setView('dashboard') })), view === 'resume-search' && (_jsx(ResumeSearch, { getSessions: () => {
+                            // All resumable sessions on disk (~/.claude/projects) merged with
+                            // state.json metadata — not just the few popmux tracked live.
+                            const all = tower.store.getAllResumableSessions(tower.scanner.getCached(), tower.scanner.isScanned());
+                            // Picker mode can't resurrect remote sessions (popmux spawn remote
+                            // is a B4 stub), so hide them where they'd dead-end.
+                            return pickerMode ? all.filter(s => !s.sshTarget) : all;
+                        }, generation: scanGen, scanning: resumeScanning, onSelect: handleResumeSelect, onCancel: () => setView('dashboard'), termHeight: termHeight }))] })] }));
 }
 //# sourceMappingURL=App.js.map

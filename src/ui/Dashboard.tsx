@@ -1,5 +1,5 @@
 import React, { useState, useRef, useReducer } from 'react';
-import { Box, Text, useInput, useStdout } from 'ink';
+import { Box, Text, useInput } from 'ink';
 import { Session } from '../core/session-store.js';
 import { EmptyState } from './EmptyState.js';
 
@@ -7,11 +7,16 @@ interface Props {
   sessions: Session[];
   tmuxCount: number;
   maxTaskWidth: number;
+  /** Real terminal width/height, and rows the header block above us already occupies. */
+  termWidth: number;
+  termHeight: number;
+  headerHeight: number;
   cursorIdentity: string | null;
   onCursorChange: (identity: string | null) => void;
   onSwapFavoriteOrder: (idA: string, idB: string) => void;
   onSelect: (session: Session) => void;
-  onSend: (session: Session) => void;
+  onOpenSearch: () => void;
+  onOpenResumeSearch: () => void;
   onToggleFavorite: (session: Session) => void;
   onNewSession: () => void;
   onRefresh: (session: Session) => void;
@@ -31,7 +36,7 @@ const STATUS_ICONS: Record<string, { icon: string; color: string }> = {
   dead: { icon: '✕', color: 'red' },
 };
 
-export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, onCursorChange, onSwapFavoriteOrder, onSelect, onSend, onToggleFavorite, onNewSession, onRefresh, onKill, onGo, onQuit, onDisplayOrderChange, initialDisplayOrder, pickerMode }: Props) {
+export function Dashboard({ sessions, tmuxCount, maxTaskWidth, termWidth, termHeight, headerHeight, cursorIdentity, onCursorChange, onSwapFavoriteOrder, onSelect, onOpenSearch, onOpenResumeSearch, onToggleFavorite, onNewSession, onRefresh, onKill, onGo, onQuit, onDisplayOrderChange, initialDisplayOrder, pickerMode }: Props) {
   const [confirmQuit, setConfirmQuit] = useState(false);
   const [confirmKill, setConfirmKill] = useState(false);
   const [, forceUpdate] = useReducer(x => x + 1, 0);
@@ -136,7 +141,8 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
 
     // Actions
     if (key.return && sorted[cursor]) onSelect(sorted[cursor]!);
-    if (input === '/' && sorted[cursor]) onSend(sorted[cursor]!);
+    if (input === '/') onOpenSearch();
+    if (input === 'R') onOpenResumeSearch();
     if (input === 'f' && sorted[cursor]) onToggleFavorite(sorted[cursor]!);
     if (input === 'r' && sorted[cursor]) onRefresh(sorted[cursor]!);
     if (input === 'x' && sorted[cursor]) setConfirmKill(true);
@@ -151,10 +157,6 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
   const nonTmuxStart = stableNonFavorites.findIndex(s => !s.hasTmux);
   const nonTmuxSortedStart = nonTmuxStart >= 0 ? favorites.length + nonTmuxStart : -1;
 
-  // Scroll viewport: keep cursor visible when terminal is small
-  const { stdout } = useStdout();
-  const termHeight = stdout?.rows ?? 40;
-
   const itemRowHeight = (s: Session, i: number): number => {
     let h = 3; // name row + summary row + spacer
     if (s.status === 'idle' && s.nextSteps) h += 1;
@@ -163,11 +165,17 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
     return h;
   };
 
-  const FIXED_OVERHEAD = 6; // footer-marginTop(1) + footer-rows(2) + scroll-hints(2) + buffer(1)
-  const available = Math.max(4, termHeight - FIXED_OVERHEAD);
+  // footer-marginTop(1) + legend-row(1) + keys-rows(2, always split — see footer
+  // below) + scroll-hints(2, always reserved — see below). headerHeight accounts
+  // for the logo/border rows App.tsx already renders above us — without it
+  // we'd overestimate how much vertical room is left and overflow past the
+  // real terminal height.
+  const FIXED_OVERHEAD = 6;
+  const available = Math.max(4, termHeight - headerHeight - FIXED_OVERHEAD);
   const heights = sorted.map(itemRowHeight);
 
   let viewStart = 0, viewEnd = sorted.length;
+  let usedItemRows = 0;
   if (sorted.length > 0) {
     let used = heights[cursor] ?? 2;
     viewStart = cursor;
@@ -185,6 +193,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
       viewStart--;
       used += heights[viewStart] ?? 2;
     }
+    usedItemRows = used;
   }
   const showScrollUp = viewStart > 0;
   const showScrollDown = viewEnd < sorted.length;
@@ -192,12 +201,19 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
   // Left gutter width for continuation lines (=> summary, ↳ next): aligns under the name
   const INDENT = 8;
 
+  // Anchor the footer to the very bottom of the screen (with a 1-row gap below
+  // it) instead of right after the list, which otherwise leaves a ragged gap
+  // mid-screen whenever there are too few sessions to fill the viewport.
+  // A precisely-sized blank spacer (rather than a fixed-height flex column,
+  // which made Ink/yoga misbehave and visibly wrap the footer text) fills the
+  // exact leftover space: available room minus the rows the list actually used.
+  const spacerRows = Math.max(0, available - usedItemRows);
+
   return (
     <Box flexDirection="column">
-      {/* Scroll hint — items above viewport */}
-      {showScrollUp && (
-        <Text dimColor>  ↑ {viewStart} more</Text>
-      )}
+      {/* Scroll hint — items above viewport. Always reserve this row (blank when
+          unused) so the list below doesn't shift up/down as it appears/disappears. */}
+      <Text dimColor>{showScrollUp ? `  ↑ ${viewStart} more` : ' '}</Text>
 
       {/* Session blocks (scroll viewport) */}
       {sorted.slice(viewStart, viewEnd).map((session, localI) => {
@@ -250,14 +266,17 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
         );
       })}
 
-      {/* Scroll hint — items below viewport */}
-      {showScrollDown && (
-        <Text dimColor>  ↓ {sorted.length - viewEnd} more</Text>
+      {/* Scroll hint — items below viewport. Always reserved (see top hint above). */}
+      {sorted.length > 0 && (
+        <Text dimColor>{showScrollDown ? `  ↓ ${sorted.length - viewEnd} more` : ' '}</Text>
       )}
 
       {sorted.length === 0 && (
         <EmptyState inTmux={tmuxCount > 0} hookInstalled={true} />
       )}
+
+      {/* Fills leftover space, pinning the footer to the bottom row. */}
+      {spacerRows > 0 && <Box height={spacerRows} />}
 
       {/* Kill confirmation popup */}
       {confirmKill && sorted[cursor] && (
@@ -289,7 +308,10 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, cursorIdentity, o
             <Text color="red">✕</Text><Text dimColor> Dead</Text>
           </Box>
           <Box>
-            <Text dimColor>  [j/k] Nav  [1-9] Jump  [{`[/]`}] Reorder  │  [Enter] Detail  [g] Go  [/] Send  │  [f] Fav  [n] New  [r] Refresh  [x] Kill  [q] Quit</Text>
+            <Text dimColor>  [j/k] Nav  [1-9] Jump  [{`[/]`}] Reorder  │  [Enter] Detail  [g] Go</Text>
+          </Box>
+          <Box>
+            <Text dimColor>  [/] Search  [R] Resume  │  [f] Fav  [n] New  [r] Refresh  [x] Kill  [q] Quit</Text>
           </Box>
         </Box>
       )}
