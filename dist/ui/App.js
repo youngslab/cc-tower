@@ -15,14 +15,12 @@ import { SessionSearch } from './SessionSearch.js';
 import { ResumeSearch } from './ResumeSearch.js';
 import { resolveHostBySsh } from './host-resolve.js';
 import { NewSession } from './NewSession.js';
-import { getRecentProjects } from '../utils/recent-projects.js';
 import { writeAndExit, emitReady } from '../picker/protocol.js';
 export function App({ tower, pickerMode, outputPath }) {
     const { exit } = useApp();
     const { sessions, tmuxCount } = useSessionStore(tower.store);
     const [view, setView] = useState('dashboard');
     const [selectedSession, setSelectedSession] = useState(null);
-    const [recentProjects, setRecentProjects] = useState([]);
     const CURSOR_FILE = join(homedir(), '.config', 'popmux', 'picker-cursor');
     const [cursorIdentity, setCursorIdentity] = useState(() => {
         if (!pickerMode)
@@ -236,14 +234,8 @@ export function App({ tower, pickerMode, outputPath }) {
         }
     }, [tower]);
     const handleOpenNewSession = useCallback(() => {
-        const activePaths = new Set(sessions.map(s => s.cwd).filter(Boolean));
-        const projects = getRecentProjects(15).filter(p => !activePaths.has(p.path));
-        setRecentProjects(projects);
         setView('new-session');
-    }, [sessions]);
-    const getPastSessions = useCallback((cwd) => {
-        return tower.store.getPastSessionsByCwd(cwd);
-    }, [tower]);
+    }, []);
     const getPastSessionsByTarget = useCallback((sshTarget) => {
         return tower.store.getPastSessionsByTarget(sshTarget);
     }, [tower]);
@@ -382,12 +374,12 @@ export function App({ tower, pickerMode, outputPath }) {
     const compactLogo = view === 'dashboard' && termHeight >= 20 && termHeight < 30;
     const LOGO_MARGIN_TOP = 1; // small gap so the logo isn't flush against the screen's top edge
     const headerHeight = bigLogo ? 7 : compactLogo ? 3 : 0; // logo/compact rows + top gap + 1 spacer row
-    return (_jsxs(Box, { width: termWidth, height: termHeight, flexDirection: "column", children: [bigLogo && (_jsxs(Box, { justifyContent: "flex-start", alignItems: "flex-end", marginTop: LOGO_MARGIN_TOP, marginBottom: 1, paddingX: contentPaddingX, children: [_jsxs(Box, { flexDirection: "column", children: [_jsx(Text, { color: "cyan", children: ' ██████╗  ██████╗ ████████╗' }), _jsx(Text, { color: "cyan", children: '██╔════╝ ██╔════╝ ╚══██╔══╝' }), _jsx(Text, { color: "cyan", children: '██║      ██║         ██║' }), _jsx(Text, { color: "cyan", children: '╚██████╗ ╚██████╗    ██║' }), _jsx(Text, { color: "cyan", children: ' ╚═════╝  ╚═════╝    ╚═╝' })] }), _jsxs(Box, { flexDirection: "column", justifyContent: "flex-end", marginLeft: 2, children: [_jsxs(Text, { dimColor: true, children: ["v", APP_VERSION] }), _jsxs(Text, { dimColor: true, children: [sessions.length, " sessions"] })] })] })), compactLogo && (_jsxs(Box, { justifyContent: "flex-start", alignItems: "center", marginTop: LOGO_MARGIN_TOP, marginBottom: 1, paddingX: contentPaddingX, children: [_jsx(Text, { color: "cyan", bold: true, children: "\u25C6 CCT" }), _jsxs(Text, { dimColor: true, children: [" v", APP_VERSION] }), _jsxs(Text, { dimColor: true, children: ["  ", sessions.length, " sessions"] })] })), _jsxs(Box, { flexDirection: "column", paddingX: contentPaddingX, width: termWidth, children: [view === 'dashboard' && (_jsx(Dashboard, { sessions: sessions, tmuxCount: tmuxCount, termWidth: termWidth, termHeight: termHeight, headerHeight: headerHeight, maxTaskWidth: Math.max(20, termWidth - 2 * contentPaddingX - 16), cursorIdentity: cursorIdentity, onCursorChange: setCursorIdentity, onSwapFavoriteOrder: handleSwapFavoriteOrder, onSelect: handleSelect, onOpenSearch: handleOpenSearch, onOpenResumeSearch: handleOpenResumeSearch, onToggleFavorite: handleToggleFavorite, onRefresh: handleRefresh, onKill: handleKill, onGo: handleGo, onNewSession: handleOpenNewSession, onQuit: handleQuit, pickerMode: pickerMode, initialDisplayOrder: tower.store.displayOrder, onDisplayOrderChange: (order) => { tower.store.displayOrder = order; } })), view === 'new-session' && (_jsx(NewSession, { projects: recentProjects, hosts: tower.config.hosts.map(h => ({ name: h.name, ssh: h.ssh, commandPrefix: h.command_prefix })), onSelect: handleNewSession, onCancel: () => {
+    return (_jsxs(Box, { width: termWidth, height: termHeight, flexDirection: "column", children: [bigLogo && (_jsxs(Box, { justifyContent: "flex-start", alignItems: "flex-end", marginTop: LOGO_MARGIN_TOP, marginBottom: 1, paddingX: contentPaddingX, children: [_jsxs(Box, { flexDirection: "column", children: [_jsx(Text, { color: "cyan", children: ' ██████╗  ██████╗ ████████╗' }), _jsx(Text, { color: "cyan", children: '██╔════╝ ██╔════╝ ╚══██╔══╝' }), _jsx(Text, { color: "cyan", children: '██║      ██║         ██║' }), _jsx(Text, { color: "cyan", children: '╚██████╗ ╚██████╗    ██║' }), _jsx(Text, { color: "cyan", children: ' ╚═════╝  ╚═════╝    ╚═╝' })] }), _jsxs(Box, { flexDirection: "column", justifyContent: "flex-end", marginLeft: 2, children: [_jsxs(Text, { dimColor: true, children: ["v", APP_VERSION] }), _jsxs(Text, { dimColor: true, children: [sessions.length, " sessions"] })] })] })), compactLogo && (_jsxs(Box, { justifyContent: "flex-start", alignItems: "center", marginTop: LOGO_MARGIN_TOP, marginBottom: 1, paddingX: contentPaddingX, children: [_jsx(Text, { color: "cyan", bold: true, children: "\u25C6 CCT" }), _jsxs(Text, { dimColor: true, children: [" v", APP_VERSION] }), _jsxs(Text, { dimColor: true, children: ["  ", sessions.length, " sessions"] })] })), _jsxs(Box, { flexDirection: "column", paddingX: contentPaddingX, width: termWidth, children: [view === 'dashboard' && (_jsx(Dashboard, { sessions: sessions, tmuxCount: tmuxCount, termWidth: termWidth, termHeight: termHeight, headerHeight: headerHeight, maxTaskWidth: Math.max(20, termWidth - 2 * contentPaddingX - 16), cursorIdentity: cursorIdentity, onCursorChange: setCursorIdentity, onSwapFavoriteOrder: handleSwapFavoriteOrder, onSelect: handleSelect, onOpenSearch: handleOpenSearch, onOpenResumeSearch: handleOpenResumeSearch, onToggleFavorite: handleToggleFavorite, onRefresh: handleRefresh, onKill: handleKill, onGo: handleGo, onNewSession: handleOpenNewSession, onQuit: handleQuit, pickerMode: pickerMode, initialDisplayOrder: tower.store.displayOrder, onDisplayOrderChange: (order) => { tower.store.displayOrder = order; } })), view === 'new-session' && (_jsx(NewSession, { hosts: tower.config.hosts.map(h => ({ name: h.name, ssh: h.ssh, commandPrefix: h.command_prefix })), onSelect: handleNewSession, onCancel: () => {
                             if (pickerMode && outputPath) {
                                 writeAndExit(outputPath, { action: 'cancel' });
                             }
                             setView('dashboard');
-                        }, getPastSessions: getPastSessions, getPastSessionsByTarget: getPastSessionsByTarget, getAllPastSessions: () => tower.store.getAllPastSessions(), onDeleteSession: (id) => tower.store.deletePersistedSession(id) })), view === 'detail' && selectedSession && (_jsx(DetailView, { session: selectedSession, onBack: handleBack })), view === 'search' && (_jsx(SessionSearch, { sessions: sessions, onSelect: handleSearchSelect, onCancel: () => setView('dashboard') })), view === 'resume-search' && (_jsx(ResumeSearch, { getSessions: () => {
+                        }, getPastSessionsByTarget: getPastSessionsByTarget })), view === 'detail' && selectedSession && (_jsx(DetailView, { session: selectedSession, onBack: handleBack })), view === 'search' && (_jsx(SessionSearch, { sessions: sessions, onSelect: handleSearchSelect, onCancel: () => setView('dashboard') })), view === 'resume-search' && (_jsx(ResumeSearch, { getSessions: () => {
                             // All resumable sessions on disk (~/.claude/projects) merged with
                             // state.json metadata — not just the few popmux tracked live.
                             const all = tower.store.getAllResumableSessions(tower.scanner.getCached(), tower.scanner.isScanned());

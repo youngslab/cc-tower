@@ -16,8 +16,7 @@ import { DetailView } from './DetailView.js';
 import { SessionSearch } from './SessionSearch.js';
 import { ResumeSearch } from './ResumeSearch.js';
 import { resolveHostBySsh } from './host-resolve.js';
-import { NewSession, PastSession, PastSessionByCwd } from './NewSession.js';
-import { getRecentProjects, RecentProject } from '../utils/recent-projects.js';
+import { NewSession, PastSessionByCwd } from './NewSession.js';
 import { writeAndExit, emitReady } from '../picker/protocol.js';
 
 type View = 'dashboard' | 'detail' | 'search' | 'resume-search' | 'new-session';
@@ -38,7 +37,6 @@ export function App({ tower, pickerMode, outputPath }: Props) {
   const { sessions, tmuxCount } = useSessionStore(tower.store);
   const [view, setView] = useState<View>('dashboard');
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
-  const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
   const CURSOR_FILE = join(homedir(), '.config', 'popmux', 'picker-cursor');
   const [cursorIdentity, setCursorIdentity] = useState<string | null>(() => {
     if (!pickerMode) return null;
@@ -247,15 +245,8 @@ export function App({ tower, pickerMode, outputPath }: Props) {
   }, [tower]);
 
   const handleOpenNewSession = useCallback(() => {
-    const activePaths = new Set(sessions.map(s => s.cwd).filter(Boolean));
-    const projects = getRecentProjects(15).filter(p => !activePaths.has(p.path));
-    setRecentProjects(projects);
     setView('new-session');
-  }, [sessions]);
-
-  const getPastSessions = useCallback((cwd: string): PastSession[] => {
-    return tower.store.getPastSessionsByCwd(cwd);
-  }, [tower]);
+  }, []);
 
   const getPastSessionsByTarget = useCallback((sshTarget?: string): PastSessionByCwd[] => {
     return tower.store.getPastSessionsByTarget(sshTarget);
@@ -465,7 +456,6 @@ export function App({ tower, pickerMode, outputPath }: Props) {
 
         {view === 'new-session' && (
           <NewSession
-            projects={recentProjects}
             hosts={tower.config.hosts.map(h => ({ name: h.name, ssh: h.ssh, commandPrefix: h.command_prefix }))}
             onSelect={handleNewSession}
             onCancel={() => {
@@ -474,10 +464,7 @@ export function App({ tower, pickerMode, outputPath }: Props) {
               }
               setView('dashboard');
             }}
-            getPastSessions={getPastSessions}
             getPastSessionsByTarget={getPastSessionsByTarget}
-            getAllPastSessions={() => tower.store.getAllPastSessions()}
-            onDeleteSession={(id) => tower.store.deletePersistedSession(id)}
           />
         )}
 

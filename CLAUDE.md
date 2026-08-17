@@ -72,7 +72,7 @@ grep "error\|warn\|fail" /tmp/debug.log
 
 ## Version Strategy
 
-**현재 버전: 2.7.3**
+**현재 버전: 2.7.5**
 
 ### 규칙: 코드 변경 시 반드시 버전을 올려야 한다.
 
@@ -112,6 +112,8 @@ npm version major
 | 2.6.0 | feat: `R` 키로 dead/past 세션 fuzzy-search 부활 오버레이 추가 — `getAllPastSessions()`(label+cwd basename 검색)에서 선택 시 `claude --resume <id>`로 새 tmux 세션 생성(기존 `handleNewSession` 재사용). picker 모드에서는 remote past 제외(`popmux spawn` remote=B4 stub). `resolveHostBySsh` 헬퍼 추출 |
 | 2.6.1 | fix: resume 오버레이가 cwd당 1개로 축소되던 버그 — `getAllPastSessionsUngrouped()`(cwd dedup 없음, sessionId별 전부) 추가해 ResumeSearch가 사용. 같은 cwd 다중 세션 구분 위해 summary를 이름으로(미설정 시)·age 표시·summary도 fuzzy 검색 대상에 포함 |
 | 2.7.3 | fix: resume 오버레이 3종 버그 — (1) 로컬 orphan 세션(state.json엔 있지만 JSONL 없음, 컨테이너 강제종료 등)을 스캔 완료 후 목록에서 숨김(`getAllResumableSessions(scanned, scanComplete)`), remote는 예외; (2) 커서를 배열 index 대신 sessionId 기반으로 관리해 스캔 완료로 목록이 줄어들 때 화살표가 씹히던 문제 해결(Dashboard의 `cursorIdentity` 패턴과 동일); (3) 뷰포트 스크롤 추가— 커서를 화면 중앙에 유지, `↑/↓ N more` 힌트; (4) F12 팝업 경로(`tmux run-shell` → `popmux spawn`)가 물려받는 bare PATH(`/usr/bin` 등)에 `~/.local/bin`이 없어 `claude` 실행이 "command not found"로 즉시 죽고 창이 사라지던 버그 — `resolveClaudeBin()`으로 절대경로 직접 확인 |
+| 2.7.5 | refactor: `NewSession`의 `list`/`custom` 모드를 단일 `pick` 모드로 통합 — 입력창 하나(`query`)가 filter와 path를 겸용. `/`,`~`,`.`로 시작하면 path로 해석해 최상단에 `▸ Start in: <expanded>` 행(Tab 자동완성) 표시, Enter 시 그 경로에서 fresh 시작; 그 외에는 기존 workspace fuzzy filter. 경로를 타이핑하면 filter로 흡수되어 "No matches"가 뜨고 custom 모드로 넘어가도 입력값이 버려지던 버그 해결. j/k는 더 이상 네비게이션이 아니며(화살표 전용) query에 타이핑됨 |
+| 2.7.4 | refactor: `NewSession`을 순수 workspace(작업 디렉터리) picker로 단순화 — resume/recent/label/summary UI 전부 제거(그건 `R` ResumeSearch 오버레이 담당), 모드를 `host → list → custom` 3단으로 통합. 목록 소스를 단일화해 항상 `getPastSessionsByTarget(selectedHost?.ssh)`(cwd dedup, 최신순) 사용 — 기존 `recentProjects`(slug 기반 경로 복원, 하이픈/점 포함 디렉터리에서 조용히 누락되던 버그) 제거. 모든 선택 경로는 resumeSessionId 없이 fresh `onSelect(cwd, host)`. `projects`/`getPastSessions`/`getAllPastSessions`/`onDeleteSession` prop 및 `PastSession` 인터페이스, `src/utils/recent-projects.ts` 모듈 삭제 |
 | 2.7.2 | fix: picker(readOnly) 상태가 항상 idle로 고정되던 버그 — drain 가드가 `event.pid`(hook이 쓰는 `$PPID` = ephemeral wrapper, drain 시점엔 죽음)로 liveness를 판정해 thinking/executing/agent를 전부 idle로 강제. pane liveness 기준으로 교체하고 `resolveQueuedStatus()` 순수 함수로 추출 + 단위 테스트. |
 | 2.7.1 | fix: resume 오버레이 — 스캐너가 JSONL의 `custom-title`(=`/rename` 이름) 추출해 label로 사용, 이름(label/summary) 없는 세션은 목록에서 제외, fuzzy 검색은 이름만(workspace 경로 제외). |
 | 2.7.0 | feat: resume 오버레이가 `~/.claude/projects/**/*.jsonl` 전체를 스캔(`src/core/session-scanner.ts`, lazy on first R, 16KB head-read·content 기반 cwd·디렉터리 mtime 증분 캐시)하여 디스크상의 모든 재개 가능 세션 노출(state.json 31 → ~340+). `store.getAllResumableSessions(scanned)`가 sessionId로 merge(state.json이 label/summary/sshTarget 우선, active 제외). ResumeSearch는 `generation` prop으로 스캔 완료 시 갱신, cold 스캔 중 "scanning…" footer 표시 |

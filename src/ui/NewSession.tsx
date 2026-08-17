@@ -11,15 +11,6 @@ export interface HostOption {
   commandPrefix?: string;
 }
 
-export interface PastSession {
-  sessionId: string;
-  startedAt: number;
-  label?: string;
-  goalSummary?: string;
-  contextSummary?: string;
-  nextSteps?: string;
-}
-
 export interface PastSessionByCwd {
   sessionId: string;
   cwd: string;
@@ -31,14 +22,10 @@ export interface PastSessionByCwd {
 }
 
 interface Props {
-  projects: Array<{ name: string; path: string; lastUsed: Date }>;
   hosts: HostOption[];
   onSelect: (projectPath: string, host?: HostOption, resumeSessionId?: string) => void;
   onCancel: () => void;
-  getPastSessions: (cwd: string) => PastSession[];
   getPastSessionsByTarget: (sshTarget?: string) => PastSessionByCwd[];
-  getAllPastSessions: () => PastSessionByCwd[];
-  onDeleteSession: (sessionId: string) => void;
 }
 
 function remoteListDirs(host: HostOption, dir: string): string[] {
@@ -139,21 +126,19 @@ function formatAge(ts: number): string {
   return 'recently';
 }
 
-export function NewSession({ projects, hosts, onSelect, onCancel, getPastSessions, getPastSessionsByTarget, getAllPastSessions, onDeleteSession }: Props) {
+function isPathLike(q: string): boolean {
+  return /^[/~.]/.test(q);
+}
+
+function expand(q: string): string {
+  return q.startsWith('~') ? q.replace('~', process.env['HOME'] ?? '') : q;
+}
+
+export function NewSession({ hosts, onSelect, onCancel, getPastSessionsByTarget }: Props) {
   const [cursor, setCursor] = useState(0);
-  const [filter, setFilter] = useState('');
-  const [customPath, setCustomPath] = useState('');
-  const [deletedIds, setDeletedIds] = useState<Set<string>>(new Set());
-  const [mode, setMode] = useState<'host' | 'list' | 'host-list' | 'custom' | 'resume' | 'recent'>(() => {
-    const hasRecent = getAllPastSessions().length > 0;
-    if (hasRecent) return 'recent';
-    return hosts.length > 0 ? 'host' : 'list';
-  });
+  const [query, setQuery] = useState('');
+  const [mode, setMode] = useState<'host' | 'pick'>(() => hosts.length > 0 ? 'host' : 'pick');
   const [selectedHost, setSelectedHost] = useState<HostOption | undefined>(undefined);
-  const [pendingPath, setPendingPath] = useState('');
-  const [pastSessions, setPastSessions] = useState<PastSession[]>([]);
-  const [listCursor, setListCursor] = useState(-1); // -1 = text input focused, 0+ = past session list
-  const [customOrigin, setCustomOrigin] = useState<'list' | 'recent'>('list');
 
   // Host options: "local" + configured remote hosts
   const hostOptions: Array<{ label: string; host?: HostOption }> = [
@@ -161,75 +146,38 @@ export function NewSession({ projects, hosts, onSelect, onCancel, getPastSession
     ...hosts.map(h => ({ label: `⌁ ${h.name} (${h.ssh})`, host: h })),
   ];
 
-  const filtered = useMemo(() => {
-    if (!filter) return projects;
-    return projects.filter(p => fuzzyMatch(filter, p.name) || fuzzyMatch(filter, p.path));
-  }, [projects, filter]);
-
-  const completions = useMemo(() => {
-    if (mode !== 'custom') return [];
-    return selectedHost ? listCompletionsRemote(customPath, selectedHost) : listCompletions(customPath);
-  }, [mode, customPath, selectedHost]);
-
-  const targetSessions = useMemo(() => {
-    if (mode !== 'custom' && mode !== 'host-list') return [];
-    return getPastSessionsByTarget(selectedHost?.ssh).filter(s => !deletedIds.has(s.sessionId));
-  }, [mode, selectedHost, getPastSessionsByTarget, deletedIds]);
-
-  const recentSessions = useMemo(() =>
-    getAllPastSessions().filter(s => !deletedIds.has(s.sessionId)),
-    [getAllPastSessions, deletedIds]
+  const workspaces = useMemo(
+    () => getPastSessionsByTarget(selectedHost?.ssh),
+    [selectedHost, getPastSessionsByTarget],
   );
 
+  const filtered = useMemo(() => {
+    if (!query) return workspaces;
+    return workspaces.filter(s => fuzzyMatch(query, s.cwd) || fuzzyMatch(query, path.basename(s.cwd)));
+  }, [workspaces, query]);
+
+  const showStartIn = isPathLike(query) && query.trim() !== '';
+
+  const completions = useMemo(() => {
+    if (!showStartIn) return [];
+    return selectedHost ? listCompletionsRemote(query, selectedHost) : listCompletions(query);
+  }, [showStartIn, query, selectedHost]);
+
+  const rowCount = filtered.length + (showStartIn ? 1 : 0);
+
   const handlePathSelected = useCallback((projectPath: string) => {
-    const past = getPastSessions(projectPath);
-    if (past.length > 0) {
-      setPendingPath(projectPath);
-      setPastSessions(past);
-      setMode('resume');
-      setCursor(0);
-    } else {
-      onSelect(projectPath, selectedHost);
-    }
-  }, [getPastSessions, onSelect, selectedHost]);
+    onSelect(projectPath, selectedHost);
+  }, [onSelect, selectedHost]);
 
   useInput((input, key) => {
     if (key.escape) {
-      if (mode === 'resume') { setMode(selectedHost ? 'custom' : 'list'); setCursor(0); return; }
-      if (mode === 'custom') { setMode(selectedHost ? 'host-list' : customOrigin); setCustomPath(''); setCursor(0); return; }
-      if (mode === 'host-list') { setMode('host'); setCursor(0); return; }
-      if (mode === 'list' && filter) { setFilter(''); setCursor(0); return; }
-      if ((mode === 'list' || mode === 'host') && recentSessions.length > 0) { setMode('recent'); setCursor(0); return; }
+      if (mode === 'pick' && query) { setQuery(''); setCursor(0); return; }
+      if (mode === 'pick') {
+        if (hosts.length > 0) { setMode('host'); setCursor(0); return; }
+        onCancel();
+        return;
+      }
       onCancel();
-      return;
-    }
-
-    if (mode === 'recent') {
-      if (key.upArrow || input === 'k') setCursor(c => Math.max(0, c - 1));
-      if (key.downArrow || input === 'j') setCursor(c => Math.min(recentSessions.length - 1, c + 1));
-      if (key.return && recentSessions[cursor]) {
-        const s = recentSessions[cursor]!;
-        const host = s.sshTarget ? hosts.find(h => h.ssh === s.sshTarget) : undefined;
-        onSelect(s.cwd, host, s.sessionId);
-      }
-      if (input === 'n') {
-        setMode(hosts.length > 0 ? 'host' : 'list');
-        setCursor(0);
-      }
-      if (input === 'c') {
-        setSelectedHost(undefined);
-        setCustomPath('');
-        setCustomOrigin('recent');
-        setMode('custom');
-        setCursor(0);
-        setListCursor(-1);
-      }
-      if (input === 'd' && recentSessions[cursor]) {
-        const id = recentSessions[cursor]!.sessionId;
-        onDeleteSession(id);
-        setDeletedIds(prev => new Set([...prev, id]));
-        setCursor(c => Math.min(c, Math.max(0, recentSessions.length - 2)));
-      }
       return;
     }
 
@@ -239,101 +187,38 @@ export function NewSession({ projects, hosts, onSelect, onCancel, getPastSession
       if (key.return) {
         const chosen = hostOptions[cursor];
         setSelectedHost(chosen?.host);
-        setMode(chosen?.host ? 'host-list' : 'list');
+        setMode('pick');
         setCursor(0);
-        setListCursor(-1);
       }
       return;
     }
 
-    if (mode === 'resume') {
-      const total = pastSessions.length + 1;
-      if (key.upArrow || input === 'k') setCursor(c => Math.max(0, c - 1));
-      if (key.downArrow || input === 'j') setCursor(c => Math.min(total - 1, c + 1));
-      if (key.return) {
-        if (cursor < pastSessions.length) {
-          onSelect(pendingPath, selectedHost, pastSessions[cursor]!.sessionId);
-        } else {
-          onSelect(pendingPath, selectedHost);
-        }
+    // pick mode
+    if (key.upArrow) { setCursor(c => Math.max(0, c - 1)); return; }
+    if (key.downArrow) { setCursor(c => Math.min(rowCount - 1, c + 1)); return; }
+    if (key.tab) {
+      if (showStartIn) {
+        setQuery(selectedHost ? tabCompleteRemote(query, selectedHost) : tabComplete(query));
       }
       return;
     }
-
-    if (mode === 'host-list') {
-      if (key.upArrow || input === 'k') setCursor(c => Math.max(0, c - 1));
-      if (key.downArrow || input === 'j') setCursor(c => Math.min(targetSessions.length, c + 1));
-      if (key.return) {
-        if (cursor === targetSessions.length) {
-          setMode('custom');
-          setCursor(0);
-        } else if (targetSessions[cursor]) {
-          handlePathSelected(targetSessions[cursor]!.cwd);
-        }
-      }
-      if (input === 'd' && targetSessions[cursor]) {
-        const id = targetSessions[cursor]!.sessionId;
-        onDeleteSession(id);
-        setDeletedIds(prev => new Set([...prev, id]));
-        setCursor(c => Math.min(c, Math.max(0, targetSessions.length - 2)));
+    if (key.return) {
+      if (showStartIn && cursor === 0) {
+        handlePathSelected(expand(query).replace(/\/$/, ''));
+      } else {
+        const idx = showStartIn ? cursor - 1 : cursor;
+        if (filtered[idx]) handlePathSelected(filtered[idx]!.cwd);
       }
       return;
     }
-
-    if (mode === 'list') {
-      if (key.upArrow || (input === 'k' && !filter)) setCursor(c => Math.max(0, c - 1));
-      if (key.downArrow || (input === 'j' && !filter)) setCursor(c => Math.min(filtered.length, c + 1));
-      if (key.return) {
-        if (cursor === filtered.length) {
-          setCustomOrigin('list');
-          setMode('custom');
-        } else if (filtered[cursor]) {
-          handlePathSelected(filtered[cursor]!.path);
-        }
-      }
-      if (key.backspace || key.delete) {
-        setFilter(f => f.slice(0, -1));
-        setCursor(0);
-      } else if (input && !key.ctrl && !key.meta && !key.return && !(input === 'j' && !filter) && !(input === 'k' && !filter)) {
-        setFilter(f => f + input);
-        setCursor(0);
-      }
-    } else {
-      // custom mode
-      if (key.upArrow) {
-        setListCursor(c => Math.max(-1, c - 1));
-        return;
-      }
-      if (key.downArrow) {
-        setListCursor(c => Math.min(targetSessions.length - 1, c + 1));
-        return;
-      }
-      if (key.tab) {
-        setCustomPath(selectedHost ? tabCompleteRemote(customPath, selectedHost) : tabComplete(customPath));
-        setListCursor(-1);
-        return;
-      }
-      if (key.return) {
-        if (listCursor >= 0 && targetSessions[listCursor]) {
-          handlePathSelected(targetSessions[listCursor]!.cwd);
-        } else if (customPath.trim()) {
-          const expanded = customPath.startsWith('~') ? customPath.replace('~', process.env['HOME'] ?? '') : customPath;
-          handlePathSelected(expanded.replace(/\/$/, ''));
-        }
-        return;
-      }
-      if (input === 'd' && listCursor >= 0 && targetSessions[listCursor]) {
-        const id = targetSessions[listCursor]!.sessionId;
-        onDeleteSession(id);
-        setDeletedIds(prev => new Set([...prev, id]));
-        setListCursor(c => Math.min(c, targetSessions.length - 2));
-        return;
-      }
-      if (key.backspace || key.delete) {
-        setCustomPath(p => p.slice(0, -1));
-      } else if (input && !key.ctrl && !key.meta && !key.tab) {
-        setCustomPath(p => p + input);
-      }
+    if (key.backspace || key.delete) {
+      setQuery(q => q.slice(0, -1));
+      setCursor(0);
+      return;
+    }
+    if (input && !key.ctrl && !key.meta && !key.tab && !key.return) {
+      setQuery(q => q + input);
+      setCursor(0);
     }
   });
 
@@ -341,37 +226,7 @@ export function NewSession({ projects, hosts, onSelect, onCancel, getPastSession
     <Box flexDirection="column">
       <Text bold color="cyan">New Claude Session</Text>
 
-      {mode === 'recent' ? (
-        <>
-          <Text bold color="cyan">Recent Sessions</Text>
-          <Text> </Text>
-          {recentSessions.length === 0 ? (
-            <Text dimColor>  No past sessions</Text>
-          ) : (
-            recentSessions.map((s, i) => {
-              const sel = i === cursor;
-              const dirName = s.cwd.split('/').pop() ?? s.cwd;
-              const displayName = s.label ? `${dirName} [${s.label}]` : dirName;
-              const summary = s.contextSummary ?? s.goalSummary;
-              const hostBadge = s.sshTarget ? `⌁ ${s.sshTarget.split('@').pop() ?? s.sshTarget}` : 'local';
-              return (
-                <Box key={s.sessionId} flexDirection="column">
-                  <Box>
-                    <Text color={sel ? 'cyan' : undefined} bold={sel}>{sel ? '▸ ' : '  '}</Text>
-                    <Text color={sel ? 'cyan' : undefined} bold={sel}>{displayName}</Text>
-                    <Text dimColor>  [{hostBadge}]  {s.cwd}  ·  {formatAge(s.startedAt)}</Text>
-                  </Box>
-                  {summary && sel && (
-                    <Text dimColor>    {summary.length > 72 ? summary.slice(0, 71) + '…' : summary}</Text>
-                  )}
-                </Box>
-              );
-            })
-          )}
-          <Text> </Text>
-          <Text dimColor>↑↓ navigate · Enter resume · n new · c custom path · d delete · Esc cancel</Text>
-        </>
-      ) : mode === 'host' ? (
+      {mode === 'host' ? (
         <>
           <Text dimColor>Select target host</Text>
           <Text> </Text>
@@ -385,139 +240,42 @@ export function NewSession({ projects, hosts, onSelect, onCancel, getPastSession
           <Text> </Text>
           <Text dimColor>↑↓ navigate · Enter select · Esc cancel</Text>
         </>
-      ) : mode === 'host-list' ? (
-        <>
-          <Text dimColor>⌁ {selectedHost?.name} ({selectedHost?.ssh})</Text>
-          <Text> </Text>
-          {targetSessions.length === 0 ? (
-            <Text dimColor>  No past sessions</Text>
-          ) : (
-            targetSessions.map((s, i) => {
-              const sel = i === cursor;
-              const dirName = s.cwd.split('/').pop() ?? s.cwd;
-              const displayName = s.label ? `${dirName} [${s.label}]` : dirName;
-              const summary = s.contextSummary ?? s.goalSummary;
-              return (
-                <Box key={s.sessionId} flexDirection="column">
-                  <Box>
-                    <Text color={sel ? 'cyan' : undefined} bold={sel}>{sel ? '▸ ' : '  '}</Text>
-                    <Text color={sel ? 'cyan' : undefined} bold={sel}>{displayName}</Text>
-                    <Text dimColor>  {s.cwd}  ·  {formatAge(s.startedAt)}</Text>
-                  </Box>
-                  {summary && sel && (
-                    <Text dimColor>    {summary.length > 72 ? summary.slice(0, 71) + '…' : summary}</Text>
-                  )}
-                </Box>
-              );
-            })
-          )}
-          <Box>
-            <Text color={cursor === targetSessions.length ? 'cyan' : undefined} bold={cursor === targetSessions.length}>
-              {cursor === targetSessions.length ? '▸ ' : '  '}Enter custom path...
-            </Text>
-          </Box>
-          <Text> </Text>
-          <Text dimColor>↑↓ navigate · Enter select · d delete · Esc back</Text>
-        </>
-      ) : mode === 'list' ? (
-        <>
-          <Box>
-            <Text dimColor>Filter: </Text>
-            <Text color="cyan">{filter || ''}</Text>
-            {filter ? <Text color="gray">▋</Text> : <Text dimColor> (type to filter)</Text>}
-          </Box>
-          <Text> </Text>
-          {filtered.map((p, i) => (
-            <Box key={p.path}>
-              <Text color={i === cursor ? 'cyan' : undefined} bold={i === cursor}>
-                {i === cursor ? '▸ ' : '  '}{p.name}
-              </Text>
-              <Text dimColor> {p.path}</Text>
-            </Box>
-          ))}
-          <Box>
-            <Text color={cursor === filtered.length ? 'cyan' : undefined} bold={cursor === filtered.length}>
-              {cursor === filtered.length ? '▸ ' : '  '}Enter custom path...
-            </Text>
-          </Box>
-          {filtered.length === 0 && projects.length > 0 && (
-            <Text dimColor>  No matches for "{filter}"</Text>
-          )}
-          <Text> </Text>
-          <Text dimColor>↑↓ navigate · type to filter · Enter select · Esc cancel</Text>
-        </>
-      ) : mode === 'resume' ? (
-        <>
-          <Text bold color="cyan">Resume a past session?</Text>
-          <Text dimColor>{pendingPath}</Text>
-          <Text> </Text>
-          {pastSessions.map((s, i) => {
-            const summary = s.contextSummary ?? s.goalSummary ?? s.nextSteps;
-            const age = formatAge(s.startedAt);
-            const isSelected = i === cursor;
-            return (
-              <Box key={s.sessionId} flexDirection="column">
-                <Box>
-                  <Text color={isSelected ? 'cyan' : undefined} bold={isSelected}>
-                    {isSelected ? '▸ ' : '  '}
-                  </Text>
-                  <Text color={isSelected ? 'cyan' : 'white'}>Resume{s.label ? ` [${s.label}]` : ''}</Text>
-                  <Text dimColor> · {age}</Text>
-                </Box>
-                {summary && (
-                  <Text dimColor>    {summary.length > 80 ? summary.slice(0, 79) + '…' : summary}</Text>
-                )}
-              </Box>
-            );
-          })}
-          <Box>
-            <Text color={cursor === pastSessions.length ? 'cyan' : undefined} bold={cursor === pastSessions.length}>
-              {cursor === pastSessions.length ? '▸ ' : '  '}Start fresh
-            </Text>
-          </Box>
-          <Text> </Text>
-          <Text dimColor>↑↓ navigate · Enter select · Esc back</Text>
-        </>
       ) : (
         <>
           <Box>
-            <Text dimColor={listCursor >= 0}>Path: </Text>
-            <Text color="cyan">{customPath}</Text>
-            {listCursor < 0 && <Text color="gray">▋</Text>}
+            <Text dimColor>Path or filter: </Text>
+            <Text color="cyan">{query || ''}</Text>
+            {query ? <Text color="gray">▋</Text> : <Text dimColor> (type to filter or enter a path)</Text>}
           </Box>
-          {completions.length > 1 && listCursor < 0 && (
+          <Text> </Text>
+          {showStartIn && (
+            <Box>
+              <Text color={cursor === 0 ? 'cyan' : undefined} bold={cursor === 0}>
+                {cursor === 0 ? '▸ ' : '  '}Start in: {expand(query)}
+              </Text>
+              <Text dimColor>   (Tab complete)</Text>
+            </Box>
+          )}
+          {completions.length > 1 && (
             <Box flexDirection="column">
               {completions.map(c => (
                 <Text key={c} dimColor>  {c}/</Text>
               ))}
             </Box>
           )}
-          {targetSessions.length > 0 && (
-            <>
-              <Text> </Text>
-              <Text dimColor>─── Recent ───────────────────────────</Text>
-              {targetSessions.map((s, i) => {
-                const sel = i === listCursor;
-                const dirName = s.cwd.split('/').pop() ?? s.cwd;
-                const displayName = s.label ? `${dirName} [${s.label}]` : dirName;
-                const summary = s.contextSummary ?? s.goalSummary;
-                return (
-                  <Box key={s.sessionId} flexDirection="column">
-                    <Box>
-                      <Text color={sel ? 'cyan' : undefined} bold={sel}>{sel ? '▸ ' : '  '}</Text>
-                      <Text color={sel ? 'cyan' : undefined} bold={sel}>{displayName}</Text>
-                      <Text dimColor>  {s.cwd}  ·  {formatAge(s.startedAt)}</Text>
-                    </Box>
-                    {summary && sel && (
-                      <Text dimColor>    {summary.length > 72 ? summary.slice(0, 71) + '…' : summary}</Text>
-                    )}
-                  </Box>
-                );
-              })}
-            </>
+          {filtered.map((s, i) => (
+            <Box key={s.cwd}>
+              <Text color={cursor === (showStartIn ? i + 1 : i) ? 'cyan' : undefined} bold={cursor === (showStartIn ? i + 1 : i)}>
+                {cursor === (showStartIn ? i + 1 : i) ? '▸ ' : '  '}{path.basename(s.cwd)}
+              </Text>
+              <Text dimColor> {s.cwd}  ·  {formatAge(s.startedAt)}</Text>
+            </Box>
+          ))}
+          {filtered.length === 0 && !showStartIn && query && (
+            <Text dimColor>  No matches for "{query}"</Text>
           )}
           <Text> </Text>
-          <Text dimColor>↑↓ navigate · Tab complete · Enter confirm · d delete · Esc back</Text>
+          <Text dimColor>↑↓ navigate · type = filter or path (/,~,.) · Tab complete · Enter select · Esc back/cancel</Text>
         </>
       )}
     </Box>

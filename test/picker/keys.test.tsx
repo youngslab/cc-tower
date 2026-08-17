@@ -64,7 +64,8 @@ function makeMockStore(sessions: Session[], pastSessions: PastEntry[] = []) {
     update: vi.fn(),
     displayOrder: [] as string[],
     getPastSessionsByCwd: () => [],
-    getPastSessionsByTarget: () => [],
+    getPastSessionsByTarget: (sshTarget?: string) =>
+      pastSessions.filter(p => (sshTarget ? p.sshTarget === sshTarget : !p.sshTarget)),
     getAllPastSessions: () => pastSessions,
     getAllResumableSessions: (_scanned: unknown) => pastSessions,
     deletePersistedSession: vi.fn(),
@@ -205,6 +206,51 @@ describe('picker keys (ink-testing-library)', () => {
     expect(fs.existsSync(outputPath)).toBe(true);
     const result = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
     expect(result.action).toBe('cancel');
+
+    unmount();
+  });
+
+  // ── Test 3b: 'n' shows workspace cwd rows, no resume/recent/summary text ──
+  it('n opens NewSession showing workspace cwd rows without resume/recent/summary text', async () => {
+    const localPast = { sessionId: 'past-local', cwd: '/home/me/workspace-alpha', startedAt: 1, label: 'alpha' };
+    const tower = makeMockTower([makeSession()], [localPast]);
+
+    const { stdin, lastFrame, unmount } = render(
+      <App tower={tower} pickerMode={true} outputPath={outputPath} />,
+    );
+
+    await settle();
+    stdin.write('n'); // open new session
+    await settle();
+
+    const frame = lastFrame()!;
+    expect(frame).toContain('/home/me/workspace-alpha');
+    expect(frame).toContain('workspace-alpha');
+    expect(frame.toLowerCase()).not.toContain('resume');
+    expect(frame.toLowerCase()).not.toContain('recent');
+    expect(frame).not.toContain('alpha]'); // no "[label]" summary decoration
+
+    unmount();
+  });
+
+  // ── Test 3c: typing a path in NewSession shows a "Start in" row ──────────
+  it('n opens NewSession; typing a path shows Start in row', async () => {
+    const localPast = { sessionId: 'past-local', cwd: '/home/me/workspace-alpha', startedAt: 1, label: 'alpha' };
+    const tower = makeMockTower([makeSession()], [localPast]);
+
+    const { stdin, lastFrame, unmount } = render(
+      <App tower={tower} pickerMode={true} outputPath={outputPath} />,
+    );
+
+    await settle();
+    stdin.write('n'); // open new session
+    await settle();
+    stdin.write('/tmp/x'); // type a path
+    await settle();
+
+    const frame = lastFrame()!;
+    expect(frame).toContain('Start in:');
+    expect(frame).toContain('/tmp/x');
 
     unmount();
   });

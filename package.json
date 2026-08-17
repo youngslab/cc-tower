@@ -1,6 +1,6 @@
 {
   "name": "popmux",
-  "version": "2.7.3",
+  "version": "2.7.5",
   "description": "Claude Code Session Control Tower — monitor and interact with multiple Claude Code sessions in tmux",
   "type": "module",
   "main": "dist/index.js",
