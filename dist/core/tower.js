@@ -45,6 +45,7 @@ export class Tower extends EventEmitter {
     connectionManager;
     remoteDiscovery = null;
     remotePollers = new Map();
+    readOnlyDrainTimer = null;
     skipHooks;
     skipColdStart;
     skipSummary;
@@ -178,6 +179,20 @@ export class Tower extends EventEmitter {
             this.drainEventQueue();
             this.store.persistSync();
             logger.info('tower: started in read-only mode', { sessions: this.store.getAll().length });
+            // The picker (--no-cold-start) process can stay alive for days across
+            // F12 toggles. Without a periodic re-drain, its status snapshot freezes
+            // at cold-start time while real hook events keep piling up in the queue
+            // file — re-drain periodically so long-lived pickers stay live.
+            this.readOnlyDrainTimer = setInterval(() => {
+                try {
+                    this.drainEventQueue();
+                    this.store.persistSync();
+                }
+                catch (err) {
+                    logger.debug('tower: readOnly periodic drain failed', { error: String(err) });
+                }
+            }, 3000);
+            this.readOnlyDrainTimer.unref();
             return;
         }
         // 2. Start hook receiver (socket bind) — skip for one-shot commands to avoid stealing the TUI's socket
@@ -1058,6 +1073,8 @@ export class Tower extends EventEmitter {
     async stop() {
         this.stopping = true;
         this.releaseLock();
+        if (this.readOnlyDrainTimer)
+            clearInterval(this.readOnlyDrainTimer);
         this.discovery.stop();
         this.jsonlWatcher.unwatchAll();
         this.processMonitor.stopAll();

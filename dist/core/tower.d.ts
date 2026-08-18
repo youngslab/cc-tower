@@ -28,6 +28,7 @@ export declare class Tower extends EventEmitter {
     private connectionManager;
     private remoteDiscovery;
     private remotePollers;
+    private readOnlyDrainTimer;
     private skipHooks;
     private skipColdStart;
     private skipSummary;
