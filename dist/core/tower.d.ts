@@ -61,6 +61,23 @@ export declare class Tower extends EventEmitter {
     private readLastUserTask;
     private findPaneForPid;
     private drainEventQueue;
+    /**
+     * Authoritative correction pass for the readOnly picker path: hook-derived
+     * status (drainEventQueue above) depends on every relevant hook firing,
+     * arriving in order, and using a name this codebase recognizes — any one
+     * failure leaves status stuck wrong indefinitely, in either direction,
+     * with no self-healing (unlike the full FSM path's inactivity-check, which
+     * itself only helps when the PID has actually died).
+     *
+     * Claude Code sets the tmux pane title directly from its own process — a
+     * live spinner while actively generating, a fixed glyph while idle — so
+     * reading it is immune to all of the above. This runs every drain tick and
+     * corrects busy↔idle in either direction using the same {statusEvent:true}
+     * path, so the attention-banner transition detection applies normally.
+     */
+    private reconcilePaneTitles;
+    /** Split out from reconcilePaneTitles() for direct unit testing (avoids mocking execSync). */
+    private applyPaneTitles;
     private applyQueuedEvent;
     /** Full refresh: re-scan discovery, re-register session, then regenerate LLM summaries. */
     refreshSession(sessionId: string): Promise<void>;

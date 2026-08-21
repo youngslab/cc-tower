@@ -247,6 +247,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, termWidth, termHe
               <Text color={isCursor ? 'cyan' : color}>{icon} </Text>
               <Text color={isCursor ? 'cyan' : undefined} bold={isCursor} dimColor={!isCursor && isDim}>{truncate(nameText, maxTaskWidth)}</Text>
               {session.sshTarget && <Text dimColor>  (remote)</Text>}
+              {session.needsAttention && <Text color="red" bold> ⚠ 관심 필요</Text>}
             </Box>
             {/* Line 2: => summary */}
             <Box>

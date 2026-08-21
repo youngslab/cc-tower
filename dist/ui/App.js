@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 const _require = createRequire(import.meta.url);
 const { version: APP_VERSION } = _require('../../package.json');
+import { sessionIdentity } from '../core/session-store.js';
 import { useSessionStore } from './hooks/useSessionStore.js';
 import { tmux } from '../tmux/commands.js';
 import { Dashboard } from './Dashboard.js';
@@ -54,7 +55,14 @@ export function App({ tower, pickerMode, outputPath }) {
     }, [pickerMode, exit]);
     const handleSelect = useCallback((session) => {
         if (pickerMode && outputPath) {
-            // Enter = "go" — switch to that session
+            // Enter = "go" — switch to that session. This performs the same
+            // "entering the session" action as handleGo's 'g' binding, so it must
+            // clear the attention banner the same way — before writeAndExit's
+            // process.exit(0), synchronously flushed (see handleGo for why).
+            if (session.paneId) {
+                tower.store.update(sessionIdentity(session), { needsAttention: false });
+                tower.store.persistSync();
+            }
             writeAndExit(outputPath, {
                 action: 'go',
                 sessionId: session.sessionId,
@@ -67,7 +75,7 @@ export function App({ tower, pickerMode, outputPath }) {
         }
         setSelectedSession(session);
         setView('detail');
-    }, [pickerMode, outputPath]);
+    }, [pickerMode, outputPath, tower]);
     const handleOpenSearch = useCallback(() => {
         setView('search');
     }, []);
@@ -148,6 +156,13 @@ export function App({ tower, pickerMode, outputPath }) {
         catch { }
     }, [tower]);
     const handleGo = useCallback(async (session) => {
+        // Clear the attention banner before any exit/switch branch below — picker
+        // mode's writeAndExit calls process.exit(0), so this must run first and
+        // flush synchronously or the clear is lost.
+        if (session.paneId) {
+            tower.store.update(sessionIdentity(session), { needsAttention: false });
+            tower.store.persistSync();
+        }
         if (pickerMode && outputPath) {
             writeAndExit(outputPath, {
                 action: 'go',

@@ -4,7 +4,8 @@ import { loadConfig } from '../config/loader.js';
 import { DiscoveryEngine } from './discovery.js';
 import { SessionStore, sessionIdentity } from './session-store.js';
 import { SessionScanner } from './session-scanner.js';
-import { resolveQueuedStatus } from './queued-status.js';
+import { resolveQueuedStatus, RUNNING_STATUSES } from './queued-status.js';
+import { isPaneBusy } from './pane-title-status.js';
 import { HookReceiver } from './hook-receiver.js';
 import { JsonlWatcher } from './jsonl-watcher.js';
 import { ProcessMonitor } from './process-monitor.js';
@@ -177,15 +178,20 @@ export class Tower extends EventEmitter {
         if (this.readOnly) {
             this.rehydrateFromState();
             this.drainEventQueue();
+            this.reconcilePaneTitles();
             this.store.persistSync();
             logger.info('tower: started in read-only mode', { sessions: this.store.getAll().length });
             // The picker (--no-cold-start) process can stay alive for days across
             // F12 toggles. Without a periodic re-drain, its status snapshot freezes
             // at cold-start time while real hook events keep piling up in the queue
             // file — re-drain periodically so long-lived pickers stay live.
+            // reconcilePaneTitles() runs every tick too — hook events can be lost,
+            // misordered, or use a name this codebase doesn't recognize, leaving
+            // status stuck wrong indefinitely; the pane title is ground truth.
             this.readOnlyDrainTimer = setInterval(() => {
                 try {
                     this.drainEventQueue();
+                    this.reconcilePaneTitles();
                     this.store.persistSync();
                 }
                 catch (err) {
@@ -703,6 +709,57 @@ export class Tower extends EventEmitter {
             this.applyQueuedEvent(event, livePanes);
         }
     }
+    /**
+     * Authoritative correction pass for the readOnly picker path: hook-derived
+     * status (drainEventQueue above) depends on every relevant hook firing,
+     * arriving in order, and using a name this codebase recognizes — any one
+     * failure leaves status stuck wrong indefinitely, in either direction,
+     * with no self-healing (unlike the full FSM path's inactivity-check, which
+     * itself only helps when the PID has actually died).
+     *
+     * Claude Code sets the tmux pane title directly from its own process — a
+     * live spinner while actively generating, a fixed glyph while idle — so
+     * reading it is immune to all of the above. This runs every drain tick and
+     * corrects busy↔idle in either direction using the same {statusEvent:true}
+     * path, so the attention-banner transition detection applies normally.
+     */
+    reconcilePaneTitles() {
+        let titles;
+        try {
+            const out = execSync('tmux list-panes -a -F "#{pane_id} #{pane_title}"', { encoding: 'utf8', timeout: 2000 });
+            titles = new Map();
+            for (const line of out.split('\n')) {
+                const idx = line.indexOf(' ');
+                if (idx === -1)
+                    continue;
+                titles.set(line.slice(0, idx), line.slice(idx + 1));
+            }
+        }
+        catch {
+            return;
+        }
+        this.applyPaneTitles(titles);
+    }
+    /** Split out from reconcilePaneTitles() for direct unit testing (avoids mocking execSync). */
+    applyPaneTitles(titles) {
+        for (const session of this.store.getAll()) {
+            if (!session.paneId || session.status === 'dead')
+                continue;
+            const title = titles.get(session.paneId);
+            if (title === undefined)
+                continue; // not a local pane (e.g. remote mirror) — leave to hooks
+            const busy = isPaneBusy(title);
+            if (busy === undefined)
+                continue; // not a recognized Claude Code glyph — leave untouched
+            const isCurrentlyBusy = RUNNING_STATUSES.has(session.status);
+            if (busy && !isCurrentlyBusy) {
+                this.store.update(sessionIdentity(session), { status: 'thinking' }, { statusEvent: true });
+            }
+            else if (!busy && isCurrentlyBusy) {
+                this.store.update(sessionIdentity(session), { status: 'idle' }, { statusEvent: true });
+            }
+        }
+    }
     applyQueuedEvent(event, livePanes) {
         if (typeof event !== 'object' || event === null)
             return;
@@ -779,7 +836,7 @@ export class Tower extends EventEmitter {
         // already dead by drain time — using it forced every active status to idle).
         const newStatus = resolveQueuedStatus(event, livePanes);
         if (newStatus) {
-            this.store.update(identity, { status: newStatus });
+            this.store.update(identity, { status: newStatus }, { statusEvent: true });
             logger.debug('tower: drainEventQueue: applied', { event: event.event, identity, newStatus });
         }
     }
@@ -1205,7 +1262,7 @@ export class Tower extends EventEmitter {
                         ? `${change.to === 'idle' ? '✓ ' : ''}${currentSession.currentTask}`
                         : summary.summary,
                 },
-            });
+            }, { statusEvent: true });
             this.emit('state-change', change);
             this.notifier.onStateChange(change);
             // Trigger LLM summary refresh on idle transition
@@ -1406,7 +1463,7 @@ export class Tower extends EventEmitter {
             this.store.update(compositeId, {
                 status: change.to,
                 lastActivity: new Date(),
-            });
+            }, { statusEvent: true });
             this.emit('state-change', change);
             this.notifier.onStateChange(change);
             // Trigger LLM summary refresh on idle transition

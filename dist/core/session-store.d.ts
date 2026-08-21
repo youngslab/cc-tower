@@ -40,6 +40,9 @@ export interface Instance {
     sshTarget?: string;
     commandPrefix?: string;
     hostOnline?: boolean;
+    needsAttention?: boolean;
+    needsAttentionSetAt?: number;
+    lastPersistedStatus?: Session['status'];
 }
 export interface SessionMeta {
     label?: string;
@@ -69,6 +72,9 @@ interface PersistedInstance {
     lastSessionId?: string;
     lastConversationId?: string;
     lastSeenAt?: number;
+    needsAttention?: boolean;
+    needsAttentionSetAt?: number;
+    status?: Instance['status'];
 }
 export declare function sessionIdentity(s: {
     paneId?: string;
@@ -93,7 +99,12 @@ export declare class SessionStore extends EventEmitter {
         chosenConversationId?: string;
     }): void;
     unregister(identity: string): void;
-    update(identity: string, patch: Partial<Session>): void;
+    update(identity: string, patch: Partial<Session>, opts?: {
+        statusEvent?: boolean;
+    }): void;
+    /** Test-only: flush the debounced persist immediately without bypassing the
+     * production trigger logic in update()/updateMeta(). Never call in production code. */
+    flushPersist(): void;
     updateMeta(identity: string, patch: Partial<SessionMeta>): void;
     setInstanceConversationId(identity: string, conversationId: string): void;
     reassociateMeta(oldSessionId: string, newSessionId: string): void;
@@ -116,6 +127,22 @@ export declare class SessionStore extends EventEmitter {
     /** Synchronous persist — use at shutdown before process.exit() */
     persistSync(): void;
     private _writePersist;
+    /**
+     * Re-reads state.json's needsAttention (+ its timestamp) fresh at persist
+     * time.
+     *
+     * Multiple readOnly picker processes can be alive concurrently (a lingering
+     * orphan from a popup that didn't fully exit, or two overlapping opens) —
+     * each has its own in-memory SessionStore, so one process clearing
+     * needsAttention (e.g. the Go action) is invisible to another's memory.
+     * Blindly re-persisting our own in-memory snapshot every ~2-3s would
+     * silently clobber that clear back to true the next tick — including a
+     * clear that happened *after* our own stale in-memory value was set, since
+     * a plain "did I ever touch this" flag can't tell old decisions from new
+     * ones. _buildPersistData() resolves this with last-write-wins by comparing
+     * needsAttentionSetAt timestamps instead.
+     */
+    private _readOnDiskNeedsAttention;
     private _buildPersistData;
     /** Returns persisted sessions matching the given cwd, sorted by startedAt desc. */
     getPastSessionsByCwd(cwd: string): Array<{

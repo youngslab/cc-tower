@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SessionStore, sessionIdentity, type Session } from '../../src/core/session-store.js';
@@ -647,5 +648,150 @@ describe('SessionStore', () => {
     const past = store.getPastSessionsByCwd('/proj');
     expect(past.map(p => p.sessionId)).not.toContain('active-uuid');
     expect(past.map(p => p.sessionId)).toContain('past-uuid');
+  });
+
+  // --- attention banner (needsAttention / statusEvent) ---
+
+  describe('attention banner', () => {
+    it('sets needsAttention on a running→idle statusEvent update', () => {
+      store.register(makeSession({ paneId: '%7', status: 'executing' }));
+      store.update('%7', { status: 'idle' }, { statusEvent: true });
+      expect(store.get('%7')?.needsAttention).toBe(true);
+    });
+
+    it('does not set needsAttention without the statusEvent marker (resume/clear reset regression)', () => {
+      store.register(makeSession({ paneId: '%7', status: 'executing' }));
+      store.update('%7', { status: 'idle' }); // no opts — simulates the /resume or /clear FSM reset path
+      expect(store.get('%7')?.needsAttention).toBeUndefined();
+    });
+
+    it('does not set needsAttention for non-running-source transitions', () => {
+      store.register(makeSession({ paneId: '%7', status: 'idle' }));
+      store.update('%7', { status: 'idle' }, { statusEvent: true });
+      expect(store.get('%7')?.needsAttention).toBeUndefined();
+    });
+
+    it('an explicit needsAttention:false overrides a previously-set true', () => {
+      store.register(makeSession({ paneId: '%7', status: 'executing' }));
+      store.update('%7', { status: 'idle' }, { statusEvent: true });
+      expect(store.get('%7')?.needsAttention).toBe(true);
+      store.update('%7', { needsAttention: false });
+      expect(store.get('%7')?.needsAttention).toBe(false);
+    });
+
+    it('a non-status patch interleaved before the statusEvent update does not erase the restored lastPersistedStatus', () => {
+      store.register(makeSession({ paneId: '%7', status: 'idle', lastPersistedStatus: 'executing' } as Partial<Session>));
+      store.update('%7', { cwd: '/new/path' }); // unrelated instance patch, no statusEvent
+      store.update('%7', { status: 'idle' }, { statusEvent: true });
+      expect(store.get('%7')?.needsAttention).toBe(true);
+    });
+
+    it('persists needsAttention and status, restoring them into a fresh idle-guess registration', () => {
+      store.register(makeSession({ paneId: '%7', status: 'executing' }));
+      store.update('%7', { status: 'idle' }, { statusEvent: true });
+      store.flushPersist();
+
+      const store2 = new SessionStore(persistPath);
+      store2.restore();
+      store2.register(makeSession({ paneId: '%7', status: 'idle' })); // rehydrate always constructs status:'idle'
+
+      expect(store2.get('%7')?.needsAttention).toBe(true);
+      expect(store2.get('%7')?.status).toBe('idle'); // persisted status ('idle') matches the naive guess here — no observable change
+      expect((store2.get('%7') as any)?.lastPersistedStatus).toBe('idle'); // also restored for transition detection
+    });
+
+    it("fills in the naive 'idle' rehydrate guess with a more specific persisted display status (fixes: long thinking phase with no hook events showed idle forever)", () => {
+      // Session was actively executing when last observed; the F12 popup process
+      // exits between opens, so this is the only memory of that fact.
+      store.register(makeSession({ paneId: '%7', status: 'idle' }));
+      store.update('%7', { status: 'executing' }, { statusEvent: true });
+      store.flushPersist();
+
+      const store2 = new SessionStore(persistPath);
+      store2.restore();
+      // rehydrateFromState hardcodes status:'idle' with no live hook signal yet —
+      // this is the exact bug scenario: no queued hook event to correct it.
+      store2.register(makeSession({ paneId: '%7', status: 'idle' }));
+
+      expect(store2.get('%7')?.status).toBe('executing');
+    });
+
+    it('never downgrades a caller-determined non-idle status with a stale persisted one', () => {
+      store.register(makeSession({ paneId: '%7', status: 'idle' }));
+      store.update('%7', { status: 'idle' }, { statusEvent: true }); // persisted status ends up 'idle'
+      store.flushPersist();
+
+      const store2 = new SessionStore(persistPath);
+      store2.restore();
+      // Caller (e.g. real FSM inference) already determined a specific non-idle status this time.
+      store2.register(makeSession({ paneId: '%7', status: 'thinking' }));
+
+      expect(store2.get('%7')?.status).toBe('thinking');
+    });
+
+    it('cross-process round trip: a transition detected after a full restart is still caught', () => {
+      // Process A: session goes executing, closes while still running (no drain observed the stop yet)
+      store.register(makeSession({ paneId: '%7', status: 'idle' }));
+      store.update('%7', { status: 'executing' }, { statusEvent: true });
+      store.flushPersist();
+
+      // Process B: fresh SessionStore instance, same persistPath (simulates popup restart)
+      const store2 = new SessionStore(persistPath);
+      store2.restore();
+      store2.register(makeSession({ paneId: '%7', status: 'idle' })); // rehydrate hardcodes idle
+      // The queue's coalesced latest event finally arrives as a statusEvent update
+      store2.update('%7', { status: 'idle' }, { statusEvent: true });
+
+      expect(store2.get('%7')?.needsAttention).toBe(true);
+    });
+
+    // Regression: multiple readOnly picker processes can be alive at once (an
+    // orphaned popup that didn't fully exit, or two overlapping opens). Each
+    // has its own in-memory SessionStore with no shared state — if process A
+    // (long-lived, stale) blindly re-persists its own in-memory needsAttention
+    // on its next periodic tick, it silently clobbers a clear that process B
+    // (the one the user actually picked "Go" on) just wrote to disk moments
+    // earlier. Reproduced manually via two concurrent Tower instances before
+    // this fix; _readOnDiskNeedsAttention() + locallyOwnedAttention closes it.
+    it('a stale concurrent process does not clobber another process clearing needsAttention', () => {
+      // Real-world timing: process A sets true, then (moments later) process B
+      // clears it. Fake timers make the ordering deterministic instead of
+      // depending on two Date.now() calls landing in different milliseconds.
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(1000);
+        // Process A: long-lived, has needsAttention=true in memory from startup.
+        const storeA = new SessionStore(persistPath);
+        storeA.register(makeSession({ paneId: '%7', status: 'executing' }));
+        storeA.update('%7', { status: 'idle' }, { statusEvent: true }); // sets needsAttention=true, persists
+        storeA.flushPersist();
+        expect(storeA.get('%7')?.needsAttention).toBe(true);
+
+        vi.setSystemTime(2000);
+        // Process B: the Go action — a separate, freshly-started process instance.
+        const storeB = new SessionStore(persistPath);
+        storeB.restore();
+        storeB.register(makeSession({ paneId: '%7', status: 'idle' }));
+        storeB.update('%7', { needsAttention: false });
+        storeB.flushPersist();
+        expect(storeB.get('%7')?.needsAttention).toBe(false);
+
+        // Process A's next periodic tick re-persists — its in-memory copy still
+        // says true, but it never itself observed process B's (later) clear.
+        vi.setSystemTime(3000);
+        storeA.flushPersist();
+
+        const onDisk = JSON.parse(readFileSync(persistPath, 'utf8'));
+        expect(onDisk.instances['%7'].needsAttention).toBeUndefined(); // stays cleared, not clobbered back to true
+
+        // A fresh process opened afterward must also see it cleared.
+        const storeC = new SessionStore(persistPath);
+        storeC.restore();
+        storeC.register(makeSession({ paneId: '%7', status: 'idle' }));
+        expect(storeC.get('%7')?.needsAttention).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

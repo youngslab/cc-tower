@@ -1,13 +1,56 @@
-/** Maps a hook-queue event name to the session status it implies. */
+/** Statuses considered "running" for attention-banner transition detection. */
+export const RUNNING_STATUSES = new Set(['thinking', 'executing', 'agent']);
+/**
+ * Pure transition check for the attention banner: a session needs attention
+ * when it goes from a running status straight to idle unobserved.
+ *
+ * Any confirmed-running observation clears it, regardless of prevStatus: the
+ * spec originally scoped clearing to the popmux Go action only, but that's a
+ * blind spot for anyone who works directly in tmux without going through
+ * popmux. It's also insufficient across restarts — each fresh readOnly
+ * picker process only sees one prevStatus→nextStatus edge, so a genuine
+ * idle→running transition that happened while no process was watching is
+ * invisible, and a strict idle-only precondition would leave the flag stuck.
+ * Since "needs attention" only matters while idle, any live confirmation
+ * that the session is busy again (from a hook OR the pane-title reconciler)
+ * makes a stale flag from an earlier cycle moot.
+ *
+ * Returns `undefined` for all other transitions so callers can merge the
+ * result into a patch without ever touching the existing flag.
+ */
+export function computeNeedsAttention(prevStatus, nextStatus) {
+    if (RUNNING_STATUSES.has(prevStatus) && nextStatus === 'idle')
+        return true;
+    if (RUNNING_STATUSES.has(nextStatus))
+        return false;
+    return undefined;
+}
+/**
+ * Maps a hook-queue event name to the session status it implies.
+ *
+ * Kept in sync with SessionStateMachine.resolveNext() (state-machine.ts) —
+ * that FSM is the canonical semantics for the full (non-readOnly) path; this
+ * flat map approximates it for the readOnly/picker path (no per-session FSM
+ * memory available). 'post-tool' and 'agent-stop' resolve to 'thinking', NOT
+ * 'idle': a tool call (or a delegated subagent) finishing almost always means
+ * more work follows in the same turn — only 'stop' means the turn is truly
+ * done. Mapping them to 'idle' previously caused the dashboard to flash idle
+ * (and the attention banner to false-trigger) on every tool-call boundary
+ * mid-turn, even during a session that was actively working for 20+ minutes.
+ */
 const STATUS_MAP = {
     'pre-tool': 'executing',
-    'post-tool': 'idle',
+    'post-tool': 'thinking',
     'user-prompt': 'thinking',
     'thinking': 'thinking',
     'session-start': 'idle',
     'session-end': 'dead',
     'agent-start': 'agent',
-    'agent-end': 'idle',
+    // SubagentStop hook actually invokes `popmux-hook.sh agent-stop` (see
+    // ~/.claude/settings.json) — the FSM returns to previousState here; the
+    // flat map has no such memory, so 'thinking' is the closest safe default
+    // (the delegating turn almost always continues after the subagent returns).
+    'agent-stop': 'thinking',
     'stop': 'idle',
     'executing': 'executing',
 };

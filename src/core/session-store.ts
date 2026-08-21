@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { logger } from '../utils/logger.js';
 import { cwdToSlug } from '../utils/slug.js';
+import { computeNeedsAttention } from './queued-status.js';
 import type { ScannedSession } from './session-scanner.js';
 
 export interface TurnSummary {
@@ -43,6 +44,9 @@ export interface Instance {
   sshTarget?: string;          // e.g., 'user@192.168.1.10' — undefined for local
   commandPrefix?: string;      // e.g., 'docker exec devenv' — wraps remote commands
   hostOnline?: boolean;        // remote host reachability status
+  needsAttention?: boolean;    // running→idle transition happened unobserved (attention banner)
+  needsAttentionSetAt?: number; // epoch ms — last-write-wins tiebreak across concurrent processes, see _buildPersistData()
+  lastPersistedStatus?: Session['status']; // transition-detection only, restored from disk once, never for display
 }
 
 export interface SessionMeta {
@@ -79,6 +83,9 @@ interface PersistedInstance {
   lastSessionId?: string;  // hook-confirmed sessionId — used on cold start when pid.json is stale
   lastConversationId?: string;  // JSONL conversation UUID (filename), updated whenever JSONL path changes
   lastSeenAt?: number;  // epoch ms — used to evict stale entries during persist (Claim E)
+  needsAttention?: boolean;  // attention banner flag, survives process restart
+  needsAttentionSetAt?: number;  // epoch ms — last-write-wins tiebreak, see _buildPersistData()
+  status?: Instance['status'];  // last known status, restored as lastPersistedStatus (never overwrites display status)
 }
 
 interface PersistFormat {
@@ -185,6 +192,20 @@ export class SessionStore extends EventEmitter {
     const identity = sessionIdentity(session);
     const persistedInst = this.persistedInstances.get(identity);
     if (persistedInst) {
+      if (persistedInst.needsAttention !== undefined) {
+        session.needsAttention = persistedInst.needsAttention;
+        session.needsAttentionSetAt = persistedInst.needsAttentionSetAt;
+      }
+      if (persistedInst.status !== undefined) {
+        session.lastPersistedStatus = persistedInst.status;
+        // Fresh readOnly picker processes hardcode a naive 'idle' guess when
+        // rehydrating from JSONL (no live hook signal yet). If the caller
+        // already determined a more specific status (real FSM inference,
+        // discovery liveness), don't clobber it — only fill the naive default.
+        if (session.status === 'idle') {
+          session.status = persistedInst.status;
+        }
+      }
       if (persistedInst.favorite !== undefined && !session.favorite) {
         session.favorite = persistedInst.favorite;
         session.favoritedAt = persistedInst.favoritedAt;
@@ -248,7 +269,7 @@ export class SessionStore extends EventEmitter {
     logger.debug('session-store: unregistered session', { sessionId: instance.sessionId });
   }
 
-  update(identity: string, patch: Partial<Session>): void {
+  update(identity: string, patch: Partial<Session>, opts?: { statusEvent?: boolean }): void {
     const instance = this.instances.get(identity);
     if (!instance) {
       logger.warn('session-store: update called for unknown session', { identity });
@@ -268,6 +289,11 @@ export class SessionStore extends EventEmitter {
       }
     }
 
+    // Captured before Object.assign mutates instance.status. On the first
+    // statusEvent update after a restore, lastPersistedStatus (disk-recovered)
+    // wins; afterwards it's cleared and the live status takes over naturally.
+    const prevStatus = instance.lastPersistedStatus ?? instance.status;
+
     if (Object.keys(instancePatch).length > 0) {
       // Detect sessionId mutation without prior dropConversationScopedMeta call.
       // Callers MUST call dropConversationScopedMeta(identity, newSid) before
@@ -283,13 +309,45 @@ export class SessionStore extends EventEmitter {
       }
       Object.assign(instance, instancePatch);
     }
+
+    // Attention-banner transition detection — opt-in only (see computeNeedsAttention).
+    // Scoped to 'status' in instancePatch so an unrelated statusEvent-flagged patch
+    // can never erase the disk-recovered lastPersistedStatus prematurely.
+    if (opts?.statusEvent && 'status' in instancePatch) {
+      if (!('needsAttention' in instancePatch)) {
+        const na = computeNeedsAttention(prevStatus, instancePatch.status as Session['status']);
+        if (na !== undefined) {
+          instance.needsAttention = na;
+          instance.needsAttentionSetAt = Date.now();
+        }
+      }
+      instance.lastPersistedStatus = undefined;
+    }
+    if ('needsAttention' in instancePatch) {
+      // Explicit caller decision (e.g. the Go-action clear) — stamp it too, so
+      // _buildPersistData() can tell it apart from a stale inherited value a
+      // concurrent process never re-derived (see there for why this matters).
+      instance.needsAttentionSetAt = Date.now();
+    }
+
     if (hasMeta) {
       const existing = this.sessionMeta.get(instance.sessionId) ?? {} as SessionMeta;
       this.sessionMeta.set(instance.sessionId, { ...existing, ...metaPatch });
+    }
+    // Instance-only patches previously never persisted (meta-only condition below).
+    // needsAttention/status must survive a process restart, so trigger persist
+    // whenever this update touched either.
+    if (hasMeta || 'needsAttention' in instancePatch || opts?.statusEvent) {
       this.persist();
     }
     this.emit('session-updated', this.get(identity)!);
     logger.debug('session-store: updated session', { identity, patch: Object.keys(patch) });
+  }
+
+  /** Test-only: flush the debounced persist immediately without bypassing the
+   * production trigger logic in update()/updateMeta(). Never call in production code. */
+  flushPersist(): void {
+    this.persistSync();
   }
 
   updateMeta(identity: string, patch: Partial<SessionMeta>): void {
@@ -398,11 +456,39 @@ export class SessionStore extends EventEmitter {
     }
   }
 
+  /**
+   * Re-reads state.json's needsAttention (+ its timestamp) fresh at persist
+   * time.
+   *
+   * Multiple readOnly picker processes can be alive concurrently (a lingering
+   * orphan from a popup that didn't fully exit, or two overlapping opens) —
+   * each has its own in-memory SessionStore, so one process clearing
+   * needsAttention (e.g. the Go action) is invisible to another's memory.
+   * Blindly re-persisting our own in-memory snapshot every ~2-3s would
+   * silently clobber that clear back to true the next tick — including a
+   * clear that happened *after* our own stale in-memory value was set, since
+   * a plain "did I ever touch this" flag can't tell old decisions from new
+   * ones. _buildPersistData() resolves this with last-write-wins by comparing
+   * needsAttentionSetAt timestamps instead.
+   */
+  private _readOnDiskNeedsAttention(): Map<string, { needsAttention: boolean; needsAttentionSetAt?: number }> {
+    const result = new Map<string, { needsAttention: boolean; needsAttentionSetAt?: number }>();
+    try {
+      const raw = readFileSync(this.persistPath, 'utf8');
+      const data = JSON.parse(raw) as { instances?: Record<string, PersistedInstance> };
+      for (const [identity, inst] of Object.entries(data.instances ?? {})) {
+        result.set(identity, { needsAttention: inst.needsAttention === true, needsAttentionSetAt: inst.needsAttentionSetAt });
+      }
+    } catch {}
+    return result;
+  }
+
   private _buildPersistData(): PersistFormat {
     const data: PersistFormat = { version: 3, sessions: {}, instances: {}, displayOrder: this._displayOrder };
     const liveSessionIds = new Set<string>();
     const now = Date.now();
     const INSTANCE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days (Claim E)
+    const onDiskAttention = this._readOnDiskNeedsAttention();
     for (const [identity, instance] of this.instances) {
       if (instance.status === 'dead') continue;
       liveSessionIds.add(instance.sessionId);
@@ -423,6 +509,20 @@ export class SessionStore extends EventEmitter {
       data.sessions[instance.sessionId] = entry;
       const instData: PersistedInstance = {};
       if (instance.favorite) { instData.favorite = instance.favorite; instData.favoritedAt = instance.favoritedAt; }
+      // Last-write-wins across concurrent processes: compare timestamps, not
+      // "did I ever touch this" — a process holding a stale in-memory true
+      // must not out-rank a more recent clear (or vice versa) written by
+      // another process after our own decision was made (see
+      // _readOnDiskNeedsAttention() for why a plain ownership flag isn't enough).
+      const onDisk = onDiskAttention.get(identity);
+      const ownSetAt = instance.needsAttentionSetAt ?? -1;
+      const diskSetAt = onDisk?.needsAttentionSetAt ?? -1;
+      const effectiveNeedsAttention = diskSetAt > ownSetAt ? onDisk!.needsAttention : instance.needsAttention === true;
+      if (diskSetAt > ownSetAt) instance.needsAttentionSetAt = onDisk!.needsAttentionSetAt;
+      if (effectiveNeedsAttention) instData.needsAttention = true;
+      if (instance.needsAttentionSetAt !== undefined) instData.needsAttentionSetAt = instance.needsAttentionSetAt;
+      instance.needsAttention = effectiveNeedsAttention; // keep in-memory/display in sync with what we just persisted
+      instData.status = instance.status;
       instData.lastSessionId = instance.sessionId;
       // Claim E: stamp lastSeenAt for every live instance written.
       instData.lastSeenAt = now;

@@ -62,6 +62,7 @@ function makeMockStore(sessions: Session[], pastSessions: PastEntry[] = []) {
     on: (event: string, listener: (...args: unknown[]) => void) => { ee.on(event, listener); return () => ee.off(event, listener); },
     off: (event: string, listener: (...args: unknown[]) => void) => { ee.off(event, listener); },
     update: vi.fn(),
+    persistSync: vi.fn(),
     displayOrder: [] as string[],
     getPastSessionsByCwd: () => [],
     getPastSessionsByTarget: (sshTarget?: string) =>
