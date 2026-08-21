@@ -1,5 +1,5 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
-import React, { useState, useRef, useReducer } from 'react';
+import React, { useState, useRef, useReducer, useEffect } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { EmptyState } from './EmptyState.js';
 const STATUS_ICONS = {
@@ -13,6 +13,16 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, termWidth, termHe
     const [confirmQuit, setConfirmQuit] = useState(false);
     const [confirmKill, setConfirmKill] = useState(false);
     const [, forceUpdate] = useReducer(x => x + 1, 0);
+    // Blink the attention badge — only run the timer while at least one
+    // session actually needs it, so idle dashboards don't re-render for nothing.
+    const [blinkOn, setBlinkOn] = useState(true);
+    const hasAttention = sessions.some(s => s.needsAttention);
+    useEffect(() => {
+        if (!hasAttention)
+            return;
+        const timer = setInterval(() => setBlinkOn(b => !b), 500);
+        return () => clearInterval(timer);
+    }, [hasAttention]);
     // Stable order ref for non-favorites — order doesn't change on status updates
     // Initialize from persisted displayOrder on first mount
     const nonFavOrderRef = useRef(initialDisplayOrder);
@@ -206,7 +216,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, termWidth, termHe
                 const summaryText = session.summaryLoading
                     ? '⟳ summarizing...'
                     : (session.goalSummary ?? session.contextSummary ?? session.currentTask ?? 'New session');
-                return (_jsxs(React.Fragment, { children: [showFavSep && (_jsxs(Text, { dimColor: true, children: ['─'.repeat(60), " favorites \u2191"] })), showNonTmuxSep && (_jsxs(Text, { dimColor: true, children: ['· · · ·'.repeat(5), " (monitor-only)"] })), _jsxs(Box, { children: [_jsx(Text, { color: isCursor ? 'cyan' : undefined, bold: isCursor, children: isCursor ? '▸' : ' ' }), _jsxs(Text, { color: isCursor ? 'cyan' : undefined, dimColor: !isCursor, children: [" ", pad(`${i + 1}`, 2), " "] }), _jsxs(Text, { color: isCursor ? 'cyan' : color, children: [icon, " "] }), _jsx(Text, { color: isCursor ? 'cyan' : undefined, bold: isCursor, dimColor: !isCursor && isDim, children: truncate(nameText, maxTaskWidth) }), session.sshTarget && _jsx(Text, { dimColor: true, children: "  (remote)" }), session.needsAttention && _jsx(Text, { color: "red", bold: true, children: " \u26A0 \uAD00\uC2EC \uD544\uC694" })] }), _jsxs(Box, { children: [_jsx(Text, { children: ' '.repeat(INDENT) }), _jsx(Text, { dimColor: true, children: '=> ' }), _jsx(Text, { dimColor: !isCursor && isDim, children: truncate(summaryText, maxTaskWidth) })] }), session.status === 'idle' && session.nextSteps && (_jsxs(Box, { children: [_jsx(Text, { children: ' '.repeat(INDENT) }), _jsxs(Text, { color: "yellow", children: ["\u21B3 ", truncate(session.nextSteps, maxTaskWidth)] })] })), _jsx(Box, { height: 1 })] }, identityOf(session)));
+                return (_jsxs(React.Fragment, { children: [showFavSep && (_jsxs(Text, { dimColor: true, children: ['─'.repeat(60), " favorites \u2191"] })), showNonTmuxSep && (_jsxs(Text, { dimColor: true, children: ['· · · ·'.repeat(5), " (monitor-only)"] })), _jsxs(Box, { children: [_jsx(Text, { color: isCursor ? 'cyan' : undefined, bold: isCursor, children: isCursor ? '▸' : ' ' }), _jsxs(Text, { color: isCursor ? 'cyan' : undefined, dimColor: !isCursor, children: [" ", pad(`${i + 1}`, 2), " "] }), _jsxs(Text, { color: isCursor ? 'cyan' : color, children: [icon, " "] }), _jsx(Text, { color: isCursor ? 'cyan' : undefined, bold: isCursor, dimColor: !isCursor && isDim, children: truncate(nameText, maxTaskWidth) }), session.sshTarget && _jsx(Text, { dimColor: true, children: "  (remote)" }), session.needsAttention && _jsx(Text, { color: blinkOn ? 'red' : undefined, bold: blinkOn, children: " \u26A0 \uAD00\uC2EC \uD544\uC694" })] }), _jsxs(Box, { children: [_jsx(Text, { children: ' '.repeat(INDENT) }), _jsx(Text, { dimColor: true, children: '=> ' }), _jsx(Text, { dimColor: !isCursor && isDim, children: truncate(summaryText, maxTaskWidth) })] }), session.status === 'idle' && session.nextSteps && (_jsxs(Box, { children: [_jsx(Text, { children: ' '.repeat(INDENT) }), _jsxs(Text, { color: "yellow", children: ["\u21B3 ", truncate(session.nextSteps, maxTaskWidth)] })] })), _jsx(Box, { height: 1 })] }, identityOf(session)));
             }), sorted.length > 0 && (_jsx(Text, { dimColor: true, children: showScrollDown ? `  ↓ ${sorted.length - viewEnd} more` : ' ' })), sorted.length === 0 && (_jsx(EmptyState, { inTmux: tmuxCount > 0, hookInstalled: true })), spacerRows > 0 && _jsx(Box, { height: spacerRows }), confirmKill && sorted[cursor] && (_jsxs(Box, { marginTop: 1, borderStyle: "round", borderColor: "red", paddingX: 2, paddingY: 0, justifyContent: "center", children: [_jsxs(Text, { color: "red", children: ["Kill ", sorted[cursor].label ?? sorted[cursor].projectName, " (PID ", sorted[cursor].pid, ")?  "] }), _jsx(Text, { bold: true, color: "green", children: "[y] Yes  " }), _jsx(Text, { bold: true, color: "red", children: "[n] No" })] })), confirmQuit && (_jsxs(Box, { marginTop: 1, borderStyle: "round", borderColor: "yellow", paddingX: 2, paddingY: 0, justifyContent: "center", children: [_jsx(Text, { color: "yellow", children: "Quit popmux?  " }), _jsx(Text, { bold: true, color: "green", children: "[y] Yes  " }), _jsx(Text, { bold: true, color: "red", children: "[n] No" })] })), !confirmQuit && (_jsxs(Box, { marginTop: 1, flexDirection: "column", children: [_jsxs(Box, { children: [_jsx(Text, { dimColor: true, children: "  " }), _jsx(Text, { color: "green", children: "\u25CF" }), _jsx(Text, { dimColor: true, children: " Running  " }), _jsx(Text, { color: "yellow", children: "\u25D0" }), _jsx(Text, { dimColor: true, children: " Thinking  " }), _jsx(Text, { color: "cyan", children: "\u25D1" }), _jsx(Text, { dimColor: true, children: " Agent  " }), _jsx(Text, { color: "white", children: "\u25CB" }), _jsx(Text, { dimColor: true, children: " Idle  " }), _jsx(Text, { color: "red", children: "\u2715" }), _jsx(Text, { dimColor: true, children: " Dead" })] }), _jsx(Box, { children: _jsxs(Text, { dimColor: true, children: ["  [j/k] Nav  [1-9] Jump  [", `[/]`, "] Reorder  \u2502  [Enter] Detail  [g] Go"] }) }), _jsx(Box, { children: _jsx(Text, { dimColor: true, children: "  [/] Search  [R] Resume  \u2502  [f] Fav  [n] New  [r] Refresh  [x] Kill  [q] Quit" }) })] }))] }));
 }
 import stringWidth from 'string-width';

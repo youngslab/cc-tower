@@ -1,4 +1,4 @@
-import React, { useState, useRef, useReducer } from 'react';
+import React, { useState, useRef, useReducer, useEffect } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { Session } from '../core/session-store.js';
 import { EmptyState } from './EmptyState.js';
@@ -40,6 +40,16 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, termWidth, termHe
   const [confirmQuit, setConfirmQuit] = useState(false);
   const [confirmKill, setConfirmKill] = useState(false);
   const [, forceUpdate] = useReducer(x => x + 1, 0);
+
+  // Blink the attention badge — only run the timer while at least one
+  // session actually needs it, so idle dashboards don't re-render for nothing.
+  const [blinkOn, setBlinkOn] = useState(true);
+  const hasAttention = sessions.some(s => s.needsAttention);
+  useEffect(() => {
+    if (!hasAttention) return;
+    const timer = setInterval(() => setBlinkOn(b => !b), 500);
+    return () => clearInterval(timer);
+  }, [hasAttention]);
 
   // Stable order ref for non-favorites — order doesn't change on status updates
   // Initialize from persisted displayOrder on first mount
@@ -247,7 +257,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, termWidth, termHe
               <Text color={isCursor ? 'cyan' : color}>{icon} </Text>
               <Text color={isCursor ? 'cyan' : undefined} bold={isCursor} dimColor={!isCursor && isDim}>{truncate(nameText, maxTaskWidth)}</Text>
               {session.sshTarget && <Text dimColor>  (remote)</Text>}
-              {session.needsAttention && <Text color="red" bold> ⚠ 관심 필요</Text>}
+              {session.needsAttention && <Text color={blinkOn ? 'red' : undefined} bold={blinkOn}> ⚠ 관심 필요</Text>}
             </Box>
             {/* Line 2: => summary */}
             <Box>
