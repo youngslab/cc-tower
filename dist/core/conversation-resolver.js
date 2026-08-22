@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { logger } from '../utils/logger.js';
 import { cwdToSlug } from '../utils/slug.js';
+import { projectArtifactsDir } from '../agents/claude/artifacts.js';
 const DIR_CACHE_TTL_MS = 200;
 const STICKY_MIN_DELTA_MS = 100;
 const HOOK_WRITE_WINDOW_MS = 2000;
@@ -224,7 +225,7 @@ export class ConversationResolver {
      */
     scanCandidates(cwd, forIdentity) {
         const slug = cwdToSlug(cwd);
-        const primaryDir = path.join(this.claudeDir, 'projects', slug);
+        const primaryDir = projectArtifactsDir({ rootDir: this.claudeDir, cwd });
         let files = this.listDir(primaryDir);
         // Worktree fallback: scan slug-* sibling directories
         if (files.length === 0) {
@@ -358,8 +359,7 @@ export class ConversationResolver {
     }
     /** Invalidate dir cache (useful after externally knowing a new file was created) */
     invalidateCache(cwd) {
-        const slug = cwdToSlug(cwd);
-        const dir = path.join(this.claudeDir, 'projects', slug);
+        const dir = projectArtifactsDir({ rootDir: this.claudeDir, cwd });
         this.dirCache.delete(dir);
     }
 }

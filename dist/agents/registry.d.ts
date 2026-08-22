@@ -11,6 +11,8 @@ export declare const agents: {
         readonly coldStartLastTask: typeof import("./claude/status-inferer.js").coldStartLastTask;
         readonly coldStartCustomTitle: typeof import("./claude/status-inferer.js").coldStartCustomTitle;
         readonly extractLabel: typeof import("./claude/label-matcher.js").extractLabel;
+        readonly projectArtifactsDir: typeof import("./claude/artifacts.js").projectArtifactsDir;
+        readonly sessionArtifactPath: typeof import("./claude/artifacts.js").sessionArtifactPath;
         readonly generateContextSummary: typeof import("./claude/summarizer.js").generateContextSummary;
         readonly generateGoalSummary: typeof import("./claude/summarizer.js").generateGoalSummary;
         readonly generateNextSteps: typeof import("./claude/summarizer.js").generateNextSteps;

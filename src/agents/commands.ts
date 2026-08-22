@@ -1,13 +1,8 @@
 import type { AgentId } from './types.js';
+import type { AgentCommandInput as AdapterAgentCommandInput } from './adapter.js';
 import { getAgentAdapter } from './registry.js';
 
-export interface AgentCommandInput {
-  agentId?: AgentId;
-  cwd: string;
-  resumeId?: string;
-  claudeArgs?: string;
-  claudeBin?: string;
-}
+export type AgentCommandInput = AdapterAgentCommandInput & { agentId?: AgentId };
 
 export { shellQuote } from './shell.js';
 

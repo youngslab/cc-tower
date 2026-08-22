@@ -174,8 +174,8 @@ export declare class SessionStore extends EventEmitter {
         nextSteps?: string;
     }>;
     /**
-     * Returns past sessions grouped by cwd (most recent per cwd) for the given host.
-     * sshTarget undefined = local sessions; sshTarget string = remote sessions for that target.
+     * Returns local past sessions grouped by cwd (most recent per cwd).
+     * Remote target lookups intentionally return empty while remote support is disabled.
      * Excludes currently active sessions.
      */
     getPastSessionsByTarget(sshTarget?: string): Array<{
@@ -227,19 +227,8 @@ export declare class SessionStore extends EventEmitter {
     }>;
     /** Removes a past session from persistedMeta and rewrites state.json immediately. */
     deletePersistedSession(sessionId: string, agentId?: AgentId): void;
-    /** Returns all persisted session IDs (keys of persistedMeta). Used to detect remote sessions by key prefix. */
-    getPersistedKeys(): string[];
     /** Returns all persisted instance entries [identity/paneId, PersistedInstance]. Used by rehydrateFromState. */
     getPersistedInstanceEntries(): Array<[string, PersistedInstance]>;
-    /** Returns persisted remote sessions (new format with sshTarget) for pre-populating known map before first scan. */
-    getRestoredRemoteSessions(): Array<{
-        sessionId: string;
-        pid: number;
-        sshTarget: string;
-        cwd: string;
-        startedAt: number;
-        host: string;
-    }>;
     restore(): void;
     getPersistedEntry(sessionId: string, agentId?: AgentId): PersistedEntry | undefined;
     get displayOrder(): string[];

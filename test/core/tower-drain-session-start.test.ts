@@ -38,6 +38,16 @@ vi.mock('../../src/ssh/remote-discovery.js', () => ({
 }));
 vi.mock('../../src/agents/registry.js', () => ({
   agents: { claude: { startLlmSession() {}, isHeadlessSession() { return false; }, clearSummaryCache() {} } },
+  getAgentAdapter(agentId: 'claude' | 'codex' | undefined) {
+    return {
+      id: agentId ?? 'claude',
+      inferPaneBusy() { return undefined; },
+      startLlmSession() {},
+      stopLlmSession() {},
+      isHeadlessSession() { return false; },
+      clearSummaryCache() {},
+    };
+  },
 }));
 
 import { Tower } from '../../src/core/tower.js';

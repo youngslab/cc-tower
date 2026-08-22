@@ -23,5 +23,5 @@ interface Props {
     onCancel: () => void;
     getPastSessionsByTarget: (sshTarget?: string) => PastSessionByCwd[];
 }
-export declare function NewSession({ hosts, onSelect, onCancel, getPastSessionsByTarget }: Props): import("react/jsx-runtime").JSX.Element;
+export declare function NewSession({ onSelect, onCancel, getPastSessionsByTarget }: Props): import("react/jsx-runtime").JSX.Element;
 export {};

@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { logger } from '../utils/logger.js';
 import { cwdToSlug } from '../utils/slug.js';
+import { projectArtifactsDir } from '../agents/claude/artifacts.js';
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
 
@@ -331,7 +332,7 @@ export class ConversationResolver {
    */
   private scanCandidates(cwd: string, forIdentity: string): CandidateFile[] {
     const slug = cwdToSlug(cwd);
-    const primaryDir = path.join(this.claudeDir, 'projects', slug);
+    const primaryDir = projectArtifactsDir({ rootDir: this.claudeDir, cwd });
 
     let files = this.listDir(primaryDir);
 
@@ -477,8 +478,7 @@ export class ConversationResolver {
 
   /** Invalidate dir cache (useful after externally knowing a new file was created) */
   invalidateCache(cwd: string): void {
-    const slug = cwdToSlug(cwd);
-    const dir = path.join(this.claudeDir, 'projects', slug);
+    const dir = projectArtifactsDir({ rootDir: this.claudeDir, cwd });
     this.dirCache.delete(dir);
   }
 }

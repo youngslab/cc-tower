@@ -78,7 +78,7 @@ function parseAllSummariesOutput(raw) {
         return undefined;
     }
 }
-// Keep individual exports for remote SSH path (used in tower.ts remote helpers)
+// Keep individual exports for callers/tests; Tower remote helpers are currently disabled.
 export async function generateContextSummary(sessionId, recentMessages) {
     const res = await generateAllSummaries(sessionId, recentMessages, recentMessages);
     return res?.context;

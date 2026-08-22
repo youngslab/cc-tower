@@ -3,53 +3,8 @@ import { useState, useMemo, useCallback } from 'react';
 import { Box, Text, useInput } from 'ink';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { fuzzyMatch } from './fuzzy.js';
 import { agentLabel, agentShortBadge, normalizeAgentId } from '../agents/types.js';
-function remoteListDirs(host, dir) {
-    try {
-        const cmd = `ls -1 -d ${dir}/*/ 2>/dev/null | xargs -I{} basename {}`;
-        const fullCmd = host.commandPrefix
-            ? `${host.commandPrefix} sh -c '${cmd.replace(/'/g, "'\\''")}'`
-            : cmd;
-        const out = execFileSync('ssh', [host.ssh, fullCmd], { timeout: 5000 }).toString();
-        return out.trim().split('\n').filter(Boolean).filter(n => !n.startsWith('.'));
-    }
-    catch { }
-    return [];
-}
-function tabCompleteRemote(input, host) {
-    if (!input)
-        return input;
-    const dir = input.endsWith('/') ? input.replace(/\/$/, '') : path.posix.dirname(input);
-    const prefix = input.endsWith('/') ? '' : path.posix.basename(input);
-    const entries = remoteListDirs(host, dir).filter(n => n.toLowerCase().startsWith(prefix.toLowerCase())).sort();
-    if (entries.length === 1) {
-        return `${dir}/${entries[0]}/`;
-    }
-    else if (entries.length > 1) {
-        let common = entries[0];
-        for (const e of entries) {
-            let i = 0;
-            while (i < common.length && i < e.length && common[i].toLowerCase() === e[i].toLowerCase())
-                i++;
-            common = common.slice(0, i);
-        }
-        if (common.length > prefix.length)
-            return `${dir}/${common}`;
-    }
-    return input;
-}
-function listCompletionsRemote(input, host) {
-    if (!input)
-        return [];
-    const dir = input.endsWith('/') ? input.replace(/\/$/, '') : path.posix.dirname(input);
-    const prefix = input.endsWith('/') ? '' : path.posix.basename(input);
-    return remoteListDirs(host, dir)
-        .filter(n => n.toLowerCase().startsWith(prefix.toLowerCase()))
-        .sort()
-        .slice(0, 8);
-}
 function tabComplete(input) {
     if (!input)
         return input;
@@ -114,18 +69,11 @@ function isPathLike(q) {
 function expand(q) {
     return q.startsWith('~') ? q.replace('~', process.env['HOME'] ?? '') : q;
 }
-export function NewSession({ hosts, onSelect, onCancel, getPastSessionsByTarget }) {
+export function NewSession({ onSelect, onCancel, getPastSessionsByTarget }) {
     const [cursor, setCursor] = useState(0);
     const [query, setQuery] = useState('');
-    const [mode, setMode] = useState(() => hosts.length > 0 ? 'host' : 'pick');
-    const [selectedHost, setSelectedHost] = useState(undefined);
     const [selectedAgent, setSelectedAgent] = useState('claude');
-    // Host options: "local" + configured remote hosts
-    const hostOptions = [
-        { label: 'local' },
-        ...hosts.map(h => ({ label: `⌁ ${h.name} (${h.ssh})`, host: h })),
-    ];
-    const workspaces = useMemo(() => getPastSessionsByTarget(selectedHost?.ssh), [selectedHost, getPastSessionsByTarget]);
+    const workspaces = useMemo(() => getPastSessionsByTarget(undefined), [getPastSessionsByTarget]);
     const filtered = useMemo(() => {
         if (!query)
             return workspaces;
@@ -135,46 +83,23 @@ export function NewSession({ hosts, onSelect, onCancel, getPastSessionsByTarget 
     const completions = useMemo(() => {
         if (!showStartIn)
             return [];
-        return selectedHost ? listCompletionsRemote(query, selectedHost) : listCompletions(query);
-    }, [showStartIn, query, selectedHost]);
+        return listCompletions(query);
+    }, [showStartIn, query]);
     const rowCount = filtered.length + (showStartIn ? 1 : 0);
     const handlePathSelected = useCallback((projectPath) => {
-        onSelect(projectPath, selectedHost, undefined, selectedHost ? 'claude' : selectedAgent);
-    }, [onSelect, selectedHost, selectedAgent]);
+        onSelect(projectPath, undefined, undefined, selectedAgent);
+    }, [onSelect, selectedAgent]);
     useInput((input, key) => {
         if (key.escape) {
-            if (mode === 'pick' && query) {
+            if (query) {
                 setQuery('');
                 setCursor(0);
-                return;
-            }
-            if (mode === 'pick') {
-                if (hosts.length > 0) {
-                    setMode('host');
-                    setCursor(0);
-                    return;
-                }
-                onCancel();
                 return;
             }
             onCancel();
             return;
         }
-        if (mode === 'host') {
-            if (key.upArrow || input === 'k')
-                setCursor(c => Math.max(0, c - 1));
-            if (key.downArrow || input === 'j')
-                setCursor(c => Math.min(hostOptions.length - 1, c + 1));
-            if (key.return) {
-                const chosen = hostOptions[cursor];
-                setSelectedHost(chosen?.host);
-                setMode('pick');
-                setCursor(0);
-            }
-            return;
-        }
-        // pick mode
-        if (input === 'a' && !selectedHost) {
+        if (input === 'a') {
             setSelectedAgent(a => a === 'claude' ? 'codex' : 'claude');
             return;
         }
@@ -188,7 +113,7 @@ export function NewSession({ hosts, onSelect, onCancel, getPastSessionsByTarget 
         }
         if (key.tab) {
             if (showStartIn) {
-                setQuery(selectedHost ? tabCompleteRemote(query, selectedHost) : tabComplete(query));
+                setQuery(tabComplete(query));
             }
             return;
         }
@@ -213,6 +138,6 @@ export function NewSession({ hosts, onSelect, onCancel, getPastSessionsByTarget 
             setCursor(0);
         }
     });
-    return (_jsxs(Box, { flexDirection: "column", children: [_jsx(Text, { bold: true, color: "cyan", children: "New AI Session" }), mode === 'host' ? (_jsxs(_Fragment, { children: [_jsx(Text, { dimColor: true, children: "Select target host" }), _jsx(Text, { children: " " }), hostOptions.map((h, i) => (_jsx(Box, { children: _jsxs(Text, { color: i === cursor ? 'cyan' : undefined, bold: i === cursor, children: [i === cursor ? '▸ ' : '  ', h.label] }) }, h.label))), _jsx(Text, { children: " " }), _jsx(Text, { dimColor: true, children: "\u2191\u2193 navigate \u00B7 Enter select \u00B7 Esc cancel" })] })) : (_jsxs(_Fragment, { children: [_jsxs(Box, { children: [_jsx(Text, { dimColor: true, children: "Path or filter: " }), _jsx(Text, { color: "cyan", children: query || '' }), query ? _jsx(Text, { color: "gray", children: "\u258B" }) : _jsx(Text, { dimColor: true, children: " (type to filter or enter a path)" })] }), !selectedHost && (_jsxs(Text, { dimColor: true, children: ["Agent: ", agentLabel(selectedAgent), " \u00B7 press a to toggle"] })), _jsx(Text, { children: " " }), showStartIn && (_jsxs(Box, { children: [_jsxs(Text, { color: cursor === 0 ? 'cyan' : undefined, bold: cursor === 0, children: [cursor === 0 ? '▸ ' : '  ', "Start in: ", expand(query)] }), _jsx(Text, { dimColor: true, children: "   (Tab complete)" })] })), completions.length > 1 && (_jsx(Box, { flexDirection: "column", children: completions.map(c => (_jsxs(Text, { dimColor: true, children: ["  ", c, "/"] }, c))) })), filtered.map((s, i) => (_jsxs(Box, { children: [_jsxs(Text, { color: cursor === (showStartIn ? i + 1 : i) ? 'cyan' : undefined, bold: cursor === (showStartIn ? i + 1 : i), children: [cursor === (showStartIn ? i + 1 : i) ? '▸ ' : '  ', "[", agentShortBadge(normalizeAgentId(s.agentId)), "] ", path.basename(s.cwd)] }), _jsxs(Text, { dimColor: true, children: [" ", s.cwd, "  \u00B7  ", formatAge(s.startedAt)] })] }, s.cwd))), filtered.length === 0 && !showStartIn && query && (_jsxs(Text, { dimColor: true, children: ["  No matches for \"", query, "\""] })), _jsx(Text, { children: " " }), _jsx(Text, { dimColor: true, children: "\u2191\u2193 navigate \u00B7 a toggle agent \u00B7 type = filter or path (/,~,.) \u00B7 Tab complete \u00B7 Enter select \u00B7 Esc back/cancel" })] }))] }));
+    return (_jsxs(Box, { flexDirection: "column", children: [_jsx(Text, { bold: true, color: "cyan", children: "New AI Session" }), _jsxs(_Fragment, { children: [_jsxs(Box, { children: [_jsx(Text, { dimColor: true, children: "Path or filter: " }), _jsx(Text, { color: "cyan", children: query || '' }), query ? _jsx(Text, { color: "gray", children: "\u258B" }) : _jsx(Text, { dimColor: true, children: " (type to filter or enter a path)" })] }), _jsxs(Text, { dimColor: true, children: ["Agent: ", agentLabel(selectedAgent), " \u00B7 press a to toggle"] }), _jsx(Text, { children: " " }), showStartIn && (_jsxs(Box, { children: [_jsxs(Text, { color: cursor === 0 ? 'cyan' : undefined, bold: cursor === 0, children: [cursor === 0 ? '▸ ' : '  ', "Start in: ", expand(query)] }), _jsx(Text, { dimColor: true, children: "   (Tab complete)" })] })), completions.length > 1 && (_jsx(Box, { flexDirection: "column", children: completions.map(c => (_jsxs(Text, { dimColor: true, children: ["  ", c, "/"] }, c))) })), filtered.map((s, i) => (_jsxs(Box, { children: [_jsxs(Text, { color: cursor === (showStartIn ? i + 1 : i) ? 'cyan' : undefined, bold: cursor === (showStartIn ? i + 1 : i), children: [cursor === (showStartIn ? i + 1 : i) ? '▸ ' : '  ', "[", agentShortBadge(normalizeAgentId(s.agentId)), "] ", path.basename(s.cwd)] }), _jsxs(Text, { dimColor: true, children: [" ", s.cwd, "  \u00B7  ", formatAge(s.startedAt)] })] }, s.cwd))), filtered.length === 0 && !showStartIn && query && (_jsxs(Text, { dimColor: true, children: ["  No matches for \"", query, "\""] })), _jsx(Text, { children: " " }), _jsx(Text, { dimColor: true, children: "\u2191\u2193 navigate \u00B7 a toggle agent \u00B7 type = filter or path (/,~,.) \u00B7 Tab complete \u00B7 Enter select \u00B7 Esc cancel" })] })] }));
 }
 //# sourceMappingURL=NewSession.js.map

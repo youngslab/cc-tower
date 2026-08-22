@@ -9,12 +9,10 @@ const _require = createRequire(import.meta.url);
 const { version: APP_VERSION } = _require('../../package.json');
 import { sessionIdentity } from '../core/session-store.js';
 import { useSessionStore } from './hooks/useSessionStore.js';
-import { tmux } from '../tmux/commands.js';
 import { Dashboard } from './Dashboard.js';
 import { DetailView } from './DetailView.js';
 import { SessionSearch } from './SessionSearch.js';
 import { ResumeSearch } from './ResumeSearch.js';
-import { resolveHostBySsh } from './host-resolve.js';
 import { NewSession } from './NewSession.js';
 import { writeAndExit, emitReady } from '../picker/protocol.js';
 import { agentWindowName, buildAgentCommand } from '../agents/commands.js';
@@ -144,18 +142,9 @@ export function App({ tower, pickerMode, outputPath, originPaneId }) {
             tower.store.update(identity, { favorite: false, favoritedAt: undefined });
         }
         try {
-            if (session.sshTarget) {
-                const hostConfig = tower.config.hosts.find(h => h.ssh === session.sshTarget);
-                const killCmd = `kill ${session.pid}`;
-                const cmd = hostConfig?.command_prefix
-                    ? `${hostConfig.command_prefix} sh -c '${killCmd}'`
-                    : killCmd;
-                const { spawn: sp } = await import('node:child_process');
-                sp('ssh', [session.sshTarget, cmd], { stdio: 'ignore', detached: true });
-            }
-            else {
-                process.kill(session.pid, 'SIGTERM');
-            }
+            if (session.sshTarget)
+                return;
+            process.kill(session.pid, 'SIGTERM');
         }
         catch { }
     }, [tower]);
@@ -182,79 +171,53 @@ export function App({ tower, pickerMode, outputPath, originPaneId }) {
             return;
         const { execa: ex } = await import('execa');
         const tmuxKey = tower.config.keys.close === 'Escape' ? 'Escape' : tower.config.keys.close;
-        if (session.sshTarget) {
-            // Remote: full-screen popup — tmux commands run on SSH host, NOT inside commandPrefix container
-            const paneSelect = `tmux list-panes -a -F '#{pane_id} #{session_name} #{window_index}' | grep '^${session.paneId} ' | head -1`;
-            const resumeSessionName = `claude-${session.projectName}`.replace(/[^a-zA-Z0-9_-]/g, '-');
-            const claudeResumeCmd = session.sessionId ? `claude --resume ${session.sessionId}` : 'claude';
-            const restartCmd = `tmux new-session -d -s ${resumeSessionName} -c ${session.cwd} '${claudeResumeCmd}' 2>/dev/null || true; ` +
-                `tmux bind-key -T root ${tmuxKey} detach-client && ` +
-                `TMUX= tmux attach -t ${resumeSessionName}; ` +
-                `tmux unbind-key -T root ${tmuxKey}`;
-            const setupCmd = `PINFO=\\$(${paneSelect}); ` +
-                `if [ -z "\\$PINFO" ]; then ${restartCmd}; else ` +
-                `SESS=\\$(echo \\$PINFO | awk '{print \\$2}'); WIDX=\\$(echo \\$PINFO | awk '{print \\$3}'); ` +
-                `GO=_popmux_go_\\$\\$; tmux kill-session -t \\$GO 2>/dev/null; ` +
-                `tmux new-session -d -s \\$GO -t \\$SESS && ` +
-                `tmux set-option -t \\$GO window-size largest 2>/dev/null; ` +
-                `tmux bind-key -T root ${tmuxKey} detach-client && ` +
-                `TMUX= tmux attach -t \\$GO \\\\; select-window -t :\\$WIDX; ` +
-                `tmux unbind-key -T root ${tmuxKey}; tmux kill-session -t \\$GO 2>/dev/null; fi`;
-            await tmux.displayPopup({
-                width: '100%',
-                height: '100%',
-                title: ` ⌁ ${session.host}:${session.projectName} | ${tmuxKey} to close `,
-                command: `ssh -t -o LogLevel=ERROR ${session.sshTarget} "${setupCmd}"`,
-                closeOnExit: true,
-            });
+        if (session.sshTarget)
+            return;
+        // Local: switch-client to target session/window
+        try {
+            const { stdout: homeInfo } = await ex('tmux', ['display-message', '-p', '#{session_name}:#{window_index}']);
+            const [homeSession, homeWindow] = homeInfo.trim().split(':');
+            const { stdout: targetInfo } = await ex('tmux', ['display-message', '-t', session.paneId, '-p', '#{session_name}:#{window_index}']);
+            const [targetSession, targetWindow] = targetInfo.trim().split(':');
+            // Bind close key in root table: switch back + auto-unbind (preserves custom shortcuts)
+            await ex('tmux', ['bind-key', '-T', 'root', tmuxKey,
+                'switch-client', '-t', `${homeSession}:${homeWindow}`,
+                ';', 'unbind-key', '-T', 'root', tmuxKey,
+            ]);
+            // Switch to target
+            await ex('tmux', ['switch-client', '-t', `${targetSession}:${targetWindow}`]);
         }
-        else {
-            // Local: switch-client to target session/window
+        catch {
+            // Pane is gone — restart in __popmux_playground with --resume
+            const agentId = normalizeAgentId(session.agentId);
+            const hiveSession = '__popmux_playground';
+            const windowName = agentWindowName(agentId, session.projectName);
+            const command = buildAgentCommand({
+                agentId,
+                cwd: session.cwd,
+                resumeId: session.resumeId ?? session.sessionId,
+                claudeArgs: tower.config.claude_args,
+            });
             try {
+                let sessionExists = false;
+                try {
+                    await ex('tmux', ['has-session', '-t', hiveSession]);
+                    sessionExists = true;
+                }
+                catch { }
+                const args = sessionExists
+                    ? ['new-window', '-t', hiveSession, '-n', windowName, '-c', session.cwd, '-P', '-F', '#{window_index}', command]
+                    : ['new-session', '-d', '-s', hiveSession, '-n', windowName, '-c', session.cwd, '-P', '-F', '#{window_index}', command];
+                const { stdout: windowIndex } = await ex('tmux', args);
                 const { stdout: homeInfo } = await ex('tmux', ['display-message', '-p', '#{session_name}:#{window_index}']);
                 const [homeSession, homeWindow] = homeInfo.trim().split(':');
-                const { stdout: targetInfo } = await ex('tmux', ['display-message', '-t', session.paneId, '-p', '#{session_name}:#{window_index}']);
-                const [targetSession, targetWindow] = targetInfo.trim().split(':');
-                // Bind close key in root table: switch back + auto-unbind (preserves custom shortcuts)
                 await ex('tmux', ['bind-key', '-T', 'root', tmuxKey,
                     'switch-client', '-t', `${homeSession}:${homeWindow}`,
                     ';', 'unbind-key', '-T', 'root', tmuxKey,
                 ]);
-                // Switch to target
-                await ex('tmux', ['switch-client', '-t', `${targetSession}:${targetWindow}`]);
+                await ex('tmux', ['switch-client', '-t', `${hiveSession}:${windowIndex.trim()}`]);
             }
-            catch {
-                // Pane is gone — restart in __popmux_playground with --resume
-                const agentId = normalizeAgentId(session.agentId);
-                const hiveSession = '__popmux_playground';
-                const windowName = agentWindowName(agentId, session.projectName);
-                const command = buildAgentCommand({
-                    agentId,
-                    cwd: session.cwd,
-                    resumeId: session.resumeId ?? session.sessionId,
-                    claudeArgs: tower.config.claude_args,
-                });
-                try {
-                    let sessionExists = false;
-                    try {
-                        await ex('tmux', ['has-session', '-t', hiveSession]);
-                        sessionExists = true;
-                    }
-                    catch { }
-                    const args = sessionExists
-                        ? ['new-window', '-t', hiveSession, '-n', windowName, '-c', session.cwd, '-P', '-F', '#{window_index}', command]
-                        : ['new-session', '-d', '-s', hiveSession, '-n', windowName, '-c', session.cwd, '-P', '-F', '#{window_index}', command];
-                    const { stdout: windowIndex } = await ex('tmux', args);
-                    const { stdout: homeInfo } = await ex('tmux', ['display-message', '-p', '#{session_name}:#{window_index}']);
-                    const [homeSession, homeWindow] = homeInfo.trim().split(':');
-                    await ex('tmux', ['bind-key', '-T', 'root', tmuxKey,
-                        'switch-client', '-t', `${homeSession}:${homeWindow}`,
-                        ';', 'unbind-key', '-T', 'root', tmuxKey,
-                    ]);
-                    await ex('tmux', ['switch-client', '-t', `${hiveSession}:${windowIndex.trim()}`]);
-                }
-                catch { }
-            }
+            catch { }
         }
     }, [tower]);
     const handleOpenNewSession = useCallback(() => {
@@ -263,45 +226,23 @@ export function App({ tower, pickerMode, outputPath, originPaneId }) {
     const getPastSessionsByTarget = useCallback((sshTarget) => {
         return tower.store.getPastSessionsByTarget(sshTarget);
     }, [tower]);
-    const handleNewSession = useCallback(async (projectPath, host, resumeSessionId, requestedAgent) => {
-        const agentId = host ? 'claude' : normalizeAgentId(requestedAgent);
+    const handleNewSession = useCallback(async (projectPath, _host, resumeSessionId, requestedAgent) => {
+        const agentId = normalizeAgentId(requestedAgent);
         if (pickerMode && outputPath) {
             writeAndExit(outputPath, {
                 action: 'new',
                 cwd: projectPath,
-                host: host?.name ?? 'local',
-                sshTarget: host?.ssh ?? null,
+                host: 'local',
+                sshTarget: null,
                 agentId,
                 resumeSessionId: resumeSessionId ?? null,
             });
         }
-        const closeKey = tower.config.keys.close === 'Escape' ? 'Escape' : tower.config.keys.close;
         const name = projectPath.split('/').pop() ?? projectPath;
         setView('dashboard');
         const { execa: ex } = await import('execa');
-        if (host) {
-            // Remote: SSH + tmux new-session in separate session
-            const sessionName = `claude-${name}`.replace(/[^a-zA-Z0-9_-]/g, '-');
-            const resumeArg = resumeSessionId ? ` --resume ${resumeSessionId}` : '';
-            const claudeArgs = (tower.config.claude_args ? ` ${tower.config.claude_args}` : '') + resumeArg;
-            const claudeCmd = host.commandPrefix
-                ? `${host.commandPrefix} sh -c 'cd ${projectPath} && claude${claudeArgs}'`
-                : `cd ${projectPath} && claude${claudeArgs}`;
-            const sshCmd = `ssh -t ${host.ssh} "tmux new-session -d -s ${sessionName} -c ${projectPath} '${claudeCmd.replace(/'/g, "'\\''")}'"`;
-            try {
-                await ex('sh', ['-c', sshCmd], { timeout: 10000 });
-                await tmux.displayPopup({
-                    width: '80%',
-                    height: '80%',
-                    title: ` ⌁ ${host.name}:${name} (new) | ${closeKey} to close `,
-                    command: `tmux bind-key -T popmux-nav ${closeKey} detach-client && ssh -t ${host.ssh} "tmux attach -t ${sessionName}" ; tmux unbind-key -T popmux-nav ${closeKey}`,
-                    closeOnExit: true,
-                });
-            }
-            catch { }
-        }
-        else {
-            // Local: add a window to the hive session (create hive if needed)
+        {
+            // Local: add a window to the hive session (create hive if needed).
             const hiveSession = '__popmux_playground';
             const windowName = agentWindowName(agentId, name);
             const command = buildAgentCommand({
@@ -338,17 +279,13 @@ export function App({ tower, pickerMode, outputPath, originPaneId }) {
         }
     }, [tower]);
     // Resurrect a dead/past session: launch a new tmux session running
-    // `claude --resume <id>` via the existing handleNewSession path.
+    // the selected agent with its resume id via the existing handleNewSession path.
     const handleResumeSelect = useCallback(async (past) => {
-        const host = resolveHostBySsh(tower.config.hosts, past.sshTarget);
-        if (past.sshTarget && !host) {
-            // Remote host no longer configured — silent no-op (no toast infra; B4).
-            setView('dashboard');
+        if (past.sshTarget)
             return;
-        }
         setView('dashboard');
-        await handleNewSession(past.cwd, host, past.resumeId ?? past.sessionId, past.agentId);
-    }, [tower, handleNewSession]);
+        await handleNewSession(past.cwd, undefined, past.resumeId ?? past.sessionId, past.agentId);
+    }, [handleNewSession]);
     const handleQuit = useCallback(async () => {
         if (pickerMode && outputPath) {
             writeAndExit(outputPath, { action: 'cancel' });
@@ -405,7 +342,7 @@ export function App({ tower, pickerMode, outputPath, originPaneId }) {
     const compactLogo = view === 'dashboard' && termHeight >= 20 && termHeight < 30;
     const LOGO_MARGIN_TOP = 1; // small gap so the logo isn't flush against the screen's top edge
     const headerHeight = bigLogo ? 7 : compactLogo ? 3 : 0; // logo/compact rows + top gap + 1 spacer row
-    return (_jsxs(Box, { width: termWidth, height: termHeight, flexDirection: "column", children: [bigLogo && (_jsxs(Box, { justifyContent: "flex-start", alignItems: "flex-end", marginTop: LOGO_MARGIN_TOP, marginBottom: 1, paddingX: contentPaddingX, children: [_jsxs(Box, { flexDirection: "column", children: [_jsx(Text, { color: "cyan", children: ' ██████╗  ██████╗ ████████╗' }), _jsx(Text, { color: "cyan", children: '██╔════╝ ██╔════╝ ╚══██╔══╝' }), _jsx(Text, { color: "cyan", children: '██║      ██║         ██║' }), _jsx(Text, { color: "cyan", children: '╚██████╗ ╚██████╗    ██║' }), _jsx(Text, { color: "cyan", children: ' ╚═════╝  ╚═════╝    ╚═╝' })] }), _jsxs(Box, { flexDirection: "column", justifyContent: "flex-end", marginLeft: 2, children: [_jsxs(Text, { dimColor: true, children: ["v", APP_VERSION] }), _jsxs(Text, { dimColor: true, children: [sessions.length, " sessions"] })] })] })), compactLogo && (_jsxs(Box, { justifyContent: "flex-start", alignItems: "center", marginTop: LOGO_MARGIN_TOP, marginBottom: 1, paddingX: contentPaddingX, children: [_jsx(Text, { color: "cyan", bold: true, children: "\u25C6 CCT" }), _jsxs(Text, { dimColor: true, children: [" v", APP_VERSION] }), _jsxs(Text, { dimColor: true, children: ["  ", sessions.length, " sessions"] })] })), _jsxs(Box, { flexDirection: "column", paddingX: contentPaddingX, width: termWidth, children: [view === 'dashboard' && (_jsx(Dashboard, { sessions: sessions, tmuxCount: tmuxCount, termWidth: termWidth, termHeight: termHeight, headerHeight: headerHeight, maxTaskWidth: Math.max(20, termWidth - 2 * contentPaddingX - 16), cursorIdentity: cursorIdentity, onCursorChange: setCursorIdentity, onSwapFavoriteOrder: handleSwapFavoriteOrder, onSelect: handleSelect, onOpenSearch: handleOpenSearch, onOpenResumeSearch: handleOpenResumeSearch, onToggleFavorite: handleToggleFavorite, onRefresh: handleRefresh, onKill: handleKill, onGo: handleGo, onNewSession: handleOpenNewSession, onQuit: handleQuit, pickerMode: pickerMode, initialDisplayOrder: tower.store.displayOrder, onDisplayOrderChange: (order) => { tower.store.displayOrder = order; } })), view === 'new-session' && (_jsx(NewSession, { hosts: tower.config.hosts.map(h => ({ name: h.name, ssh: h.ssh, commandPrefix: h.command_prefix })), onSelect: handleNewSession, onCancel: () => {
+    return (_jsxs(Box, { width: termWidth, height: termHeight, flexDirection: "column", children: [bigLogo && (_jsxs(Box, { justifyContent: "flex-start", alignItems: "flex-end", marginTop: LOGO_MARGIN_TOP, marginBottom: 1, paddingX: contentPaddingX, children: [_jsxs(Box, { flexDirection: "column", children: [_jsx(Text, { color: "cyan", children: ' ██████╗  ██████╗ ████████╗' }), _jsx(Text, { color: "cyan", children: '██╔════╝ ██╔════╝ ╚══██╔══╝' }), _jsx(Text, { color: "cyan", children: '██║      ██║         ██║' }), _jsx(Text, { color: "cyan", children: '╚██████╗ ╚██████╗    ██║' }), _jsx(Text, { color: "cyan", children: ' ╚═════╝  ╚═════╝    ╚═╝' })] }), _jsxs(Box, { flexDirection: "column", justifyContent: "flex-end", marginLeft: 2, children: [_jsxs(Text, { dimColor: true, children: ["v", APP_VERSION] }), _jsxs(Text, { dimColor: true, children: [sessions.length, " sessions"] })] })] })), compactLogo && (_jsxs(Box, { justifyContent: "flex-start", alignItems: "center", marginTop: LOGO_MARGIN_TOP, marginBottom: 1, paddingX: contentPaddingX, children: [_jsx(Text, { color: "cyan", bold: true, children: "\u25C6 CCT" }), _jsxs(Text, { dimColor: true, children: [" v", APP_VERSION] }), _jsxs(Text, { dimColor: true, children: ["  ", sessions.length, " sessions"] })] })), _jsxs(Box, { flexDirection: "column", paddingX: contentPaddingX, width: termWidth, children: [view === 'dashboard' && (_jsx(Dashboard, { sessions: sessions, tmuxCount: tmuxCount, termWidth: termWidth, termHeight: termHeight, headerHeight: headerHeight, maxTaskWidth: Math.max(20, termWidth - 2 * contentPaddingX - 16), cursorIdentity: cursorIdentity, onCursorChange: setCursorIdentity, onSwapFavoriteOrder: handleSwapFavoriteOrder, onSelect: handleSelect, onOpenSearch: handleOpenSearch, onOpenResumeSearch: handleOpenResumeSearch, onToggleFavorite: handleToggleFavorite, onRefresh: handleRefresh, onKill: handleKill, onGo: handleGo, onNewSession: handleOpenNewSession, onQuit: handleQuit, pickerMode: pickerMode, initialDisplayOrder: tower.store.displayOrder, onDisplayOrderChange: (order) => { tower.store.displayOrder = order; } })), view === 'new-session' && (_jsx(NewSession, { hosts: [], onSelect: handleNewSession, onCancel: () => {
                             if (pickerMode && outputPath) {
                                 writeAndExit(outputPath, { action: 'cancel' });
                             }
@@ -414,9 +351,9 @@ export function App({ tower, pickerMode, outputPath, originPaneId }) {
                             // All resumable sessions on disk (~/.claude/projects) merged with
                             // state.json metadata — not just the few popmux tracked live.
                             const all = tower.store.getAllResumableSessions(tower.scanner.getCached(), tower.scanner.isScanned());
-                            // Picker mode can't resurrect remote sessions (popmux spawn remote
-                            // is a B4 stub), so hide them where they'd dead-end.
-                            return pickerMode ? all.filter(s => !s.sshTarget) : all;
+                            // Remote sessions are disabled for the current MVP even if a
+                            // legacy state file or test fixture still contains sshTarget.
+                            return all.filter(s => !s.sshTarget);
                         }, generation: scanGen, scanning: resumeScanning, onSelect: handleResumeSelect, onCancel: () => setView('dashboard'), termHeight: termHeight }))] })] }));
 }
 //# sourceMappingURL=App.js.map

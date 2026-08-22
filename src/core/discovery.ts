@@ -2,7 +2,8 @@ import { EventEmitter } from 'node:events';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { logger } from '../utils/logger.js';
-import { agents, getAgentAdapter, listAgentAdapters } from '../agents/registry.js';
+import { getAgentAdapter, listAgentAdapters } from '../agents/registry.js';
+import type { AgentAdapter } from '../agents/adapter.js';
 import type { AgentId, LabelSource } from '../agents/types.js';
 
 export interface SessionInfo {
@@ -31,6 +32,7 @@ export class DiscoveryEngine extends EventEmitter {
   private interval: ReturnType<typeof setInterval> | null = null;
   private known: Map<number, SessionInfo> = new Map();
   private hookLocked: Set<number> = new Set(); // PIDs whose sessionId was corrected by hook — don't override from pid.json
+  private readonly primaryAdapter: AgentAdapter = getAgentAdapter('claude');
 
   constructor(private config: DiscoveryConfig) {
     super();
@@ -84,7 +86,7 @@ export class DiscoveryEngine extends EventEmitter {
 
     for (const file of jsonFiles) {
       const filePath = join(sessionsDir, file);
-      const info = await getAgentAdapter('claude').parseSessionFile!(filePath);
+      const info = await (this.primaryAdapter.parseSessionFile?.(filePath) ?? null);
       if (!info) continue; // malformed / sdk-cli / /tmp — agent already filtered + logged
 
       const alive = isPidAlive(info.pid);
@@ -165,7 +167,7 @@ export class DiscoveryEngine extends EventEmitter {
    * apply the same emit-and-track bookkeeping as the file-based path.
    */
   private async scanProcessesViaAgent(): Promise<SessionInfo[]> {
-    const detected = await (getAgentAdapter('claude').discoverLiveSessions?.({
+    const detected = await (this.primaryAdapter.discoverLiveSessions?.({
       claudeDir: this.config.claude_dir,
       usedSessionIdsByCwd: (cwd, pid) => new Set(
         Array.from(this.known.values())

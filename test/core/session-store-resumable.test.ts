@@ -75,11 +75,10 @@ describe('getAllResumableSessions', () => {
     expect(out[0]).toMatchObject({ sessionId: 'a', label: 'mylabel', goalSummary: 'the goal' });
   });
 
-  it('includes persisted-only sessions not on disk (e.g. remote)', () => {
+  it('excludes persisted-only remote sessions while remote support is disabled', () => {
     withPersisted({ r: { cwd: '/remote/p', startedAt: RECENT, label: 'remoteproj', sshTarget: 'me@host' } });
     const out = store.getAllResumableSessions([scan('a', '/p/a', 100)]);
-    const remote = out.find(s => s.sessionId === 'r');
-    expect(remote).toMatchObject({ cwd: '/remote/p', sshTarget: 'me@host', label: 'remoteproj' });
+    expect(out.map(s => s.sessionId)).not.toContain('r');
   });
 
   it('keeps the scanned cwd/startedAt as the disk source of truth', () => {
@@ -106,11 +105,10 @@ describe('getAllResumableSessions', () => {
     expect(out.map(s => s.sessionId)).not.toContain('local');
   });
 
-  it('scanComplete=true: still includes a persisted-only remote entry (sshTarget set) absent from scanned', () => {
+  it('scanComplete=true: still excludes a persisted-only remote entry (sshTarget set) absent from scanned', () => {
     withPersisted({ r: { cwd: '/remote/p', startedAt: RECENT, label: 'remoteproj', sshTarget: 'me@host' } });
     const out = store.getAllResumableSessions([scan('a', '/p/a', 100)], true);
-    const remote = out.find(s => s.sessionId === 'r');
-    expect(remote).toMatchObject({ cwd: '/remote/p', sshTarget: 'me@host', label: 'remoteproj' });
+    expect(out.map(s => s.sessionId)).not.toContain('r');
   });
 
   it('scanComplete=true: includes an entry whose sessionId is present in scanned', () => {

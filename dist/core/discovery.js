@@ -8,6 +8,7 @@ export class DiscoveryEngine extends EventEmitter {
     interval = null;
     known = new Map();
     hookLocked = new Set(); // PIDs whose sessionId was corrected by hook — don't override from pid.json
+    primaryAdapter = getAgentAdapter('claude');
     constructor(config) {
         super();
         this.config = config;
@@ -54,7 +55,7 @@ export class DiscoveryEngine extends EventEmitter {
         let active = [];
         for (const file of jsonFiles) {
             const filePath = join(sessionsDir, file);
-            const info = await getAgentAdapter('claude').parseSessionFile(filePath);
+            const info = await (this.primaryAdapter.parseSessionFile?.(filePath) ?? null);
             if (!info)
                 continue; // malformed / sdk-cli / /tmp — agent already filtered + logged
             const alive = isPidAlive(info.pid);
@@ -131,7 +132,7 @@ export class DiscoveryEngine extends EventEmitter {
      * apply the same emit-and-track bookkeeping as the file-based path.
      */
     async scanProcessesViaAgent() {
-        const detected = await (getAgentAdapter('claude').discoverLiveSessions?.({
+        const detected = await (this.primaryAdapter.discoverLiveSessions?.({
             claudeDir: this.config.claude_dir,
             usedSessionIdsByCwd: (cwd, pid) => new Set(Array.from(this.known.values())
                 .filter(s => s.cwd === cwd && s.pid !== pid)

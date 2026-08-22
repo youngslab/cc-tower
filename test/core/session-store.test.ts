@@ -136,8 +136,8 @@ describe('SessionStore', () => {
 
     const raw = await readFile(persistPath, 'utf8');
     const data = JSON.parse(raw) as { sessions: Record<string, { label?: string; tags?: string[] }> };
-    expect(data.sessions['session-abc-123']?.label).toBe('my-label');
-    expect(data.sessions['session-abc-123']?.tags).toEqual(['backend', 'api']);
+    expect(data.sessions['claude::session-abc-123']?.label).toBe('my-label');
+    expect(data.sessions['claude::session-abc-123']?.tags).toEqual(['backend', 'api']);
   }, 10000);
 
   it('restore merges label/tags back into registered sessions', async () => {
@@ -273,9 +273,10 @@ describe('SessionStore', () => {
     store.persistSync();
     const raw = require('node:fs').readFileSync(persistPath, 'utf8');
     const data = JSON.parse(raw);
-    expect(data.sessions['uuid-persist']).toBeDefined();
+    expect(data.sessions['claude::uuid-persist']).toBeDefined();
+    expect(data.sessions['uuid-persist']).toBeUndefined();
     expect(data.sessions['%7']).toBeUndefined();
-    expect(data.version).toBe(3);
+    expect(data.version).toBe(4);
   });
 
   // --- state.json v2 TTL eviction ---
@@ -364,7 +365,7 @@ describe('SessionStore', () => {
     expect(s?.label).toBeUndefined();
     expect(s?.goalSummary).toBeUndefined();
     // old sessionId meta is still in sessionMeta (archived)
-    expect((store as any).sessionMeta.has('old-uuid')).toBe(true);
+    expect((store as any).sessionMeta.has('claude::old-uuid')).toBe(true);
   });
 
   it('update() with mixed patch splits meta vs runtime fields correctly', () => {
@@ -442,8 +443,8 @@ describe('SessionStore', () => {
     // Historical session must still be in state.json
     const raw = require('node:fs').readFileSync(persistPath, 'utf8');
     const data = JSON.parse(raw);
-    expect(data.sessions['historical-uuid']).toBeDefined();
-    expect(data.sessions['historical-uuid'].label).toBe('historical');
+    expect(data.sessions['claude::historical-uuid']).toBeDefined();
+    expect(data.sessions['claude::historical-uuid'].label).toBe('historical');
   });
 
   it('persist duplicate resolution: live sessionMeta wins over persistedMeta', async () => {
@@ -465,7 +466,7 @@ describe('SessionStore', () => {
     const raw = require('node:fs').readFileSync(persistPath, 'utf8');
     const data = JSON.parse(raw);
     // Live label wins over old persisted label
-    expect(data.sessions['shared-uuid'].label).toBe('live-label');
+    expect(data.sessions['claude::shared-uuid'].label).toBe('live-label');
   });
 
   // --- getPastSessionsByCwd excludes active sessions by sessionId ---
@@ -607,9 +608,9 @@ describe('SessionStore', () => {
 
     // (a) sessionMeta[B] exists
     const meta = (store as any).sessionMeta as Map<string, any>;
-    expect(meta.has('B')).toBe(true);
+    expect(meta.has('claude::B')).toBe(true);
     // (b-e) all conv-scoped fields dropped on B
-    const newMeta = meta.get('B');
+    const newMeta = meta.get('claude::B');
     expect(newMeta.label).toBeUndefined();
     expect(newMeta.goalSummary).toBeUndefined();
     expect(newMeta.contextSummary).toBeUndefined();
@@ -617,7 +618,7 @@ describe('SessionStore', () => {
     // (h) tags preserved (identity-scoped within SessionMeta)
     expect(newMeta.tags).toEqual(['x']);
     // (k) old key removed (not merely emptied)
-    expect(meta.has('A')).toBe(false);
+    expect(meta.has('claude::A')).toBe(false);
   });
 
   it('I4b: after dropConversationScopedMeta + update({ sessionId }), no WARN about silent mutation', () => {
@@ -857,8 +858,31 @@ describe('SessionStore agent-aware persistence', () => {
     store.persistSync();
 
     const data = JSON.parse(await readFile(persistPath, 'utf8'));
-    expect(data.sessions['same-id']).toMatchObject({ agentId: 'claude', label: 'Claude label' });
+    expect(data.sessions['claude::same-id']).toMatchObject({ agentId: 'claude', label: 'Claude label' });
     expect(data.sessions['codex::same-id']).toMatchObject({ agentId: 'codex', label: 'Codex title', resumeId: 'same-id', resumable: true, labelSource: 'codex-title' });
+  });
+
+  it('migrates legacy unprefixed Claude session keys to v4 namespaced keys on persist', async () => {
+    const stateData = {
+      version: 3,
+      sessions: {
+        legacy: { cwd: '/repo', startedAt: Date.now(), label: 'legacy label' },
+      },
+    };
+    const { writeFile, mkdir } = await import('node:fs/promises');
+    const { dirname } = await import('node:path');
+    await mkdir(dirname(persistPath), { recursive: true });
+    await writeFile(persistPath, JSON.stringify(stateData), 'utf8');
+
+    const store = new SessionStore(persistPath);
+    store.restore();
+    expect(store.getPersistedEntry('legacy', 'claude')?.label).toBe('legacy label');
+
+    store.persistSync();
+    const data = JSON.parse(await readFile(persistPath, 'utf8'));
+    expect(data.version).toBe(4);
+    expect(data.sessions.legacy).toBeUndefined();
+    expect(data.sessions['claude::legacy']).toMatchObject({ agentId: 'claude', label: 'legacy label' });
   });
 
   it('can look up duplicate session ids by agent without crossing records', () => {

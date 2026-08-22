@@ -2,7 +2,6 @@ import React, { useState, useMemo, useCallback } from 'react';
 import { Box, Text, useInput } from 'ink';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { fuzzyMatch } from './fuzzy.js';
 import { agentLabel, agentShortBadge, normalizeAgentId, type AgentId } from '../agents/types.js';
 
@@ -31,48 +30,6 @@ interface Props {
   onSelect: (projectPath: string, host?: HostOption, resumeSessionId?: string, agentId?: AgentId) => void;
   onCancel: () => void;
   getPastSessionsByTarget: (sshTarget?: string) => PastSessionByCwd[];
-}
-
-function remoteListDirs(host: HostOption, dir: string): string[] {
-  try {
-    const cmd = `ls -1 -d ${dir}/*/ 2>/dev/null | xargs -I{} basename {}`;
-    const fullCmd = host.commandPrefix
-      ? `${host.commandPrefix} sh -c '${cmd.replace(/'/g, "'\\''")}'`
-      : cmd;
-    const out = execFileSync('ssh', [host.ssh, fullCmd], { timeout: 5000 }).toString();
-    return out.trim().split('\n').filter(Boolean).filter(n => !n.startsWith('.'));
-  } catch {}
-  return [];
-}
-
-function tabCompleteRemote(input: string, host: HostOption): string {
-  if (!input) return input;
-  const dir = input.endsWith('/') ? input.replace(/\/$/, '') : path.posix.dirname(input);
-  const prefix = input.endsWith('/') ? '' : path.posix.basename(input);
-  const entries = remoteListDirs(host, dir).filter(n => n.toLowerCase().startsWith(prefix.toLowerCase())).sort();
-
-  if (entries.length === 1) {
-    return `${dir}/${entries[0]!}/`;
-  } else if (entries.length > 1) {
-    let common = entries[0]!;
-    for (const e of entries) {
-      let i = 0;
-      while (i < common.length && i < e.length && common[i]!.toLowerCase() === e[i]!.toLowerCase()) i++;
-      common = common.slice(0, i);
-    }
-    if (common.length > prefix.length) return `${dir}/${common}`;
-  }
-  return input;
-}
-
-function listCompletionsRemote(input: string, host: HostOption): string[] {
-  if (!input) return [];
-  const dir = input.endsWith('/') ? input.replace(/\/$/, '') : path.posix.dirname(input);
-  const prefix = input.endsWith('/') ? '' : path.posix.basename(input);
-  return remoteListDirs(host, dir)
-    .filter(n => n.toLowerCase().startsWith(prefix.toLowerCase()))
-    .sort()
-    .slice(0, 8);
 }
 
 function tabComplete(input: string): string {
@@ -139,22 +96,14 @@ function expand(q: string): string {
   return q.startsWith('~') ? q.replace('~', process.env['HOME'] ?? '') : q;
 }
 
-export function NewSession({ hosts, onSelect, onCancel, getPastSessionsByTarget }: Props) {
+export function NewSession({ onSelect, onCancel, getPastSessionsByTarget }: Props) {
   const [cursor, setCursor] = useState(0);
   const [query, setQuery] = useState('');
-  const [mode, setMode] = useState<'host' | 'pick'>(() => hosts.length > 0 ? 'host' : 'pick');
-  const [selectedHost, setSelectedHost] = useState<HostOption | undefined>(undefined);
   const [selectedAgent, setSelectedAgent] = useState<AgentId>('claude');
 
-  // Host options: "local" + configured remote hosts
-  const hostOptions: Array<{ label: string; host?: HostOption }> = [
-    { label: 'local' },
-    ...hosts.map(h => ({ label: `⌁ ${h.name} (${h.ssh})`, host: h })),
-  ];
-
   const workspaces = useMemo(
-    () => getPastSessionsByTarget(selectedHost?.ssh),
-    [selectedHost, getPastSessionsByTarget],
+    () => getPastSessionsByTarget(undefined),
+    [getPastSessionsByTarget],
   );
 
   const filtered = useMemo(() => {
@@ -166,41 +115,23 @@ export function NewSession({ hosts, onSelect, onCancel, getPastSessionsByTarget 
 
   const completions = useMemo(() => {
     if (!showStartIn) return [];
-    return selectedHost ? listCompletionsRemote(query, selectedHost) : listCompletions(query);
-  }, [showStartIn, query, selectedHost]);
+    return listCompletions(query);
+  }, [showStartIn, query]);
 
   const rowCount = filtered.length + (showStartIn ? 1 : 0);
 
   const handlePathSelected = useCallback((projectPath: string) => {
-    onSelect(projectPath, selectedHost, undefined, selectedHost ? 'claude' : selectedAgent);
-  }, [onSelect, selectedHost, selectedAgent]);
+    onSelect(projectPath, undefined, undefined, selectedAgent);
+  }, [onSelect, selectedAgent]);
 
   useInput((input, key) => {
     if (key.escape) {
-      if (mode === 'pick' && query) { setQuery(''); setCursor(0); return; }
-      if (mode === 'pick') {
-        if (hosts.length > 0) { setMode('host'); setCursor(0); return; }
-        onCancel();
-        return;
-      }
+      if (query) { setQuery(''); setCursor(0); return; }
       onCancel();
       return;
     }
 
-    if (mode === 'host') {
-      if (key.upArrow || input === 'k') setCursor(c => Math.max(0, c - 1));
-      if (key.downArrow || input === 'j') setCursor(c => Math.min(hostOptions.length - 1, c + 1));
-      if (key.return) {
-        const chosen = hostOptions[cursor];
-        setSelectedHost(chosen?.host);
-        setMode('pick');
-        setCursor(0);
-      }
-      return;
-    }
-
-    // pick mode
-    if (input === 'a' && !selectedHost) {
+    if (input === 'a') {
       setSelectedAgent(a => a === 'claude' ? 'codex' : 'claude');
       return;
     }
@@ -208,7 +139,7 @@ export function NewSession({ hosts, onSelect, onCancel, getPastSessionsByTarget 
     if (key.downArrow) { setCursor(c => Math.min(rowCount - 1, c + 1)); return; }
     if (key.tab) {
       if (showStartIn) {
-        setQuery(selectedHost ? tabCompleteRemote(query, selectedHost) : tabComplete(query));
+        setQuery(tabComplete(query));
       }
       return;
     }
@@ -235,31 +166,13 @@ export function NewSession({ hosts, onSelect, onCancel, getPastSessionsByTarget 
   return (
     <Box flexDirection="column">
       <Text bold color="cyan">New AI Session</Text>
-
-      {mode === 'host' ? (
-        <>
-          <Text dimColor>Select target host</Text>
-          <Text> </Text>
-          {hostOptions.map((h, i) => (
-            <Box key={h.label}>
-              <Text color={i === cursor ? 'cyan' : undefined} bold={i === cursor}>
-                {i === cursor ? '▸ ' : '  '}{h.label}
-              </Text>
-            </Box>
-          ))}
-          <Text> </Text>
-          <Text dimColor>↑↓ navigate · Enter select · Esc cancel</Text>
-        </>
-      ) : (
-        <>
+      <>
           <Box>
             <Text dimColor>Path or filter: </Text>
             <Text color="cyan">{query || ''}</Text>
             {query ? <Text color="gray">▋</Text> : <Text dimColor> (type to filter or enter a path)</Text>}
           </Box>
-          {!selectedHost && (
-            <Text dimColor>Agent: {agentLabel(selectedAgent)} · press a to toggle</Text>
-          )}
+          <Text dimColor>Agent: {agentLabel(selectedAgent)} · press a to toggle</Text>
           <Text> </Text>
           {showStartIn && (
             <Box>
@@ -288,9 +201,8 @@ export function NewSession({ hosts, onSelect, onCancel, getPastSessionsByTarget 
             <Text dimColor>  No matches for "{query}"</Text>
           )}
           <Text> </Text>
-          <Text dimColor>↑↓ navigate · a toggle agent · type = filter or path (/,~,.) · Tab complete · Enter select · Esc back/cancel</Text>
-        </>
-      )}
+          <Text dimColor>↑↓ navigate · a toggle agent · type = filter or path (/,~,.) · Tab complete · Enter select · Esc cancel</Text>
+      </>
     </Box>
   );
 }

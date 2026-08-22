@@ -13,17 +13,12 @@ import { Summarizer } from './summarizer.js';
 import { Notifier } from './notifier.js';
 import { mapPidToPane } from '../tmux/pane-mapper.js';
 import { isHeadlessProcess, isPidAlive, getPpid } from '../utils/pid-resolver.js';
-import { cwdToSlug, cleanDisplayText, isInternalMessage } from '../utils/slug.js';
+import { cleanDisplayText, isInternalMessage } from '../utils/slug.js';
 import { getAgentAdapter } from '../agents/registry.js';
 import { normalizeAgentId } from '../agents/types.js';
 import { logger } from '../utils/logger.js';
 import { ConversationResolver } from './conversation-resolver.js';
 import { ConversationLedger } from './conversation-ledger.js';
-import { parseJsonlLine } from '../utils/jsonl-parser.js';
-import { ConnectionManager } from '../ssh/connection-manager.js';
-import { RemoteDiscovery } from '../ssh/remote-discovery.js';
-import { remoteReadJsonlTail, remoteListPanes } from '../ssh/remote-commands.js';
-import { sshExec } from '../ssh/exec.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -39,13 +34,9 @@ export class Tower extends EventEmitter {
     summarizer;
     notifier;
     stateMachines = new Map();
-    remoteStateMachines = new Map();
     hookSidToIdentity = new Map(); // CLAUDE_SESSION_ID → identity (paneId ?? String(pid))
     jsonlPaths = new Map(); // sessionId → jsonlPath
     stopping = false;
-    connectionManager;
-    remoteDiscovery = null;
-    remotePollers = new Map();
     readOnlyDrainTimer = null;
     paneTitleReconcileTimer = null;
     skipHooks;
@@ -54,6 +45,8 @@ export class Tower extends EventEmitter {
     readOnly;
     resolver;
     ledger;
+    claude = getAgentAdapter('claude');
+    codex = getAgentAdapter('codex');
     constructor(config, opts) {
         super();
         this.config = config ?? loadConfig();
@@ -249,8 +242,7 @@ export class Tower extends EventEmitter {
         });
         this.discovery.on('session-changed', async ({ prev, next }) => {
             const claudeDir = this.config.discovery.claude_dir.replace('~', os.homedir());
-            const slug = cwdToSlug(next.cwd);
-            const nextJsonl = path.join(claudeDir, 'projects', slug, `${next.sessionId}.jsonl`);
+            const nextJsonl = this.claudeArtifactPath(next.cwd, next.sessionId, { rootDir: claudeDir });
             const isResume = (() => { try {
                 return fs.statSync(nextJsonl).size > 0;
             }
@@ -313,93 +305,14 @@ export class Tower extends EventEmitter {
         }
         // 10. Start hidden LLM session (non-blocking, boots in background)
         if (!this.skipSummary) {
-            void getAgentAdapter('claude').startLlmSession?.();
+            void this.claude.startLlmSession?.();
         }
-        // 11. Setup SSH remote hosts (if configured)
+        // 11. Remote sessions are intentionally disabled for the current MVP.
+        // Keep config parsing and ssh helper modules around so remote can be
+        // reintroduced behind AgentAdapter capabilities later, but do not start
+        // tunnels, remote discovery, or remote JSONL polling.
         if (this.config.hosts.length > 0) {
-            this.connectionManager = new ConnectionManager();
-            const socketPath = `${process.env['XDG_RUNTIME_DIR'] ?? '/tmp'}/popmux.sock`;
-            // Start SSH tunnels for hooks:true hosts
-            for (const host of this.config.hosts) {
-                if (host.hooks) {
-                    const success = await this.connectionManager.startTunnel(host.name, host.ssh, socketPath, host.ssh_options);
-                    if (!success) {
-                        logger.warn('tower: SSH tunnel failed, falling back to JSONL polling', { host: host.name });
-                    }
-                }
-            }
-            this.connectionManager.startHealthCheck(socketPath);
-            // Start remote discovery
-            const remoteHosts = this.config.hosts.map(h => ({
-                name: h.name,
-                config: { sshTarget: h.ssh, sshOptions: h.ssh_options, claudeDir: h.claude_dir, commandPrefix: h.command_prefix },
-            }));
-            this.remoteDiscovery = new RemoteDiscovery(remoteHosts);
-            this.remoteDiscovery.on('session-found', async (info) => {
-                logger.info('tower: remote session found', { host: info.host, sessionId: info.sessionId });
-                await this.registerRemoteSession(info);
-            });
-            this.remoteDiscovery.on('session-lost', (info) => {
-                const key = `${info.host}::${info.sessionId}`;
-                logger.info('tower: remote session lost', { host: info.host, sessionId: info.sessionId });
-                this.deregisterSession(key);
-            });
-            this.remoteDiscovery.on('host-offline', (hostName) => {
-                // Mark all sessions from this host as offline
-                for (const session of this.store.getAll()) {
-                    if (session.host === hostName) {
-                        this.store.updateBySessionId(session.sessionId, { hostOnline: false });
-                    }
-                }
-            });
-            this.remoteDiscovery.on('host-online', (hostName) => {
-                for (const session of this.store.getAll()) {
-                    if (session.host === hostName) {
-                        this.store.updateBySessionId(session.sessionId, { hostOnline: true });
-                    }
-                }
-            });
-            // Pre-populate known so first scan emits session-lost for dead sessions
-            // (e.g. after server reboot — PIDs gone but session files persist on disk)
-            // Handles both new format (sshTarget persisted) and old format (key prefix only).
-            const restoredByKey = new Set();
-            for (const session of this.store.getRestoredRemoteSessions()) {
-                const rawSessionId = session.sessionId.includes('::')
-                    ? session.sessionId.split('::').slice(1).join('::')
-                    : session.sessionId;
-                this.remoteDiscovery.addKnown({
-                    pid: session.pid,
-                    sessionId: rawSessionId,
-                    cwd: session.cwd,
-                    startedAt: session.startedAt,
-                    host: session.host,
-                    sshTarget: session.sshTarget,
-                });
-                restoredByKey.add(session.sessionId);
-            }
-            // Fallback for old-format state.json: detect remote sessions by "hostName::" key prefix
-            const hostConfigMap = new Map(remoteHosts.map(h => [h.name, h.config]));
-            for (const key of this.store.getPersistedKeys()) {
-                if (restoredByKey.has(key))
-                    continue;
-                const sep = key.indexOf('::');
-                if (sep === -1)
-                    continue;
-                const hostName = key.slice(0, sep);
-                const rawSessionId = key.slice(sep + 2);
-                const hostConfig = hostConfigMap.get(hostName);
-                if (!hostConfig)
-                    continue;
-                this.remoteDiscovery.addKnown({
-                    pid: 0,
-                    sessionId: rawSessionId,
-                    cwd: '',
-                    startedAt: 0,
-                    host: hostName,
-                    sshTarget: hostConfig.sshTarget,
-                });
-            }
-            this.remoteDiscovery.start(5000);
+            logger.info('tower: remote hosts configured but ignored', { hosts: this.config.hosts.map(h => h.name) });
         }
         this.reconcilePaneTitles();
         this.paneTitleReconcileTimer = setInterval(() => {
@@ -413,10 +326,35 @@ export class Tower extends EventEmitter {
         this.paneTitleReconcileTimer.unref();
         logger.info('tower: started successfully', { sessions: this.store.getAll().length });
     }
+    claudeArtifactPath(cwd, sessionId, opts = {}) {
+        const rootDir = opts.rootDir ?? this.config.discovery.claude_dir.replace('~', os.homedir());
+        const buildPath = this.claude.sessionArtifactPath;
+        if (!buildPath)
+            throw new Error('Claude adapter does not implement sessionArtifactPath');
+        return buildPath({ rootDir, cwd, sessionId, remote: opts.remote });
+    }
+    claudeArtifactDir(cwd, opts = {}) {
+        const rootDir = opts.rootDir ?? this.config.discovery.claude_dir.replace('~', os.homedir());
+        const buildDir = this.claude.sessionArtifactDir;
+        if (!buildDir)
+            throw new Error('Claude adapter does not implement sessionArtifactDir');
+        return buildDir({ rootDir, cwd, remote: opts.remote });
+    }
+    claudeColdStartStatus(jsonlPath) {
+        return this.claude.coldStartStatus?.(jsonlPath) ?? 'idle';
+    }
+    readClaudeLastTask(jsonlPath) {
+        return this.claude.readLastTask?.(jsonlPath);
+    }
+    extractClaudeLabel(jsonlPath) {
+        return this.claude.extractLabel?.(jsonlPath);
+    }
+    isClaudeHeadlessSession(sessionsDir, pid) {
+        return this.claude.isHeadlessSession?.(sessionsDir, pid) ?? false;
+    }
     async rehydrateCodexFromProcess() {
         try {
-            const codex = getAgentAdapter('codex');
-            const sessions = await (codex.discoverLiveSessions?.() ?? []);
+            const sessions = await (this.codex.discoverLiveSessions?.() ?? []);
             for (const info of sessions) {
                 await this.registerSession(info);
             }
@@ -491,14 +429,18 @@ export class Tower extends EventEmitter {
                 continue;
             if (!entry.cwd)
                 continue;
+            // Remote sessions are no longer restored into the dashboard. Keep their
+            // persisted metadata on disk for a possible future remote adapter, but
+            // do not surface or poll them in the local-only runtime.
+            if (entry.host && entry.host !== 'local')
+                continue;
             const paneId = identity.startsWith('%') ? identity : undefined;
-            const isRemote = !!(entry.host && entry.host !== 'local');
-            // Skip local sessions that don't have a live tmux pane still running claude
+            // Skip sessions that don't have a live tmux pane still running claude
             // (covers: dead panes, legacy non-pane identities like '0', numeric PIDs,
             // and panes tmux has recycled for an unrelated shell/process)
-            if (!isRemote && !(paneId && claudePanes.has(paneId)))
+            if (!(paneId && claudePanes.has(paneId)))
                 continue;
-            const hasTmux = isRemote ? false : (paneId ? claudePanes.has(paneId) : false);
+            const hasTmux = paneId ? claudePanes.has(paneId) : false;
             const projectName = entry.cwd.split('/').filter(Boolean).pop() ?? entry.cwd;
             // Read /rename name from session file — look up by sessionId since pid may not be persisted
             let sessionFileName;
@@ -531,7 +473,7 @@ export class Tower extends EventEmitter {
                 }
                 // Resolve JSONL via ConversationResolver (handles /clear, worktree fallback, claim dedup)
                 if (entry.cwd) {
-                    const projectDir = path.join(claudeDir, 'projects', cwdToSlug(entry.cwd));
+                    const projectDir = this.claudeArtifactDir(entry.cwd, { rootDir: claudeDir });
                     const rehydrateResult = this.resolver.claim({
                         paneId,
                         pid: entry.pid ?? 0,
@@ -542,7 +484,7 @@ export class Tower extends EventEmitter {
                         persistedConversationId: inst.lastConversationId,
                     });
                     const jsonlPath = rehydrateResult.evidence.jsonlPath
-                        ?? path.join(projectDir, `${inst.lastConversationId ?? sessionId}.jsonl`);
+                        ?? this.claudeArtifactPath(entry.cwd, inst.lastConversationId ?? sessionId, { rootDir: claudeDir });
                     const usedConvId = path.basename(jsonlPath, '.jsonl');
                     rehydrateUsedConvId = usedConvId;
                     assignedConvIds.add(usedConvId);
@@ -552,7 +494,7 @@ export class Tower extends EventEmitter {
                     const labelConfident = (rehydrateResult.confidence === 'medium' || rehydrateResult.confidence === 'high')
                         && rehydrateResult.conversationId === usedConvId;
                     if (labelConfident) {
-                        sessionFileName = getAgentAdapter('claude').extractLabel(jsonlPath);
+                        sessionFileName = this.extractClaudeLabel(jsonlPath);
                     }
                     logger.debug('tower: rehydrate resolver', {
                         identity, convId: rehydrateResult.conversationId,
@@ -586,7 +528,7 @@ export class Tower extends EventEmitter {
             };
             try {
                 this.store.register(session, { chosenConversationId: rehydrateUsedConvId });
-                const task = this.readLastUserTask(sessionId, entry.cwd);
+                const task = this.readClaudeLastTask(this.claudeArtifactPath(entry.cwd, sessionId));
                 if (task)
                     this.store.update(sessionIdentity(session), { currentTask: task });
             }
@@ -646,7 +588,7 @@ export class Tower extends EventEmitter {
                 };
                 try {
                     this.store.register(session);
-                    const task = this.readLastUserTask(sid, cwd);
+                    const task = this.readClaudeLastTask(this.claudeArtifactPath(cwd, sid));
                     if (task)
                         this.store.update(sessionIdentity(session), { currentTask: task });
                     logger.info('tower: rehydrate discovered new session', { sid: sid.slice(0, 8), paneId, cwd });
@@ -657,29 +599,6 @@ export class Tower extends EventEmitter {
             }
             catch { }
         }
-    }
-    readLastUserTask(sessionId, cwd) {
-        try {
-            const claudeDir = this.config.discovery.claude_dir.replace('~', os.homedir());
-            const jsonlPath = path.join(claudeDir, 'projects', cwdToSlug(cwd), `${sessionId}.jsonl`);
-            if (!fs.existsSync(jsonlPath))
-                return undefined;
-            const size = fs.statSync(jsonlPath).size;
-            const readSize = Math.min(size, 32768);
-            const buf = Buffer.alloc(readSize);
-            const fd = fs.openSync(jsonlPath, 'r');
-            fs.readSync(fd, buf, 0, readSize, size - readSize);
-            fs.closeSync(fd);
-            const lines = buf.toString('utf8').split('\n').reverse();
-            for (const line of lines) {
-                const parsed = parseJsonlLine(line);
-                if (parsed?.type === 'user' && parsed.userContent) {
-                    return cleanDisplayText(parsed.userContent).slice(0, 80);
-                }
-            }
-        }
-        catch { }
-        return undefined;
     }
     findPaneForPid(claudePid, panePidMap) {
         let current = claudePid;
@@ -912,7 +831,7 @@ export class Tower extends EventEmitter {
         const identity = sessionIdentity(session);
         logger.info('tower: refreshSession called', { sessionId, host: session.host, sshTarget: session.sshTarget });
         // Clear UI immediately
-        getAgentAdapter('claude').clearSummaryCache?.(sessionId);
+        this.claude.clearSummaryCache?.(sessionId);
         this.store.updateMeta(identity, { goalSummary: undefined, contextSummary: undefined, nextSteps: undefined });
         this.store.update(identity, { summaryLoading: true });
         // Re-scan discovery to pick up any changes (new PID, session file changes)
@@ -938,39 +857,6 @@ export class Tower extends EventEmitter {
                 void this.refreshGoalSummary(newIdentity, jp);
                 void this.refreshContextSummary(newIdentity, jp);
                 void this.refreshNextSteps(newIdentity, jp);
-            }
-        }
-        else if (session.sshTarget) {
-            // Remote session — use SSH-based refresh
-            const hostConfig = this.config.hosts.find(h => h.name === session.host);
-            if (hostConfig) {
-                const remoteConfig = {
-                    sshTarget: hostConfig.ssh,
-                    sshOptions: hostConfig.ssh_options,
-                    claudeDir: hostConfig.claude_dir,
-                    commandPrefix: hostConfig.command_prefix,
-                };
-                // Re-check newest remote JSONL
-                let jp = this.jsonlPaths.get(sessionId) ?? '';
-                try {
-                    const claudeDir = hostConfig.claude_dir ?? '~/.claude';
-                    const slug = cwdToSlug(session.cwd);
-                    const lsOut = await sshExec(hostConfig.ssh, `ls -t ${claudeDir}/projects/${slug}/*.jsonl 2>/dev/null | head -1`, { sshOptions: hostConfig.ssh_options, commandPrefix: hostConfig.command_prefix, timeout: 5000 });
-                    const newest = lsOut.trim();
-                    if (newest) {
-                        jp = newest;
-                        this.jsonlPaths.set(sessionId, jp);
-                        logger.info('tower: remote refresh updated JSONL path', { sessionId, newPath: jp });
-                    }
-                }
-                catch { }
-                if (jp) {
-                    void this.refreshAllRemoteSummaries(sessionId, remoteConfig, jp);
-                }
-                else {
-                    this.store.update(sessionId, { summaryLoading: false });
-                    logger.info('tower: remote refresh skipped, no JSONL', { sessionId });
-                }
             }
         }
         else {
@@ -1035,7 +921,7 @@ export class Tower extends EventEmitter {
                 this.jsonlPaths.set(sessionId, jp);
                 this.jsonlWatcher.watch(sessionId, jp);
                 this.store.setInstanceConversationId(identity, newConvId);
-                const customTitle = getAgentAdapter('claude').extractLabel(jp);
+                const customTitle = this.extractClaudeLabel(jp);
                 if (customTitle)
                     this.store.updateMeta(identity, { label: customTitle });
             }
@@ -1067,7 +953,7 @@ export class Tower extends EventEmitter {
             }
             this.store.update(identity, { summaryLoading: true });
             logger.info('tower: calling LLM for all summaries', { identity });
-            const result = await getAgentAdapter('claude').generateAllSummaries(sessionId, earlyMessages ?? recentMessages, recentMessages);
+            const result = await this.claude.generateAllSummaries?.(sessionId, earlyMessages ?? recentMessages, recentMessages);
             if (result) {
                 if (result.goal)
                     this.store.updateMeta(identity, { goalSummary: result.goal });
@@ -1097,100 +983,6 @@ export class Tower extends EventEmitter {
     async refreshNextSteps(identity, jsonlPath) {
         return this.refreshAllSummaries(identity, jsonlPath);
     }
-    async refreshRemoteNextSteps(compositeId, config, jsonlPath) {
-        try {
-            const tail = await remoteReadJsonlTail(config, jsonlPath, 65536);
-            if (!tail || tail.length < 20)
-                return;
-            const lines = tail.split('\n').filter(l => l.trim());
-            const meaningful = [];
-            for (let i = lines.length - 1; i >= 0 && meaningful.length < 15; i--) {
-                const parsed = parseJsonlLine(lines[i]);
-                if (parsed && (parsed.type === 'user' || parsed.type === 'assistant')) {
-                    meaningful.unshift(lines[i]);
-                }
-            }
-            const recentText = meaningful.join('\n');
-            if (recentText.length < 20)
-                return;
-            const suggestion = await getAgentAdapter('claude').generateNextSteps(compositeId, recentText);
-            if (suggestion) {
-                logger.info('tower: remote next steps received', { compositeId, suggestion });
-                this.store.updateMeta(compositeId, { nextSteps: suggestion });
-            }
-        }
-        catch (err) {
-            logger.debug('tower: remote next steps error', { compositeId, error: String(err) });
-        }
-    }
-    /** Run all three remote summary refreshes concurrently, managing summaryLoading as a unit. */
-    async refreshAllRemoteSummaries(compositeId, config, jsonlPath) {
-        if (this.skipSummary)
-            return;
-        this.store.update(compositeId, { summaryLoading: true });
-        try {
-            await Promise.all([
-                this.refreshRemoteGoalSummary(compositeId, config, jsonlPath),
-                this.refreshRemoteContextSummary(compositeId, config, jsonlPath),
-                this.refreshRemoteNextSteps(compositeId, config, jsonlPath),
-            ]);
-        }
-        finally {
-            this.store.update(compositeId, { summaryLoading: false });
-        }
-    }
-    async refreshRemoteGoalSummary(compositeId, config, jsonlPath) {
-        try {
-            const tail = await remoteReadJsonlTail(config, jsonlPath, 65536);
-            if (!tail || tail.length < 20)
-                return;
-            const lines = tail.split('\n').filter(l => l.trim());
-            const meaningful = [];
-            for (let i = lines.length - 1; i >= 0 && meaningful.length < 15; i--) {
-                const parsed = parseJsonlLine(lines[i]);
-                if (parsed && (parsed.type === 'user' || parsed.type === 'assistant')) {
-                    meaningful.unshift(lines[i]);
-                }
-            }
-            const earlyText = meaningful.join('\n');
-            if (earlyText.length < 20)
-                return;
-            const summary = await getAgentAdapter('claude').generateGoalSummary(compositeId, earlyText);
-            if (summary) {
-                logger.info('tower: remote goal summary received', { compositeId, summary });
-                this.store.updateMeta(compositeId, { goalSummary: summary });
-            }
-        }
-        catch (err) {
-            logger.debug('tower: remote goal summary error', { compositeId, error: String(err) });
-        }
-    }
-    async refreshRemoteContextSummary(compositeId, config, jsonlPath) {
-        try {
-            const tail = await remoteReadJsonlTail(config, jsonlPath, 65536);
-            if (!tail || tail.length < 20)
-                return;
-            const lines = tail.split('\n').filter(l => l.trim());
-            const meaningful = [];
-            for (let i = lines.length - 1; i >= 0 && meaningful.length < 15; i--) {
-                const parsed = parseJsonlLine(lines[i]);
-                if (parsed && (parsed.type === 'user' || parsed.type === 'assistant')) {
-                    meaningful.unshift(lines[i]);
-                }
-            }
-            const recentText = meaningful.join('\n');
-            if (recentText.length < 20)
-                return;
-            const summary = await getAgentAdapter('claude').generateContextSummary(compositeId, recentText);
-            if (summary) {
-                logger.info('tower: remote context summary received', { compositeId, summary });
-                this.store.updateMeta(compositeId, { contextSummary: summary });
-            }
-        }
-        catch (err) {
-            logger.debug('tower: remote context summary error', { compositeId, error: String(err) });
-        }
-    }
     async stop() {
         this.stopping = true;
         this.releaseLock();
@@ -1204,15 +996,7 @@ export class Tower extends EventEmitter {
         this.store.persistSync();
         // Fire-and-forget: don't await these to avoid slow shutdown
         this.hookReceiver.stop().catch(() => { });
-        Promise.resolve(getAgentAdapter('claude').stopLlmSession?.()).catch(() => { });
-        // SSH cleanup
-        if (this.remoteDiscovery)
-            this.remoteDiscovery.stop();
-        if (this.connectionManager)
-            this.connectionManager.stopAll();
-        for (const [, timer] of this.remotePollers)
-            clearInterval(timer);
-        this.remotePollers.clear();
+        Promise.resolve(this.claude.stopLlmSession?.()).catch(() => { });
     }
     async registerSession(info, opts = {}) {
         const agentId = normalizeAgentId(info.agentId);
@@ -1241,8 +1025,7 @@ export class Tower extends EventEmitter {
         }
         // b. Compute JSONL path via ConversationResolver
         const claudeDir = this.config.discovery.claude_dir.replace('~', os.homedir());
-        const slug = cwdToSlug(info.cwd);
-        const projectDir = path.join(claudeDir, 'projects', slug);
+        const projectDir = this.claudeArtifactDir(info.cwd, { rootDir: claudeDir });
         const earlyIdentity = mapping.paneId ?? String(info.pid);
         const persistedConvId = this.store.getPersistedInstanceEntries()
             .find(([id]) => id === earlyIdentity)?.[1]?.lastConversationId;
@@ -1257,16 +1040,16 @@ export class Tower extends EventEmitter {
             persistedConversationId: persistedConvId,
         });
         let jsonlPath = resolveResult.evidence.jsonlPath
-            ?? path.join(projectDir, `${info.sessionId}.jsonl`);
+            ?? this.claudeArtifactPath(info.cwd, info.sessionId, { rootDir: claudeDir });
         logger.debug('tower: registerSession resolver', {
             sessionId: info.sessionId, convId: resolveResult.conversationId,
             confidence: resolveResult.confidence, reason: resolveResult.reason,
         });
         // c. Cold start: determine current state + last task from JSONL
         // skipColdStart (picker --no-cold-start) bypasses JSONL scans entirely.
-        const initialState = this.skipColdStart ? 'idle' : getAgentAdapter('claude').coldStartStatus(jsonlPath);
-        const lastTask = this.skipColdStart ? undefined : getAgentAdapter('claude').readLastTask(jsonlPath);
-        let customTitle = this.skipColdStart ? undefined : getAgentAdapter('claude').extractLabel(jsonlPath);
+        const initialState = this.skipColdStart ? 'idle' : this.claudeColdStartStatus(jsonlPath);
+        const lastTask = this.skipColdStart ? undefined : this.readClaudeLastTask(jsonlPath);
+        let customTitle = this.skipColdStart ? undefined : this.extractClaudeLabel(jsonlPath);
         // d. Determine detection mode
         const detectionMode = 'jsonl';
         // e. Register in store
@@ -1307,7 +1090,7 @@ export class Tower extends EventEmitter {
         // register() may have corrected sessionId via cache — update JSONL path if changed
         const registeredSession = this.store.get(sessionIdentity(session));
         if (registeredSession && registeredSession.sessionId !== info.sessionId) {
-            const correctedJsonl = path.join(projectDir, `${registeredSession.sessionId}.jsonl`);
+            const correctedJsonl = this.claudeArtifactPath(info.cwd, registeredSession.sessionId, { rootDir: claudeDir });
             if (fs.existsSync(correctedJsonl)) {
                 logger.info('tower: sessionId corrected by cache, switching JSONL', {
                     identity: sessionIdentity(session), old: info.sessionId.slice(0, 12), corrected: registeredSession.sessionId.slice(0, 12),
@@ -1315,7 +1098,7 @@ export class Tower extends EventEmitter {
                 jsonlPath = correctedJsonl;
                 info.sessionId = registeredSession.sessionId;
                 // Re-read cold start data from corrected JSONL
-                customTitle = getAgentAdapter('claude').extractLabel(jsonlPath);
+                customTitle = this.extractClaudeLabel(jsonlPath);
             }
         }
         // Apply custom title from JSONL (/rename) — always overwrite persisted label
@@ -1464,198 +1247,6 @@ export class Tower extends EventEmitter {
             labelSource: info.labelSource,
         });
     }
-    async registerRemoteSession(info) {
-        const compositeId = `${info.host}::${info.sessionId}`;
-        // Skip if already registered
-        if (this.store.get(compositeId))
-            return;
-        // Find host config
-        const hostConfig = this.config.hosts.find(h => h.name === info.host);
-        if (!hostConfig)
-            return;
-        const remoteConfig = {
-            sshTarget: hostConfig.ssh,
-            sshOptions: hostConfig.ssh_options,
-            claudeDir: hostConfig.claude_dir,
-            commandPrefix: hostConfig.command_prefix,
-        };
-        // Compute remote JSONL path (with fallback to latest file)
-        const claudeDir = hostConfig.claude_dir ?? '~/.claude';
-        const slug = cwdToSlug(info.cwd);
-        let jsonlPath = `${claudeDir}/projects/${slug}/${info.sessionId}.jsonl`;
-        // Fallback: find the most recently modified JSONL in the remote project dir
-        try {
-            const lsOut = await sshExec(hostConfig.ssh, `ls -t ${claudeDir}/projects/${slug}/*.jsonl 2>/dev/null | head -1`, { sshOptions: hostConfig.ssh_options, commandPrefix: hostConfig.command_prefix, timeout: 5000 });
-            const newest = lsOut.trim();
-            if (newest && newest !== jsonlPath) {
-                logger.debug('tower: remote using newest JSONL', { sessionId: info.sessionId, newest });
-                jsonlPath = newest;
-            }
-        }
-        catch { }
-        // Cold start: read remote JSONL tail for initial state
-        let initialState = 'idle';
-        let lastTask;
-        try {
-            const tail = await remoteReadJsonlTail(remoteConfig, jsonlPath);
-            // Parse the tail to determine state (reuse existing parsing logic)
-            const lines = tail.split('\n').filter(l => l.trim());
-            // Walk backwards like coldStartScan
-            for (let i = lines.length - 1; i >= 0; i--) {
-                const parsed = parseJsonlLine(lines[i]);
-                if (!parsed)
-                    continue;
-                if (parsed.type === 'system' && (parsed.systemSubtype === 'turn_duration' || parsed.systemSubtype === 'stop_hook_summary')) {
-                    initialState = 'idle';
-                    break;
-                }
-                if (parsed.type === 'assistant') {
-                    if (parsed.stopReason === 'end_turn') {
-                        initialState = 'idle';
-                        break;
-                    }
-                    if (parsed.stopReason === 'tool_use') {
-                        initialState = 'executing';
-                        break;
-                    }
-                    if (parsed.stopReason === null) {
-                        initialState = 'thinking';
-                        break;
-                    }
-                }
-            }
-            // Find last user task
-            for (let i = lines.length - 1; i >= 0; i--) {
-                const parsed = parseJsonlLine(lines[i]);
-                if (parsed?.type === 'user' && parsed.userContent) {
-                    const text = parsed.userContent.trim();
-                    if (!isInternalMessage(text)) {
-                        lastTask = cleanDisplayText(text).slice(0, 80);
-                        break;
-                    }
-                }
-            }
-        }
-        catch { }
-        // Find remote pane for this session's PID (single SSH call — walk ancestors)
-        let paneId;
-        try {
-            const panes = await remoteListPanes(remoteConfig);
-            const panePidSet = new Set(panes.map(p => p.pid));
-            // Walk up the process tree from claude PID until we hit a pane PID
-            const ancestryCmd = `P=${info.pid}; for i in 1 2 3 4 5; do P=$(ps -o ppid= -p $P 2>/dev/null | tr -d " "); [ -z "$P" ] || [ "$P" = "1" ] && break; echo $P; done`;
-            const ancestryOut = await sshExec(hostConfig.ssh, ancestryCmd, { sshOptions: hostConfig.ssh_options, commandPrefix: hostConfig.command_prefix, timeout: 5000 });
-            logger.info('tower: remote pane ancestry', { pid: info.pid, ancestry: ancestryOut.trim(), panePids: Array.from(panePidSet) });
-            for (const line of ancestryOut.trim().split('\n')) {
-                const ancestor = parseInt(line);
-                if (ancestor && panePidSet.has(ancestor)) {
-                    paneId = panes.find(p => p.pid === ancestor)?.paneId;
-                    break;
-                }
-            }
-        }
-        catch { }
-        const projectName = info.cwd.split('/').pop() ?? info.cwd;
-        const session = {
-            agentId: 'claude',
-            pid: info.pid,
-            sessionId: compositeId,
-            resumeId: info.sessionId,
-            resumable: true,
-            paneId,
-            hasTmux: true, // remote sessions are always in tmux; paneId may be undefined if detection failed
-            detectionMode: hostConfig.hooks ? 'hook' : 'jsonl',
-            cwd: info.cwd,
-            projectName,
-            status: initialState,
-            lastActivity: new Date(),
-            currentTask: lastTask,
-            startedAt: new Date(info.startedAt),
-            messageCount: 0,
-            toolCallCount: 0,
-            host: info.host,
-            sshTarget: info.sshTarget,
-            commandPrefix: hostConfig.command_prefix,
-            hostOnline: true,
-        };
-        this.store.register(session);
-        // Create state machine
-        const fsm = new SessionStateMachine(compositeId, initialState);
-        fsm.on('state-change', (change) => {
-            this.store.update(compositeId, {
-                status: change.to,
-                lastActivity: new Date(),
-            }, { statusEvent: true });
-            this.emit('state-change', change);
-            this.notifier.onStateChange(change);
-            // Trigger LLM summary refresh on idle transition
-            if (change.to === 'idle') {
-                void this.refreshAllRemoteSummaries(compositeId, remoteConfig, jsonlPath);
-            }
-        });
-        this.remoteStateMachines.set(compositeId, fsm);
-        // Initial summary for idle sessions — skip if already summarized (Tower restart)
-        if (initialState === 'idle') {
-            const existing = this.store.get(compositeId);
-            if (!existing?.goalSummary || !existing?.contextSummary) {
-                void this.refreshAllRemoteSummaries(compositeId, remoteConfig, jsonlPath);
-            }
-        }
-        // Store JSONL path for remote polling
-        this.jsonlPaths.set(compositeId, jsonlPath);
-        // Start remote JSONL polling for non-hook hosts
-        if (!hostConfig.hooks) {
-            this.startRemoteJsonlPoller(compositeId, remoteConfig, jsonlPath);
-        }
-        logger.info('tower: remote session registered', {
-            compositeId, host: info.host, state: initialState, paneId: paneId ?? 'none',
-        });
-    }
-    startRemoteJsonlPoller(compositeId, config, jsonlPath) {
-        const timer = setInterval(async () => {
-            if (this.stopping)
-                return;
-            const session = this.store.get(compositeId);
-            if (!session) {
-                clearInterval(timer);
-                return;
-            }
-            try {
-                const tail = await remoteReadJsonlTail(config, jsonlPath);
-                const lines = tail.split('\n').filter(l => l.trim());
-                const fsm = this.remoteStateMachines.get(compositeId);
-                if (!fsm)
-                    return;
-                // Find the most recent state-determining message
-                for (let i = lines.length - 1; i >= 0; i--) {
-                    const parsed = parseJsonlLine(lines[i]);
-                    if (!parsed)
-                        continue;
-                    // system turn_duration / stop_hook_summary / local_command → idle
-                    if (parsed.type === 'system' && (parsed.systemSubtype === 'turn_duration' || parsed.systemSubtype === 'stop_hook_summary' || parsed.systemSubtype === 'local_command')) {
-                        fsm.transition({ type: 'jsonl', stopReason: 'end_turn' });
-                        break;
-                    }
-                    // user message → thinking (Claude is about to respond)
-                    if (parsed.type === 'user' && parsed.userContent) {
-                        const text = parsed.userContent.trim();
-                        if (!isInternalMessage(text)) {
-                            this.store.update(compositeId, { currentTask: cleanDisplayText(text).slice(0, 80) });
-                        }
-                        fsm.transition({ type: 'jsonl', stopReason: null }); // thinking
-                        break;
-                    }
-                    // assistant message → determine state from stopReason
-                    if (parsed.type === 'assistant' && parsed.stopReason !== undefined) {
-                        fsm.transition({ type: 'jsonl', stopReason: parsed.stopReason });
-                        break;
-                    }
-                }
-            }
-            catch { }
-        }, 3000);
-        this.remotePollers.set(compositeId, timer);
-    }
     /** Immediate cleanup — no dead state, no 30s delay. Used for session migration (clear/resume). */
     cleanupSession(identity) {
         const session = this.store.get(identity);
@@ -1671,11 +1262,6 @@ export class Tower extends EventEmitter {
         this.jsonlPaths.delete(sessionId);
         this.jsonlWatcher.unwatch(sessionId);
         this.processMonitor.stopPolling(session.pid);
-        const remoteTimer = this.remotePollers.get(sessionId);
-        if (remoteTimer) {
-            clearInterval(remoteTimer);
-            this.remotePollers.delete(sessionId);
-        }
         this.resolver.release(identity);
         this.store.unregister(identity);
     }
@@ -1685,26 +1271,19 @@ export class Tower extends EventEmitter {
         if (!session)
             return;
         const identity = sessionIdentity(session);
-        // Clean up state machine (try local then remote)
-        const fsm = this.stateMachines.get(identity) ?? this.remoteStateMachines.get(sessionId);
+        // Clean up state machine
+        const fsm = this.stateMachines.get(identity);
         if (fsm) {
             fsm.transition({ type: 'session-end' });
             fsm.destroy();
             fsm.removeAllListeners();
             this.stateMachines.delete(identity);
-            this.remoteStateMachines.delete(sessionId);
         }
         // Clean up watchers
         this.jsonlWatcher.unwatch(sessionId);
         this.jsonlPaths.delete(sessionId);
         this.resolver.release(identity);
         this.processMonitor.stopPolling(session.pid);
-        // Clean up remote poller if any
-        const remoteTimer = this.remotePollers.get(sessionId);
-        if (remoteTimer) {
-            clearInterval(remoteTimer);
-            this.remotePollers.delete(sessionId);
-        }
         // Mark as dead, auto-remove after 30 seconds
         this.store.update(identity, { status: 'dead', currentActivity: 'Session ended' });
         setTimeout(() => {
@@ -1716,15 +1295,7 @@ export class Tower extends EventEmitter {
         const cached = this.hookSidToIdentity.get(hookSid);
         if (cached && this.stateMachines.has(cached))
             return { identity: cached, depth: 0 };
-        // 2. Composite key match: remoteStateMachines stores "host::bareId", hook sends bare id.
-        for (const key of this.remoteStateMachines.keys()) {
-            if (key.endsWith(`::${hookSid}`)) {
-                this.hookSidToIdentity.set(hookSid, key);
-                logger.debug('tower: hook sid matched via composite key', { hookSid, compositeId: key });
-                return { identity: key, depth: 0 };
-            }
-        }
-        // 2.5. Pane-based match: hook's TMUX_PANE directly matches session identity (paneId)
+        // 2. Pane-based match: hook's TMUX_PANE directly matches session identity (paneId)
         if (hookPane) {
             const session = this.store.get(hookPane);
             if (session && (session.status !== 'dead' || hookEvent === 'session-start')) {
@@ -1774,7 +1345,7 @@ export class Tower extends EventEmitter {
         // must not be attributed to the parent interactive session via PID ancestry.
         if (event.pid && event.pid > 0) {
             const sessionsDir = this.config.discovery.claude_dir.replace('~', os.homedir()) + '/sessions';
-            if (getAgentAdapter('claude').isHeadlessSession(sessionsDir, event.pid)) {
+            if (this.isClaudeHeadlessSession(sessionsDir, event.pid)) {
                 logger.debug('tower: ignoring hook event from headless session', { hookSid, pid: event.pid });
                 return;
             }
@@ -1811,7 +1382,6 @@ export class Tower extends EventEmitter {
                     identity, oldSessionId: session.sessionId, newSessionId: hookSid,
                 });
                 const claudeDir = this.config.discovery.claude_dir.replace('~', os.homedir());
-                const slug = cwdToSlug(session.cwd);
                 // Use resolver for JSONL selection (handles exact match + worktree fallback + same-CWD safety)
                 this.resolver.invalidateCache(session.cwd);
                 const staleSidResolve = this.resolver.claim({
@@ -1823,7 +1393,7 @@ export class Tower extends EventEmitter {
                     hookEvent: event.event,
                 });
                 let newJsonl = staleSidResolve.evidence.jsonlPath
-                    ?? path.join(claudeDir, 'projects', slug, `${hookSid}.jsonl`);
+                    ?? this.claudeArtifactPath(session.cwd, hookSid, { rootDir: claudeDir });
                 // favorite is now instance-level (not session-level), no migration needed
                 // Remove stale hookSid cache entry to prevent old sessionId re-matching
                 this.hookSidToIdentity.delete(session.sessionId);
@@ -1877,7 +1447,7 @@ export class Tower extends EventEmitter {
                     if (identity)
                         this.store.setInstanceConversationId(identity, path.basename(newJsonl, '.jsonl'));
                     // Read custom title from new JSONL
-                    const customTitle = getAgentAdapter('claude').extractLabel(newJsonl);
+                    const customTitle = this.extractClaudeLabel(newJsonl);
                     if (customTitle) {
                         this.store.updateMeta(identity, { label: customTitle });
                     }
@@ -1903,7 +1473,7 @@ export class Tower extends EventEmitter {
                                 this.jsonlWatcher.watch(hookSid, newJsonl);
                                 if (capturedIdentity)
                                     this.store.setInstanceConversationId(capturedIdentity, path.basename(newJsonl, '.jsonl'));
-                                const customTitle = getAgentAdapter('claude').extractLabel(newJsonl);
+                                const customTitle = this.extractClaudeLabel(newJsonl);
                                 if (customTitle) {
                                     this.store.updateMeta(capturedIdentity, { label: customTitle });
                                 }
@@ -1949,7 +1519,7 @@ export class Tower extends EventEmitter {
                 this.store.update(identity, patch);
             }
         }
-        const fsm = this.stateMachines.get(identity) ?? this.remoteStateMachines.get(identity);
+        const fsm = this.stateMachines.get(identity);
         if (!fsm)
             return;
         // Map hook event to FSM input
@@ -2058,13 +1628,11 @@ export class Tower extends EventEmitter {
         }
     }
     getStateMachine(sessionId) {
-        // Try identity lookup first, fallback to sessionId (remote composite key)
+        // Try identity lookup first, fallback to sessionId.
         const session = this.store.getBySessionId(sessionId);
-        if (session) {
-            const id = sessionIdentity(session);
-            return this.stateMachines.get(id) ?? this.remoteStateMachines.get(sessionId);
-        }
-        return this.stateMachines.get(sessionId) ?? this.remoteStateMachines.get(sessionId);
+        if (session)
+            return this.stateMachines.get(sessionIdentity(session));
+        return this.stateMachines.get(sessionId);
     }
 }
 //# sourceMappingURL=tower.js.map

@@ -402,8 +402,8 @@ describe('picker keys (ink-testing-library)', () => {
     unmount();
   });
 
-  // ── Test 8: non-picker resume search includes remote past sessions ────────
-  it('R resume search includes remote past sessions in non-picker mode', async () => {
+  // ── Test 8: remote past sessions are hidden in non-picker mode too ─────────
+  it('R resume search hides remote past sessions in non-picker mode', async () => {
     const localPast = { sessionId: 'past-local', cwd: '/home/me/projA', startedAt: 1, label: 'alphalocal' };
     const remotePast = { sessionId: 'past-remote', cwd: '/home/me/projR', startedAt: 2, label: 'betaremote', sshTarget: 'me@host' };
     const tower = makeMockTower([makeSession()], [localPast, remotePast]);
@@ -417,7 +417,7 @@ describe('picker keys (ink-testing-library)', () => {
     await settle();
     const frame = lastFrame()!;
     expect(frame).toContain('alphalocal');
-    expect(frame).toContain('betaremote'); // remote included in non-picker
+    expect(frame).not.toContain('betaremote'); // remote disabled in MVP
 
     unmount();
   });

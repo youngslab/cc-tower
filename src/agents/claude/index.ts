@@ -15,6 +15,7 @@ import {
   type SessionState,
 } from './status-inferer.js';
 import { extractLabel } from './label-matcher.js';
+import { projectArtifactsDir, sessionArtifactPath } from './artifacts.js';
 import {
   generateContextSummary,
   generateGoalSummary,
@@ -39,6 +40,10 @@ export const ClaudeAgent = {
 
   // label-matcher
   extractLabel,
+
+  // artifacts
+  projectArtifactsDir,
+  sessionArtifactPath,
 
   // summarizer
   generateContextSummary,

@@ -21,13 +21,9 @@ export declare class Tower extends EventEmitter {
     summarizer: Summarizer;
     notifier: Notifier;
     private stateMachines;
-    private remoteStateMachines;
     private hookSidToIdentity;
     private jsonlPaths;
     private stopping;
-    private connectionManager;
-    private remoteDiscovery;
-    private remotePollers;
     private readOnlyDrainTimer;
     private paneTitleReconcileTimer;
     private skipHooks;
@@ -36,6 +32,8 @@ export declare class Tower extends EventEmitter {
     private readOnly;
     private resolver;
     private ledger?;
+    private readonly claude;
+    private readonly codex;
     constructor(config?: Config, opts?: {
         skipHooks?: boolean;
         skipColdStart?: boolean;
@@ -47,6 +45,12 @@ export declare class Tower extends EventEmitter {
     private getTmuxSessionName;
     private releaseLock;
     start(): Promise<void>;
+    private claudeArtifactPath;
+    private claudeArtifactDir;
+    private claudeColdStartStatus;
+    private readClaudeLastTask;
+    private extractClaudeLabel;
+    private isClaudeHeadlessSession;
     private rehydrateCodexFromProcess;
     /**
      * Read-only hydration: re-create Session entries from persisted state.json
@@ -60,7 +64,6 @@ export declare class Tower extends EventEmitter {
      */
     private rehydrateFromState;
     private rehydrateNewSessions;
-    private readLastUserTask;
     private findPaneForPid;
     private drainEventQueue;
     /**
@@ -99,16 +102,9 @@ export declare class Tower extends EventEmitter {
     private refreshGoalSummary;
     private refreshContextSummary;
     private refreshNextSteps;
-    private refreshRemoteNextSteps;
-    /** Run all three remote summary refreshes concurrently, managing summaryLoading as a unit. */
-    private refreshAllRemoteSummaries;
-    private refreshRemoteGoalSummary;
-    private refreshRemoteContextSummary;
     stop(): Promise<void>;
     private registerSession;
     private registerCodexSession;
-    private registerRemoteSession;
-    private startRemoteJsonlPoller;
     /** Immediate cleanup — no dead state, no 30s delay. Used for session migration (clear/resume). */
     private cleanupSession;
     private deregisterSession;

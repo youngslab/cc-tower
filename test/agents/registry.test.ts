@@ -5,8 +5,8 @@ describe('agent adapter registry', () => {
   it('exposes Claude and Codex through the same adapter contract', () => {
     const ids = listAgentAdapters().map(a => a.id).sort();
     expect(ids).toEqual(['claude', 'codex']);
-    expect(getAgentAdapter('claude').capabilities).toMatchObject({ hooks: true, jsonl: true, sqlite: false });
-    expect(getAgentAdapter('codex').capabilities).toMatchObject({ hooks: false, jsonl: false, sqlite: true });
+    expect(getAgentAdapter('claude').capabilities).toMatchObject({ hooks: true, remote: false, jsonl: true, sqlite: false });
+    expect(getAgentAdapter('codex').capabilities).toMatchObject({ hooks: false, remote: false, jsonl: false, sqlite: true });
   });
 
   it('keeps command construction behind the adapter boundary', () => {
@@ -21,6 +21,12 @@ describe('agent adapter registry', () => {
     expect(getAgentAdapter('claude').inferPaneBusy('repo')).toBeUndefined();
     expect(getAgentAdapter('codex').inferPaneBusy('⠦ repo')).toBe(true);
     expect(getAgentAdapter('codex').inferPaneBusy('repo')).toBe(false);
+  });
+
+  it('keeps Claude artifact path construction behind the adapter boundary', () => {
+    expect(getAgentAdapter('claude').sessionArtifactPath?.({ rootDir: '/x/.claude', cwd: '/repo/app', sessionId: 'sid' }))
+      .toBe('/x/.claude/projects/-repo-app/sid.jsonl');
+    expect(getAgentAdapter('codex').sessionArtifactPath).toBeUndefined();
   });
 
   it('exposes Claude lifecycle hooks through the adapter', () => {

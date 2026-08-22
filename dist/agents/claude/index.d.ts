@@ -10,6 +10,7 @@
 import { parseSessionFile, scanProcesses, isHeadlessSession, type ClaudeSessionInfo } from './detector.js';
 import { coldStartScan, coldStartLastTask, coldStartCustomTitle, type SessionState } from './status-inferer.js';
 import { extractLabel } from './label-matcher.js';
+import { projectArtifactsDir, sessionArtifactPath } from './artifacts.js';
 import { generateContextSummary, generateGoalSummary, generateNextSteps, generateAllSummaries, clearSummaryCache, startLlmSession, stopLlmSession, getLlmSessionName } from './summarizer.js';
 export declare const ClaudeAgent: {
     readonly parseSessionFile: typeof parseSessionFile;
@@ -19,6 +20,8 @@ export declare const ClaudeAgent: {
     readonly coldStartLastTask: typeof coldStartLastTask;
     readonly coldStartCustomTitle: typeof coldStartCustomTitle;
     readonly extractLabel: typeof extractLabel;
+    readonly projectArtifactsDir: typeof projectArtifactsDir;
+    readonly sessionArtifactPath: typeof sessionArtifactPath;
     readonly generateContextSummary: typeof generateContextSummary;
     readonly generateGoalSummary: typeof generateGoalSummary;
     readonly generateNextSteps: typeof generateNextSteps;

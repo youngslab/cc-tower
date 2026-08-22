@@ -2,6 +2,15 @@ import type { AgentId, LabelSource } from './types.js';
 
 export type AgentStatus = 'idle' | 'thinking' | 'executing' | 'agent' | 'dead';
 
+export function normalizeTrailingArgs(args: string | undefined): string {
+  return args?.trim() ? ` ${args.trim()}` : '';
+}
+
+export function prefixedWindowName(prefix: AgentId, projectName: string): string {
+  const safeProject = projectName.replace(/[^a-zA-Z0-9_-]/g, '-');
+  return `${prefix}-${safeProject}`;
+}
+
 export interface AgentCommandInput {
   cwd: string;
   resumeId?: string;
@@ -22,6 +31,19 @@ export interface AgentSessionInfo {
   startedAt: number;
   host?: string;
   sshTarget?: string;
+}
+
+export interface AgentSessionArtifactPathInput {
+  rootDir: string;
+  cwd: string;
+  sessionId: string;
+  remote?: boolean;
+}
+
+export interface AgentSessionArtifactDirInput {
+  rootDir: string;
+  cwd: string;
+  remote?: boolean;
 }
 
 export interface AgentDiscoveryContext {
@@ -53,6 +75,8 @@ export interface AgentAdapter {
   buildCommand(input: AgentCommandInput): string;
   windowName(projectName: string): string;
   inferPaneBusy(title: string): boolean | undefined;
+  sessionArtifactPath?(input: AgentSessionArtifactPathInput): string;
+  sessionArtifactDir?(input: AgentSessionArtifactDirInput): string;
 
   discoverLiveSessions?(context?: AgentDiscoveryContext): Promise<AgentSessionInfo[]> | AgentSessionInfo[];
   parseSessionFile?(filePath: string): Promise<AgentSessionInfo | null> | AgentSessionInfo | null;

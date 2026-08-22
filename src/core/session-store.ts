@@ -101,7 +101,7 @@ interface PersistedInstance {
 }
 
 interface PersistFormat {
-  version?: number;  // 1 = legacy (no field), 2 = current, 3 = instance-level favorite + displayOrder
+  version?: number;  // 1 = legacy, 2 = TTL, 3 = instance-level favorite + displayOrder, 4 = namespaced session keys
   sessions: Record<string, PersistedEntry>;
   instances?: Record<string, PersistedInstance>;  // v3: keyed by identity (paneId)
   displayOrder?: string[];  // v3: ordered list of sessionIds for stable TUI ordering
@@ -113,12 +113,39 @@ export function sessionIdentity(s: { paneId?: string; pid: number }): string {
 
 export function sessionMetaKey(s: { agentId?: AgentId; sessionId: string }): string {
   const agentId = normalizeAgentId(s.agentId);
-  return agentId === 'claude' ? s.sessionId : `${agentId}::${s.sessionId}`;
+  return `${agentId}::${s.sessionId}`;
 }
 
 function decodePersistedSessionKey(key: string, entry: PersistedEntry): { agentId: AgentId; sessionId: string } {
+  if (key.startsWith('claude::')) return { agentId: 'claude', sessionId: key.slice('claude::'.length) };
   if (key.startsWith('codex::')) return { agentId: 'codex', sessionId: key.slice('codex::'.length) };
   return { agentId: normalizeAgentId(entry.agentId), sessionId: key };
+}
+
+function canonicalPersistedSessionKey(key: string, entry: PersistedEntry): string {
+  const decoded = decodePersistedSessionKey(key, entry);
+  return sessionMetaKey(decoded);
+}
+
+function legacyClaudeSessionKey(sessionId: string): string {
+  return sessionId;
+}
+
+function sessionMetaLookupKeys(s: { agentId?: AgentId; sessionId: string }): string[] {
+  const agentId = normalizeAgentId(s.agentId);
+  const keys = [sessionMetaKey({ agentId, sessionId: s.sessionId })];
+  if (agentId === 'claude') keys.push(legacyClaudeSessionKey(s.sessionId));
+  return keys;
+}
+
+function lookupRawSessionEntry(
+  sessions: Record<string, PersistedEntry>,
+  agentId: AgentId | undefined,
+  sessionId: string,
+): PersistedEntry | undefined {
+  const normalized = normalizeAgentId(agentId);
+  return sessions[sessionMetaKey({ agentId: normalized, sessionId })]
+    ?? (normalized === 'claude' ? sessions[legacyClaudeSessionKey(sessionId)] : undefined);
 }
 
 const META_FIELDS = new Set<string>(['label', 'tags', 'goalSummary', 'contextSummary', 'nextSteps']);
@@ -533,7 +560,7 @@ export class SessionStore extends EventEmitter {
   }
 
   private _buildPersistData(): PersistFormat {
-    const data: PersistFormat = { version: 3, sessions: {}, instances: {}, displayOrder: this._displayOrder };
+    const data: PersistFormat = { version: 4, sessions: {}, instances: {}, displayOrder: this._displayOrder };
     const liveSessionIds = new Set<string>();
     const now = Date.now();
     const INSTANCE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days (Claim E)
@@ -606,7 +633,8 @@ export class SessionStore extends EventEmitter {
       data.instances![identity] = instData;
     }
     for (const [sessionId, entry] of this.persistedMeta) {
-      if (!liveSessionIds.has(sessionId)) data.sessions[sessionId] = entry;
+      const key = canonicalPersistedSessionKey(sessionId, entry);
+      if (!liveSessionIds.has(key)) data.sessions[key] = entry;
     }
     for (const [identity, inst] of this.persistedInstances) {
       if (this.instances.has(identity)) continue;
@@ -626,10 +654,11 @@ export class SessionStore extends EventEmitter {
   /** Returns persisted sessions matching the given cwd, sorted by startedAt desc. */
   getPastSessionsByCwd(cwd: string): Array<{ agentId: AgentId; sessionId: string; resumeId?: string; resumable: boolean; startedAt: number; label?: string; labelSource?: LabelSource; goalSummary?: string; contextSummary?: string; nextSteps?: string }> {
     const result: Array<{ agentId: AgentId; sessionId: string; resumeId?: string; resumable: boolean; startedAt: number; label?: string; labelSource?: LabelSource; goalSummary?: string; contextSummary?: string; nextSteps?: string }> = [];
-    const activeIds = new Set(this.getAll().map(s => sessionMetaKey(s)));
+    const activeIds = new Set(this.getAll().flatMap(s => sessionMetaLookupKeys(s)));
     for (const [key, entry] of this.persistedMeta) {
       const decoded = decodePersistedSessionKey(key, entry);
       const resumable = entry.resumable ?? decoded.agentId === 'claude';
+      if (entry.sshTarget) continue;
       if (entry.cwd === cwd && resumable && !activeIds.has(key)) {
         result.push({
           agentId: decoded.agentId,
@@ -649,16 +678,18 @@ export class SessionStore extends EventEmitter {
   }
 
   /**
-   * Returns past sessions grouped by cwd (most recent per cwd) for the given host.
-   * sshTarget undefined = local sessions; sshTarget string = remote sessions for that target.
+   * Returns local past sessions grouped by cwd (most recent per cwd).
+   * Remote target lookups intentionally return empty while remote support is disabled.
    * Excludes currently active sessions.
    */
   getPastSessionsByTarget(sshTarget?: string): Array<{ agentId: AgentId; sessionId: string; resumeId?: string; resumable: boolean; cwd: string; startedAt: number; label?: string; labelSource?: LabelSource; goalSummary?: string; contextSummary?: string; sshTarget?: string }> {
-    const activeIds = new Set(this.getAll().map(s => sessionMetaKey(s)));
+    if (sshTarget) return [];
+    const activeIds = new Set(this.getAll().flatMap(s => sessionMetaLookupKeys(s)));
     const all: Array<{ agentId: AgentId; sessionId: string; resumeId?: string; resumable: boolean; cwd: string; startedAt: number; label?: string; labelSource?: LabelSource; goalSummary?: string; contextSummary?: string; sshTarget?: string }> = [];
     for (const [key, entry] of this.persistedMeta) {
       const decoded = decodePersistedSessionKey(key, entry);
       const resumable = entry.resumable ?? decoded.agentId === 'claude';
+      if (entry.sshTarget) continue;
       if (entry.sshTarget !== sshTarget) continue;
       if (!entry.cwd) continue;
       if (!resumable) continue;
@@ -676,21 +707,22 @@ export class SessionStore extends EventEmitter {
 
   /** Returns all past sessions across all hosts, sorted by most recent. */
   getAllPastSessions(): Array<{ agentId: AgentId; sessionId: string; resumeId?: string; resumable: boolean; cwd: string; startedAt: number; label?: string; labelSource?: LabelSource; goalSummary?: string; contextSummary?: string; sshTarget?: string }> {
-    const activeIds = new Set(this.getAll().map(s => sessionMetaKey(s)));
+    const activeIds = new Set(this.getAll().flatMap(s => sessionMetaLookupKeys(s)));
     const all: Array<{ agentId: AgentId; sessionId: string; resumeId?: string; resumable: boolean; cwd: string; startedAt: number; label?: string; labelSource?: LabelSource; goalSummary?: string; contextSummary?: string; sshTarget?: string }> = [];
     for (const [key, entry] of this.persistedMeta) {
       const decoded = decodePersistedSessionKey(key, entry);
       const resumable = entry.resumable ?? decoded.agentId === 'claude';
+      if (entry.sshTarget) continue;
       if (!entry.cwd) continue;
       if (!resumable) continue;
       if (activeIds.has(key)) continue;
       all.push({ agentId: decoded.agentId, sessionId: decoded.sessionId, resumeId: entry.resumeId ?? decoded.sessionId, resumable, cwd: entry.cwd, startedAt: entry.startedAt ?? 0, label: entry.label, labelSource: entry.labelSource, goalSummary: entry.goalSummary, contextSummary: entry.contextSummary, sshTarget: entry.sshTarget });
     }
     all.sort((a, b) => b.startedAt - a.startedAt);
-    // Deduplicate by (sshTarget, agentId, cwd) — keep most recent
+    // Deduplicate by (agentId, cwd) — keep most recent
     const seen = new Map<string, typeof all[0]>();
     for (const s of all) {
-      const key = `${s.sshTarget ?? ''}::${s.agentId}::${s.cwd}`;
+      const key = `${s.agentId}::${s.cwd}`;
       if (!seen.has(key)) seen.set(key, s);
     }
     return Array.from(seen.values());
@@ -723,12 +755,13 @@ export class SessionStore extends EventEmitter {
     for (const [key, entry] of this.persistedMeta) {
       const decoded = decodePersistedSessionKey(key, entry);
       const resumable = entry.resumable ?? decoded.agentId === 'claude';
+      if (entry.sshTarget) continue;
       if (!resumable) continue;
       const base = merged.get(key);
       // Once a full Claude disk scan has run, a persisted-only local Claude
-      // entry not found on disk is stale/deleted. Codex and remote entries
-      // cannot be confirmed by that scan, so they remain eligible.
-      if (scanComplete && decoded.agentId === 'claude' && !base && !entry.sshTarget) continue;
+      // entry not found on disk is stale/deleted. Codex entries cannot be
+      // confirmed by that scan, so they remain eligible.
+      if (scanComplete && decoded.agentId === 'claude' && !base) continue;
       const cwd = base?.cwd ?? entry.cwd;
       if (!cwd) continue;
       merged.set(key, {
@@ -746,7 +779,7 @@ export class SessionStore extends EventEmitter {
       });
     }
 
-    const activeIds = new Set(this.getAll().map(s => sessionMetaKey(s)));
+    const activeIds = new Set(this.getAll().flatMap(s => sessionMetaLookupKeys(s)));
     const out = Array.from(merged.entries())
       .filter(([key]) => !activeIds.has(key))
       .map(([, value]) => value);
@@ -758,7 +791,7 @@ export class SessionStore extends EventEmitter {
   deletePersistedSession(sessionId: string, agentId?: AgentId): void {
     const keys = agentId
       ? [sessionMetaKey({ agentId, sessionId })]
-      : [sessionId, `codex::${sessionId}`];
+      : [sessionId, `claude::${sessionId}`, `codex::${sessionId}`];
     for (const key of keys) this.persistedMeta.delete(key);
     try {
       const raw = readFileSync(this.persistPath, 'utf8');
@@ -768,34 +801,9 @@ export class SessionStore extends EventEmitter {
     } catch {}
   }
 
-  /** Returns all persisted session IDs (keys of persistedMeta). Used to detect remote sessions by key prefix. */
-  getPersistedKeys(): string[] {
-    return Array.from(this.persistedMeta.keys());
-  }
-
   /** Returns all persisted instance entries [identity/paneId, PersistedInstance]. Used by rehydrateFromState. */
   getPersistedInstanceEntries(): Array<[string, PersistedInstance]> {
     return Array.from(this.persistedInstances.entries());
-  }
-
-  /** Returns persisted remote sessions (new format with sshTarget) for pre-populating known map before first scan. */
-  getRestoredRemoteSessions(): Array<{ sessionId: string; pid: number; sshTarget: string; cwd: string; startedAt: number; host: string }> {
-    const result = [];
-    for (const [sessionId, entry] of this.persistedMeta) {
-      const decoded = decodePersistedSessionKey(sessionId, entry);
-      if (decoded.agentId !== 'claude') continue;
-      if (entry.sshTarget && entry.pid && entry.cwd && entry.host) {
-        result.push({
-          sessionId: decoded.sessionId,
-          pid: entry.pid,
-          sshTarget: entry.sshTarget,
-          cwd: entry.cwd,
-          startedAt: entry.startedAt ?? 0,
-          host: entry.host,
-        });
-      }
-    }
-    return result;
   }
 
   restore(): void {
@@ -820,7 +828,7 @@ export class SessionStore extends EventEmitter {
           logger.debug('session-store: evicting stale entry', { sessionId, age: Math.round((now - entry.startedAt) / 86400000) + 'd' });
           continue;
         }
-        this.persistedMeta.set(sessionId, entry);
+        this.persistedMeta.set(sessionMetaKey(decoded), entry);
       }
       // v3: Load instance-level data (favorite keyed by identity/paneId)
       const instances = (data as { instances?: Record<string, PersistedInstance> }).instances;
@@ -830,7 +838,7 @@ export class SessionStore extends EventEmitter {
           // Claim E: backfill lastSeenAt for older state.json that didn't write it.
           // Use startedAt of the matching session entry if available, else now (one-shot grace).
           if (inst.lastSeenAt === undefined) {
-            const sessEntry = inst.lastSessionId ? (data.sessions[inst.lastSessionId] ?? data.sessions[sessionMetaKey({ agentId: inst.agentId, sessionId: inst.lastSessionId })]) : undefined;
+            const sessEntry = inst.lastSessionId ? lookupRawSessionEntry(data.sessions, inst.agentId, inst.lastSessionId) : undefined;
             inst.lastSeenAt = sessEntry?.startedAt ?? now;
           }
           this.persistedInstances.set(identity, inst);
@@ -849,7 +857,8 @@ export class SessionStore extends EventEmitter {
   }
 
   getPersistedEntry(sessionId: string, agentId: AgentId = 'claude'): PersistedEntry | undefined {
-    return this.persistedMeta.get(sessionMetaKey({ agentId, sessionId })) ?? this.persistedMeta.get(sessionId);
+    return this.persistedMeta.get(sessionMetaKey({ agentId, sessionId }))
+      ?? (agentId === 'claude' ? this.persistedMeta.get(legacyClaudeSessionKey(sessionId)) : undefined);
   }
 
   get displayOrder(): string[] { return this._displayOrder; }
