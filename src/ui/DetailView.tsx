@@ -1,6 +1,7 @@
 import React from 'react';
 import { Box, Text, useInput } from 'ink';
 import { Session } from '../core/session-store.js';
+import { agentLabel } from '../agents/types.js';
 
 interface Props {
   session: Session;
@@ -34,6 +35,7 @@ export function DetailView({ session, onBack }: Props) {
       <Box marginTop={1} paddingX={2} flexDirection="column">
         <Text bold dimColor>── Instance ──</Text>
         <Text>  PID:      {session.pid}</Text>
+        <Text>  Agent:    {agentLabel(session.agentId)}</Text>
         <Text>  Pane:     {session.paneId ?? '—'}</Text>
         <Text>  Identity: {session.paneId ?? String(session.pid)}</Text>
         <Text>  Mode:     {session.detectionMode}</Text>
@@ -44,6 +46,8 @@ export function DetailView({ session, onBack }: Props) {
       <Box marginTop={1} paddingX={2} flexDirection="column">
         <Text bold dimColor>── Session ──</Text>
         <Text>  ID:      {session.sessionId}</Text>
+        <Text>  Resume:  {session.resumable === false ? 'not resumable' : (session.resumeId ?? session.sessionId)}</Text>
+        {session.labelSource && <Text>  Label:   {session.labelSource}</Text>}
         <Text>  Name:    {session.label ?? '(none)'}</Text>
         <Text>  Project: {session.cwd}</Text>
         <Text>  Host:    {session.host}{session.sshTarget ? ` (${session.sshTarget})` : ''}</Text>

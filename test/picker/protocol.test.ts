@@ -91,3 +91,41 @@ writeAndExit(${JSON.stringify(outputPath)}, { action: 'cancel' });
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
   }, 35_000);
 });
+
+describe('picker/protocol — agent routing', () => {
+  it('new payload can carry codex agentId and resume UUID', () => {
+    const payload: PickerAction = {
+      action: 'new',
+      cwd: '/repo',
+      host: 'local',
+      sshTarget: null,
+      agentId: 'codex',
+      resumeSessionId: '019f-codex-thread',
+    };
+    expect(JSON.parse(serialize(payload))).toEqual(payload);
+  });
+
+  it('popmux-go forwards picker send agentId into popmux send', () => {
+    const script = fs.readFileSync(path.resolve('bin/popmux-go'), 'utf8');
+    expect(script).toContain('AGENT=$(jq -r \'.agentId // "claude"\' <"$OUT")');
+    expect(script).toContain('"$POPMUX" send --agent "$AGENT" "$SID" "$MSG"');
+  });
+
+  it('popmux-go forwards picker new agentId into popmux spawn', () => {
+    const script = fs.readFileSync(path.resolve('bin/popmux-go'), 'utf8');
+    expect(script).toContain('AGENT=$(jq -r \'.agentId // "claude"\' <"$OUT")');
+    expect(script).toContain('SPAWN_ARGS=("--cwd" "$CWD" "--agent" "$AGENT")');
+    expect(script).toContain('"$POPMUX" spawn "${SPAWN_ARGS[@]}"');
+  });
+
+  it('popmux spawn uses shared agent command builder and argv-based tmux execution', () => {
+    const source = fs.readFileSync(path.resolve('src/index.tsx'), 'utf8');
+    expect(source).toContain('buildAgentCommand({');
+    expect(source).toContain('agentId,');
+    expect(source).toContain('resumeId: opts.resume,');
+    expect(source).toContain("claudeBin: agentId === 'claude' ? resolveClaudeBin() : undefined");
+    expect(source).toContain("const tmuxArgs = ['new-window', '-c', cwd, '-n', windowName, cmd]");
+    expect(source).toContain("spawnSync('tmux', tmuxArgs, { stdio: 'inherit' })");
+    expect(source).not.toContain('execSync(`tmux new-window');
+  });
+});

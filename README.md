@@ -5,7 +5,7 @@
 ## What is popmux?
 
 popmux is a popup-first picker for browsing and switching between AI
-coding agent sessions (currently Claude Code; codex/gemini support
+coding agent sessions (Claude Code and local Codex today; more agents
 planned) running in local and remote tmux servers. Press a key, see
 all your sessions, jump straight in.
 
@@ -73,7 +73,8 @@ Session discovery feeds state into the picker:
 
 ```
 Session Discovery
-    ├─ Local: PID scan + process CWD → project matching
+    ├─ Local Claude: PID scan + process CWD → project matching
+    ├─ Local Codex: process scan + read-only ~/.codex/state_*.sqlite title lookup
     └─ Remote: SSH polling (cat ~/.claude/sessions/*.json)
     ↓
 State Machine (Hook-Primary)
@@ -88,11 +89,15 @@ Picker / TUI Dashboard (Ink + React)
 
 ## Multi-agent
 
-popmux currently supports Claude Code only. The agent layer
-(`src/agents/`) is intentionally not behind an interface yet — the
-abstraction will be extracted when codex / gemini get their first
-implementation (2-instances rule). For now `agents.claude` is the
-only namespace.
+popmux shows Claude and local Codex sessions in one mixed dashboard.
+Rows include an agent badge (`[C]` for Claude, `[X]` for Codex), and
+the new-session flow lets local sessions toggle Claude/Codex before
+starting.
+
+Codex support is intentionally read-only for metadata: popmux reads
+Codex thread titles from `threads.title` in `~/.codex/state_*.sqlite`
+when available, but does not write Codex SQLite or rename Codex
+sessions. Remote Codex discovery/start is not part of the current MVP.
 
 ## Remote SSH sessions
 
@@ -133,7 +138,7 @@ both let you jump into Claude sessions; popmux differs in:
 
 - **Node.js 22+** with npm
 - **tmux 3.2+**
-- **Claude Code** (installed and configured)
+- **Claude Code** and/or **Codex CLI** (installed and configured)
 - **macOS/Linux** (tested on Linux; macOS support pending)
 
 Optional but recommended:
@@ -146,7 +151,8 @@ Optional but recommended:
 | `popmux` | Full TUI dashboard |
 | `popmux --picker --output <path>` | Picker mode (used by popmux-go) |
 | `popmux list [--json]` | Print sessions to stdout |
-| `popmux spawn --cwd <p> [--host <h>] [--ssh-target <t>] [--resume <id>]` | Spawn a new claude session |
+| `popmux send <session> <message>` | Send a message to a session |
+| `popmux spawn --agent claude\|codex --cwd <p> [--host <h>] [--ssh-target <t>] [--resume <id>]` | Spawn a new local Claude/Codex session |
 | `popmux mirror --host <h> --pane <p> --ssh-target <t>` | Manage remote mirror windows |
 | `popmux mirror --clean` / `--list` | Mirror maintenance |
 | `popmux migrate` | Migrate from `~/.config/cc-tower/` |

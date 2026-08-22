@@ -17,6 +17,8 @@ import { ResumeSearch } from './ResumeSearch.js';
 import { resolveHostBySsh } from './host-resolve.js';
 import { NewSession } from './NewSession.js';
 import { writeAndExit, emitReady } from '../picker/protocol.js';
+import { agentWindowName, buildAgentCommand } from '../agents/commands.js';
+import { normalizeAgentId } from '../agents/types.js';
 export function App({ tower, pickerMode, outputPath, originPaneId }) {
     const { exit } = useApp();
     const { sessions, tmuxCount } = useSessionStore(tower.store);
@@ -72,7 +74,7 @@ export function App({ tower, pickerMode, outputPath, originPaneId }) {
                 host: session.host ?? 'local',
                 cwd: session.cwd,
                 sshTarget: session.sshTarget ?? null,
-                agentId: 'claude',
+                agentId: normalizeAgentId(session.agentId),
             });
         }
         setSelectedSession(session);
@@ -173,7 +175,7 @@ export function App({ tower, pickerMode, outputPath, originPaneId }) {
                 host: session.host ?? 'local',
                 cwd: session.cwd,
                 sshTarget: session.sshTarget ?? null,
-                agentId: 'claude',
+                agentId: normalizeAgentId(session.agentId),
             });
         }
         if (!session.paneId)
@@ -223,10 +225,15 @@ export function App({ tower, pickerMode, outputPath, originPaneId }) {
             }
             catch {
                 // Pane is gone — restart in __popmux_playground with --resume
-                const resumeArg = session.sessionId ? ` --resume ${session.sessionId}` : '';
-                const claudeArgs = (tower.config.claude_args ? ` ${tower.config.claude_args}` : '') + resumeArg;
+                const agentId = normalizeAgentId(session.agentId);
                 const hiveSession = '__popmux_playground';
-                const windowName = session.projectName.replace(/[^a-zA-Z0-9_-]/g, '-');
+                const windowName = agentWindowName(agentId, session.projectName);
+                const command = buildAgentCommand({
+                    agentId,
+                    cwd: session.cwd,
+                    resumeId: session.resumeId ?? session.sessionId,
+                    claudeArgs: tower.config.claude_args,
+                });
                 try {
                     let sessionExists = false;
                     try {
@@ -235,8 +242,8 @@ export function App({ tower, pickerMode, outputPath, originPaneId }) {
                     }
                     catch { }
                     const args = sessionExists
-                        ? ['new-window', '-t', hiveSession, '-n', windowName, '-c', session.cwd, '-P', '-F', '#{window_index}', `claude${claudeArgs}`]
-                        : ['new-session', '-d', '-s', hiveSession, '-n', windowName, '-c', session.cwd, '-P', '-F', '#{window_index}', `claude${claudeArgs}`];
+                        ? ['new-window', '-t', hiveSession, '-n', windowName, '-c', session.cwd, '-P', '-F', '#{window_index}', command]
+                        : ['new-session', '-d', '-s', hiveSession, '-n', windowName, '-c', session.cwd, '-P', '-F', '#{window_index}', command];
                     const { stdout: windowIndex } = await ex('tmux', args);
                     const { stdout: homeInfo } = await ex('tmux', ['display-message', '-p', '#{session_name}:#{window_index}']);
                     const [homeSession, homeWindow] = homeInfo.trim().split(':');
@@ -256,26 +263,27 @@ export function App({ tower, pickerMode, outputPath, originPaneId }) {
     const getPastSessionsByTarget = useCallback((sshTarget) => {
         return tower.store.getPastSessionsByTarget(sshTarget);
     }, [tower]);
-    const handleNewSession = useCallback(async (projectPath, host, resumeSessionId) => {
+    const handleNewSession = useCallback(async (projectPath, host, resumeSessionId, requestedAgent) => {
+        const agentId = host ? 'claude' : normalizeAgentId(requestedAgent);
         if (pickerMode && outputPath) {
             writeAndExit(outputPath, {
                 action: 'new',
                 cwd: projectPath,
                 host: host?.name ?? 'local',
                 sshTarget: host?.ssh ?? null,
-                agentId: 'claude',
+                agentId,
                 resumeSessionId: resumeSessionId ?? null,
             });
         }
         const closeKey = tower.config.keys.close === 'Escape' ? 'Escape' : tower.config.keys.close;
         const name = projectPath.split('/').pop() ?? projectPath;
-        const resumeArg = resumeSessionId ? ` --resume ${resumeSessionId}` : '';
-        const claudeArgs = (tower.config.claude_args ? ` ${tower.config.claude_args}` : '') + resumeArg;
         setView('dashboard');
         const { execa: ex } = await import('execa');
         if (host) {
             // Remote: SSH + tmux new-session in separate session
             const sessionName = `claude-${name}`.replace(/[^a-zA-Z0-9_-]/g, '-');
+            const resumeArg = resumeSessionId ? ` --resume ${resumeSessionId}` : '';
+            const claudeArgs = (tower.config.claude_args ? ` ${tower.config.claude_args}` : '') + resumeArg;
             const claudeCmd = host.commandPrefix
                 ? `${host.commandPrefix} sh -c 'cd ${projectPath} && claude${claudeArgs}'`
                 : `cd ${projectPath} && claude${claudeArgs}`;
@@ -295,7 +303,13 @@ export function App({ tower, pickerMode, outputPath, originPaneId }) {
         else {
             // Local: add a window to the hive session (create hive if needed)
             const hiveSession = '__popmux_playground';
-            const windowName = name.replace(/[^a-zA-Z0-9_-]/g, '-');
+            const windowName = agentWindowName(agentId, name);
+            const command = buildAgentCommand({
+                agentId,
+                cwd: projectPath,
+                resumeId: resumeSessionId,
+                claudeArgs: tower.config.claude_args,
+            });
             try {
                 let sessionExists = false;
                 try {
@@ -307,14 +321,14 @@ export function App({ tower, pickerMode, outputPath, originPaneId }) {
                 if (!sessionExists) {
                     const { stdout } = await ex('tmux', [
                         'new-session', '-d', '-s', hiveSession, '-n', windowName, '-c', projectPath,
-                        '-P', '-F', '#{window_index}', `claude${claudeArgs}`,
+                        '-P', '-F', '#{window_index}', command,
                     ]);
                     windowIndex = stdout.trim();
                 }
                 else {
                     const { stdout } = await ex('tmux', [
                         'new-window', '-t', hiveSession, '-n', windowName, '-c', projectPath,
-                        '-P', '-F', '#{window_index}', `claude${claudeArgs}`,
+                        '-P', '-F', '#{window_index}', command,
                     ]);
                     windowIndex = stdout.trim();
                 }
@@ -333,7 +347,7 @@ export function App({ tower, pickerMode, outputPath, originPaneId }) {
             return;
         }
         setView('dashboard');
-        await handleNewSession(past.cwd, host, past.sessionId);
+        await handleNewSession(past.cwd, host, past.resumeId ?? past.sessionId, past.agentId);
     }, [tower, handleNewSession]);
     const handleQuit = useCallback(async () => {
         if (pickerMode && outputPath) {

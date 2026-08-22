@@ -39,6 +39,17 @@ vi.mock('../../src/ssh/remote-discovery.js', () => ({
 }));
 vi.mock('../../src/agents/registry.js', () => ({
   agents: { claude: { startLlmSession() {}, isHeadlessSession() { return false; }, clearSummaryCache() {} } },
+  getAgentAdapter(agentId: 'claude' | 'codex' | undefined) {
+    return {
+      inferPaneBusy(title: string) {
+        const glyph = title.trim().charAt(0);
+        if (agentId === 'codex') return glyph === '⠦' ? true : false;
+        if (['◐', '◓', '◑', '◒'].includes(glyph)) return true;
+        if (glyph === '✳') return false;
+        return undefined;
+      },
+    };
+  },
 }));
 
 import { Tower } from '../../src/core/tower.js';
@@ -144,5 +155,17 @@ describe('Tower.applyPaneTitles (pane-title reconciliation)', () => {
     tower.store.register(makeSession({ status: 'dead' }));
     (tower as any).applyPaneTitles(new Map([['%7', '◐ manager']]));
     expect(tower.store.get('%7')?.status).toBe('dead');
+  });
+
+  it('upgrades a Codex session when its pane title shows a braille spinner', () => {
+    tower.store.register(makeSession({ agentId: 'codex', status: 'idle' }));
+    (tower as any).applyPaneTitles(new Map([['%7', '⠦ cc-session']]));
+    expect(tower.store.get('%7')?.status).toBe('thinking');
+  });
+
+  it('downgrades a Codex session to idle when its pane title returns to plain text', () => {
+    tower.store.register(makeSession({ agentId: 'codex', status: 'thinking' }));
+    (tower as any).applyPaneTitles(new Map([['%7', 'cc-session']]));
+    expect(tower.store.get('%7')?.status).toBe('idle');
   });
 });

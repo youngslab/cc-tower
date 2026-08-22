@@ -3,6 +3,7 @@ import { Box, Text, useInput } from 'ink';
 import { basename } from 'node:path';
 import { PastSessionByCwd } from './NewSession.js';
 import { fuzzyMatch } from './fuzzy.js';
+import { agentShortBadge } from '../agents/types.js';
 
 interface Props {
   /** Getter; re-invoked whenever `generation` changes (the disk scan completes). */
@@ -100,7 +101,7 @@ export function ResumeSearch({ getSessions, generation = 0, scanning = false, on
     <Box flexDirection="column">
       <Box>
         <Text bold color="cyan">Resume past session </Text>
-        <Text dimColor>(claude --resume)</Text>
+        <Text dimColor>(Claude/Codex resume)</Text>
       </Box>
 
       <Box marginTop={1}>
@@ -127,7 +128,7 @@ export function ResumeSearch({ getSessions, generation = 0, scanning = false, on
           return (
             <Box key={s.sessionId}>
               <Text color={isCursor ? 'cyan' : undefined} bold={isCursor}>
-                {isCursor ? '▸ ' : '  '}{name}
+                {isCursor ? '▸ ' : '  '}[{agentShortBadge(s.agentId)}] {name}
               </Text>
               <Text dimColor> · {basename(s.cwd)} · {formatAge(s.startedAt)}</Text>
               {s.sshTarget && <Text dimColor>  (remote)</Text>}

@@ -1,8 +1,9 @@
+import type { AgentId } from '../agents/types.js';
 /**
- * Returns true if the pane title's leading glyph indicates Claude Code is
- * actively working, false if it indicates idle/waiting, or undefined if the
- * title doesn't start with a recognized Claude Code status glyph (not a
- * Claude pane, or a format we don't know about yet — callers should leave
- * the existing status untouched in that case).
+ * Backwards-compatible Claude pane-title helper.
+ *
+ * Agent-aware callers should use isPaneBusyForAgent() so Codex's braille
+ * spinner/plain-title behavior is interpreted correctly.
  */
 export declare function isPaneBusy(title: string): boolean | undefined;
+export declare function isPaneBusyForAgent(title: string, agentId: AgentId | undefined): boolean | undefined;

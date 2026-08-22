@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fuzzyMatch } from './fuzzy.js';
+import { agentLabel, agentShortBadge, normalizeAgentId, type AgentId } from '../agents/types.js';
 
 export interface HostOption {
   name: string;
@@ -12,10 +13,14 @@ export interface HostOption {
 }
 
 export interface PastSessionByCwd {
+  agentId?: AgentId;
   sessionId: string;
+  resumeId?: string;
+  resumable?: boolean;
   cwd: string;
   startedAt: number;
   label?: string;
+  labelSource?: string;
   goalSummary?: string;
   contextSummary?: string;
   sshTarget?: string;
@@ -23,7 +28,7 @@ export interface PastSessionByCwd {
 
 interface Props {
   hosts: HostOption[];
-  onSelect: (projectPath: string, host?: HostOption, resumeSessionId?: string) => void;
+  onSelect: (projectPath: string, host?: HostOption, resumeSessionId?: string, agentId?: AgentId) => void;
   onCancel: () => void;
   getPastSessionsByTarget: (sshTarget?: string) => PastSessionByCwd[];
 }
@@ -139,6 +144,7 @@ export function NewSession({ hosts, onSelect, onCancel, getPastSessionsByTarget 
   const [query, setQuery] = useState('');
   const [mode, setMode] = useState<'host' | 'pick'>(() => hosts.length > 0 ? 'host' : 'pick');
   const [selectedHost, setSelectedHost] = useState<HostOption | undefined>(undefined);
+  const [selectedAgent, setSelectedAgent] = useState<AgentId>('claude');
 
   // Host options: "local" + configured remote hosts
   const hostOptions: Array<{ label: string; host?: HostOption }> = [
@@ -166,8 +172,8 @@ export function NewSession({ hosts, onSelect, onCancel, getPastSessionsByTarget 
   const rowCount = filtered.length + (showStartIn ? 1 : 0);
 
   const handlePathSelected = useCallback((projectPath: string) => {
-    onSelect(projectPath, selectedHost);
-  }, [onSelect, selectedHost]);
+    onSelect(projectPath, selectedHost, undefined, selectedHost ? 'claude' : selectedAgent);
+  }, [onSelect, selectedHost, selectedAgent]);
 
   useInput((input, key) => {
     if (key.escape) {
@@ -194,6 +200,10 @@ export function NewSession({ hosts, onSelect, onCancel, getPastSessionsByTarget 
     }
 
     // pick mode
+    if (input === 'a' && !selectedHost) {
+      setSelectedAgent(a => a === 'claude' ? 'codex' : 'claude');
+      return;
+    }
     if (key.upArrow) { setCursor(c => Math.max(0, c - 1)); return; }
     if (key.downArrow) { setCursor(c => Math.min(rowCount - 1, c + 1)); return; }
     if (key.tab) {
@@ -224,7 +234,7 @@ export function NewSession({ hosts, onSelect, onCancel, getPastSessionsByTarget 
 
   return (
     <Box flexDirection="column">
-      <Text bold color="cyan">New Claude Session</Text>
+      <Text bold color="cyan">New AI Session</Text>
 
       {mode === 'host' ? (
         <>
@@ -247,6 +257,9 @@ export function NewSession({ hosts, onSelect, onCancel, getPastSessionsByTarget 
             <Text color="cyan">{query || ''}</Text>
             {query ? <Text color="gray">▋</Text> : <Text dimColor> (type to filter or enter a path)</Text>}
           </Box>
+          {!selectedHost && (
+            <Text dimColor>Agent: {agentLabel(selectedAgent)} · press a to toggle</Text>
+          )}
           <Text> </Text>
           {showStartIn && (
             <Box>
@@ -266,7 +279,7 @@ export function NewSession({ hosts, onSelect, onCancel, getPastSessionsByTarget 
           {filtered.map((s, i) => (
             <Box key={s.cwd}>
               <Text color={cursor === (showStartIn ? i + 1 : i) ? 'cyan' : undefined} bold={cursor === (showStartIn ? i + 1 : i)}>
-                {cursor === (showStartIn ? i + 1 : i) ? '▸ ' : '  '}{path.basename(s.cwd)}
+                {cursor === (showStartIn ? i + 1 : i) ? '▸ ' : '  '}[{agentShortBadge(normalizeAgentId(s.agentId))}] {path.basename(s.cwd)}
               </Text>
               <Text dimColor> {s.cwd}  ·  {formatAge(s.startedAt)}</Text>
             </Box>
@@ -275,7 +288,7 @@ export function NewSession({ hosts, onSelect, onCancel, getPastSessionsByTarget 
             <Text dimColor>  No matches for "{query}"</Text>
           )}
           <Text> </Text>
-          <Text dimColor>↑↓ navigate · type = filter or path (/,~,.) · Tab complete · Enter select · Esc back/cancel</Text>
+          <Text dimColor>↑↓ navigate · a toggle agent · type = filter or path (/,~,.) · Tab complete · Enter select · Esc back/cancel</Text>
         </>
       )}
     </Box>

@@ -1,7 +1,14 @@
 import { EventEmitter } from 'node:events';
+import type { AgentId, LabelSource } from '../agents/types.js';
 export interface SessionInfo {
+    agentId?: AgentId;
     pid: number;
     sessionId: string;
+    resumeId?: string;
+    resumable?: boolean;
+    label?: string;
+    labelSource?: LabelSource;
+    paneId?: string;
     cwd: string;
     startedAt: number;
     host?: string;
@@ -10,6 +17,8 @@ export interface SessionInfo {
 export interface DiscoveryConfig {
     scan_interval: number;
     claude_dir: string;
+    codex?: boolean;
+    agents?: AgentId[];
 }
 export declare class DiscoveryEngine extends EventEmitter {
     private config;
@@ -27,4 +36,5 @@ export declare class DiscoveryEngine extends EventEmitter {
      * apply the same emit-and-track bookkeeping as the file-based path.
      */
     private scanProcessesViaAgent;
+    private appendAgentSessions;
 }

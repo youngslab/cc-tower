@@ -53,7 +53,7 @@ function makeSession(overrides: Partial<Session> = {}): Session {
   } as Session;
 }
 
-type PastEntry = { sessionId: string; cwd: string; startedAt: number; label?: string; sshTarget?: string };
+type PastEntry = { agentId?: 'claude' | 'codex'; sessionId: string; resumeId?: string; resumable?: boolean; cwd: string; startedAt: number; label?: string; sshTarget?: string };
 
 function makeMockStore(sessions: Session[], pastSessions: PastEntry[] = []) {
   const ee = new EventEmitter();
@@ -132,6 +132,27 @@ describe('picker keys (ink-testing-library)', () => {
     expect(result.action).toBe('go');
     expect(result.paneId).toBe('%5');
     expect(result.sessionId).toBe('abc-123');
+    expect(result.agentId).toBe('claude');
+
+    unmount();
+  });
+
+  it('Enter on a Codex session preserves codex agentId in go JSON', async () => {
+    const session = makeSession({ agentId: 'codex', paneId: '%42', sessionId: 'codex-session' });
+    const tower = makeMockTower([session]);
+
+    const { stdin, unmount } = render(
+      <App tower={tower} pickerMode={true} outputPath={outputPath} />,
+    );
+
+    await settle();
+    stdin.write('\r');
+    await settle();
+
+    const result = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
+    expect(result.action).toBe('go');
+    expect(result.agentId).toBe('codex');
+    expect(result.sessionId).toBe('codex-session');
 
     unmount();
   });
@@ -332,6 +353,31 @@ describe('picker keys (ink-testing-library)', () => {
     expect(result.cwd).toBe('/home/me/projA');
     expect(result.host).toBe('local');
     expect(result.sshTarget).toBe(null);
+    expect(result.agentId).toBe('claude');
+
+    unmount();
+  });
+
+  it("R resume search preserves Codex past session agentId", async () => {
+    const codexPast = { agentId: 'codex' as const, sessionId: 'codex-past', resumeId: 'codex-resume', cwd: '/home/me/projX', startedAt: 1, label: 'codexalpha' };
+    const tower = makeMockTower([makeSession()], [codexPast]);
+
+    const { stdin, unmount } = render(
+      <App tower={tower} pickerMode={true} outputPath={outputPath} />,
+    );
+
+    await settle();
+    stdin.write('R');
+    await settle();
+    stdin.write('codexalpha');
+    await settle();
+    stdin.write('\r');
+    await settle(200);
+
+    const result = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
+    expect(result.action).toBe('new');
+    expect(result.agentId).toBe('codex');
+    expect(result.resumeSessionId).toBe('codex-resume');
 
     unmount();
   });

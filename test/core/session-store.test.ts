@@ -836,3 +836,60 @@ describe('SessionStore', () => {
     });
   });
 });
+
+describe('SessionStore agent-aware persistence', () => {
+  let tmpDir: string;
+  let persistPath: string;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'popmux-store-agent-'));
+    persistPath = join(tmpDir, 'state.json');
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('persists Claude and Codex entries with mixed-agent keys when session ids match', async () => {
+    const store = new SessionStore(persistPath);
+    store.register(makeSession({ agentId: 'claude', paneId: '%1', pid: 111, sessionId: 'same-id', label: 'Claude label' }));
+    store.register(makeSession({ agentId: 'codex', paneId: '%2', pid: 222, sessionId: 'same-id', resumeId: 'same-id', resumable: true, label: 'Codex title', labelSource: 'codex-title' }));
+    store.persistSync();
+
+    const data = JSON.parse(await readFile(persistPath, 'utf8'));
+    expect(data.sessions['same-id']).toMatchObject({ agentId: 'claude', label: 'Claude label' });
+    expect(data.sessions['codex::same-id']).toMatchObject({ agentId: 'codex', label: 'Codex title', resumeId: 'same-id', resumable: true, labelSource: 'codex-title' });
+  });
+
+  it('can look up duplicate session ids by agent without crossing records', () => {
+    const store = new SessionStore(persistPath);
+    store.register(makeSession({ agentId: 'claude', paneId: '%1', pid: 111, sessionId: 'same-id', label: 'Claude label' }));
+    store.register(makeSession({ agentId: 'codex', paneId: '%2', pid: 222, sessionId: 'same-id', label: 'Codex title' }));
+
+    expect(store.getBySessionId('same-id', 'claude')?.label).toBe('Claude label');
+    expect(store.getBySessionId('same-id', 'codex')?.label).toBe('Codex title');
+  });
+
+  it('restores legacy sessions as Claude and filters non-resumable Codex past sessions', async () => {
+    const stateData = {
+      version: 3,
+      sessions: {
+        legacy: { cwd: '/repo', startedAt: Date.now() - 20, label: 'legacy' },
+        'codex::live-only': { agentId: 'codex', cwd: '/repo', startedAt: Date.now() - 10, resumable: false, label: 'live only' },
+        'codex::stable': { agentId: 'codex', cwd: '/repo', startedAt: Date.now(), resumeId: 'stable', resumable: true, label: 'stable title' },
+      },
+    };
+    const { writeFile, mkdir } = await import('node:fs/promises');
+    const { dirname } = await import('node:path');
+    await mkdir(dirname(persistPath), { recursive: true });
+    await writeFile(persistPath, JSON.stringify(stateData), 'utf8');
+
+    const store = new SessionStore(persistPath);
+    store.restore();
+    const past = store.getPastSessionsByCwd('/repo');
+
+    expect(past.map(s => `${s.agentId}:${s.sessionId}`)).toEqual(['codex:stable', 'claude:legacy']);
+    expect(past.find(s => s.sessionId === 'stable')?.resumeId).toBe('stable');
+    expect(past.some(s => s.sessionId === 'live-only')).toBe(false);
+  });
+});

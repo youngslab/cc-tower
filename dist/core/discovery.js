@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { logger } from '../utils/logger.js';
-import { agents } from '../agents/registry.js';
+import { getAgentAdapter, listAgentAdapters } from '../agents/registry.js';
 export class DiscoveryEngine extends EventEmitter {
     config;
     interval = null;
@@ -43,18 +43,18 @@ export class DiscoveryEngine extends EventEmitter {
         }
         catch (err) {
             logger.debug('discovery: could not read sessions dir', { sessionsDir, err: String(err) });
-            return [];
         }
         const jsonFiles = files.filter((f) => f.endsWith('.json'));
         // If sessions dir is empty, fall back to process scanning via the
         // claude agent (Claude Code >= 2.1.77 stopped writing pid.json).
         if (jsonFiles.length === 0) {
-            return this.scanProcessesViaAgent();
+            const active = await this.scanProcessesViaAgent();
+            return this.appendAgentSessions(active);
         }
         let active = [];
         for (const file of jsonFiles) {
             const filePath = join(sessionsDir, file);
-            const info = await agents.claude.parseSessionFile(filePath);
+            const info = await getAgentAdapter('claude').parseSessionFile(filePath);
             if (!info)
                 continue; // malformed / sdk-cli / /tmp — agent already filtered + logged
             const alive = isPidAlive(info.pid);
@@ -68,9 +68,10 @@ export class DiscoveryEngine extends EventEmitter {
                 }
                 continue;
             }
+            const sessionInfo = { ...info, agentId: 'claude', resumable: true, resumeId: info.sessionId };
             if (!this.known.has(info.pid)) {
-                this.known.set(info.pid, info);
-                this.emit('session-found', info);
+                this.known.set(info.pid, sessionInfo);
+                this.emit('session-found', sessionInfo);
                 logger.debug('discovery: session-found', { pid: info.pid, sessionId: info.sessionId });
             }
             else {
@@ -83,18 +84,19 @@ export class DiscoveryEngine extends EventEmitter {
                         continue;
                     }
                     logger.debug('discovery: session-changed', { pid: info.pid, old: prev.sessionId, new: info.sessionId });
-                    this.known.set(info.pid, info);
-                    this.emit('session-changed', { prev, next: info });
+                    this.known.set(info.pid, sessionInfo);
+                    this.emit('session-changed', { prev, next: sessionInfo });
                 }
             }
-            active.push(info);
+            active.push(sessionInfo);
         }
         // Deduplicate: when multiple PIDs share the same sessionId (e.g., Claude Code reused
         // session file after /resume), keep only the most recently started PID as the session owner.
         // The older PID likely moved to a different session but its file wasn't updated.
         const bySessionId = new Map();
         for (const info of active) {
-            const existing = bySessionId.get(info.sessionId);
+            const dedupeKey = `${info.agentId ?? 'claude'}::${info.sessionId}`;
+            const existing = bySessionId.get(dedupeKey);
             if (!existing || info.startedAt > existing.startedAt || (info.startedAt === existing.startedAt && info.pid > existing.pid)) {
                 if (existing) {
                     this.hookLocked.delete(existing.pid);
@@ -102,7 +104,7 @@ export class DiscoveryEngine extends EventEmitter {
                         evictedPid: existing.pid, keptPid: info.pid, sessionId: info.sessionId,
                     });
                 }
-                bySessionId.set(info.sessionId, info);
+                bySessionId.set(dedupeKey, info);
             }
             else {
                 logger.debug('discovery: dedup — skipping PID with older startedAt', {
@@ -122,32 +124,59 @@ export class DiscoveryEngine extends EventEmitter {
                 }
             }
         }
-        return active;
+        return this.appendAgentSessions(active);
     }
     /**
      * Fallback path: ask the claude agent to scan running processes, then
      * apply the same emit-and-track bookkeeping as the file-based path.
      */
-    scanProcessesViaAgent() {
-        const detected = agents.claude.scanProcesses(this.config.claude_dir, (cwd, pid) => {
-            return new Set(Array.from(this.known.values())
+    async scanProcessesViaAgent() {
+        const detected = await (getAgentAdapter('claude').discoverLiveSessions?.({
+            claudeDir: this.config.claude_dir,
+            usedSessionIdsByCwd: (cwd, pid) => new Set(Array.from(this.known.values())
                 .filter(s => s.cwd === cwd && s.pid !== pid)
-                .map(s => s.sessionId));
-        });
+                .map(s => s.sessionId)),
+        }) ?? []);
         const active = [];
         for (const info of detected) {
+            const sessionInfo = { ...info, agentId: 'claude', resumable: true, resumeId: info.sessionId };
             if (!this.known.has(info.pid)) {
-                this.known.set(info.pid, info);
-                this.emit('session-found', info);
+                this.known.set(info.pid, sessionInfo);
+                this.emit('session-found', sessionInfo);
                 logger.debug('discovery: session-found (process scan)', { pid: info.pid, cwd: info.cwd });
             }
-            active.push(info);
+            active.push(sessionInfo);
         }
         // Check for dead processes
         for (const [pid, session] of this.known) {
             if (!active.find(s => s.pid === pid) && !isPidAlive(pid)) {
                 this.known.delete(pid);
                 this.emit('session-lost', session);
+            }
+        }
+        return active;
+    }
+    async appendAgentSessions(active) {
+        const enabled = new Set(this.config.agents ?? (this.config.codex ? ['codex'] : []));
+        if (enabled.size === 0)
+            return active;
+        for (const adapter of listAgentAdapters()) {
+            if (adapter.id === 'claude' || !enabled.has(adapter.id) || !adapter.discoverLiveSessions)
+                continue;
+            try {
+                const sessions = await adapter.discoverLiveSessions();
+                for (const info of sessions) {
+                    const sessionInfo = { ...info, agentId: adapter.id };
+                    if (!this.known.has(sessionInfo.pid)) {
+                        this.known.set(sessionInfo.pid, sessionInfo);
+                        this.emit('session-found', sessionInfo);
+                        logger.debug('discovery: session-found (agent process scan)', { agentId: adapter.id, pid: sessionInfo.pid, cwd: sessionInfo.cwd, sessionId: sessionInfo.sessionId });
+                    }
+                    active.push(sessionInfo);
+                }
+            }
+            catch (err) {
+                logger.debug('discovery: agent scan failed', { agentId: adapter.id, error: String(err) });
             }
         }
         return active;

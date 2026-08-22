@@ -29,6 +29,7 @@ export declare class Tower extends EventEmitter {
     private remoteDiscovery;
     private remotePollers;
     private readOnlyDrainTimer;
+    private paneTitleReconcileTimer;
     private skipHooks;
     private skipColdStart;
     private skipSummary;
@@ -46,6 +47,7 @@ export declare class Tower extends EventEmitter {
     private getTmuxSessionName;
     private releaseLock;
     start(): Promise<void>;
+    private rehydrateCodexFromProcess;
     /**
      * Read-only hydration: re-create Session entries from persisted state.json
      * without scanning processes, watching JSONLs, or triggering LLM summaries.
@@ -104,6 +106,7 @@ export declare class Tower extends EventEmitter {
     private refreshRemoteContextSummary;
     stop(): Promise<void>;
     private registerSession;
+    private registerCodexSession;
     private registerRemoteSession;
     private startRemoteJsonlPoller;
     /** Immediate cleanup — no dead state, no 30s delay. Used for session migration (clear/resume). */

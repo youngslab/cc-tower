@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { type AgentId, type LabelSource } from '../agents/types.js';
 import type { ScannedSession } from './session-scanner.js';
 export interface TurnSummary {
     timestamp: Date;
@@ -17,9 +18,13 @@ export interface TurnSummary {
     tier: 1 | 2 | 3;
 }
 export interface Instance {
+    agentId?: AgentId;
     pid: number;
     paneId?: string;
     sessionId: string;
+    resumeId?: string;
+    resumable?: boolean;
+    labelSource?: LabelSource;
     hasTmux: boolean;
     detectionMode: 'hook' | 'jsonl' | 'process';
     cwd: string;
@@ -54,8 +59,12 @@ export interface SessionMeta {
 }
 export type Session = Instance & SessionMeta;
 interface PersistedEntry {
+    agentId?: AgentId;
     label?: string;
+    labelSource?: LabelSource;
     tags?: string[];
+    resumeId?: string;
+    resumable?: boolean;
     favorite?: boolean;
     favoritedAt?: number;
     goalSummary?: string;
@@ -68,6 +77,7 @@ interface PersistedEntry {
     startedAt?: number;
 }
 interface PersistedInstance {
+    agentId?: AgentId;
     favorite?: boolean;
     favoritedAt?: number;
     favoriteSetAt?: number;
@@ -82,6 +92,10 @@ export declare function sessionIdentity(s: {
     paneId?: string;
     pid: number;
 }): string;
+export declare function sessionMetaKey(s: {
+    agentId?: AgentId;
+    sessionId: string;
+}): string;
 export declare class SessionStore extends EventEmitter {
     private persistPath;
     private instances;
@@ -95,7 +109,7 @@ export declare class SessionStore extends EventEmitter {
     getAll(): Session[];
     get(identity: string): Session | undefined;
     getByPid(pid: number): Session | undefined;
-    getBySessionId(sessionId: string): Session | undefined;
+    getBySessionId(sessionId: string, agentId?: AgentId): Session | undefined;
     rekey(oldIdentity: string, newIdentity: string): void;
     register(session: Session, opts?: {
         chosenConversationId?: string;
@@ -148,9 +162,13 @@ export declare class SessionStore extends EventEmitter {
     private _buildPersistData;
     /** Returns persisted sessions matching the given cwd, sorted by startedAt desc. */
     getPastSessionsByCwd(cwd: string): Array<{
+        agentId: AgentId;
         sessionId: string;
+        resumeId?: string;
+        resumable: boolean;
         startedAt: number;
         label?: string;
+        labelSource?: LabelSource;
         goalSummary?: string;
         contextSummary?: string;
         nextSteps?: string;
@@ -161,43 +179,54 @@ export declare class SessionStore extends EventEmitter {
      * Excludes currently active sessions.
      */
     getPastSessionsByTarget(sshTarget?: string): Array<{
+        agentId: AgentId;
         sessionId: string;
+        resumeId?: string;
+        resumable: boolean;
         cwd: string;
         startedAt: number;
         label?: string;
+        labelSource?: LabelSource;
         goalSummary?: string;
         contextSummary?: string;
         sshTarget?: string;
     }>;
     /** Returns all past sessions across all hosts, sorted by most recent. */
     getAllPastSessions(): Array<{
+        agentId: AgentId;
         sessionId: string;
+        resumeId?: string;
+        resumable: boolean;
         cwd: string;
         startedAt: number;
         label?: string;
+        labelSource?: LabelSource;
         goalSummary?: string;
         contextSummary?: string;
         sshTarget?: string;
     }>;
     /**
-     * Merge on-disk scanned sessions with state.json metadata for the resume picker.
-     * Union by sessionId: scanned (local disk) provides cwd/startedAt for the many
-     * sessions popmux never tracked; state.json wins for human metadata
-     * (label/goalSummary/contextSummary/sshTarget) and contributes persisted-only
-     * sessions not on local disk (e.g. remote). Currently-active sessions are
-     * excluded; result is sorted most-recent-first.
+     * Merge on-disk scanned Claude sessions with state.json metadata for the
+     * resume picker. Codex sessions are sourced from persisted state only because
+     * their metadata comes from the read-only Codex SQLite adapter, not Claude
+     * JSONL scans. Currently-active sessions are excluded; result is sorted
+     * most-recent-first.
      */
     getAllResumableSessions(scanned: ScannedSession[], scanComplete?: boolean): Array<{
+        agentId: AgentId;
         sessionId: string;
+        resumeId?: string;
+        resumable: boolean;
         cwd: string;
         startedAt: number;
         label?: string;
+        labelSource?: LabelSource;
         goalSummary?: string;
         contextSummary?: string;
         sshTarget?: string;
     }>;
     /** Removes a past session from persistedMeta and rewrites state.json immediately. */
-    deletePersistedSession(sessionId: string): void;
+    deletePersistedSession(sessionId: string, agentId?: AgentId): void;
     /** Returns all persisted session IDs (keys of persistedMeta). Used to detect remote sessions by key prefix. */
     getPersistedKeys(): string[];
     /** Returns all persisted instance entries [identity/paneId, PersistedInstance]. Used by rehydrateFromState. */
@@ -212,7 +241,7 @@ export declare class SessionStore extends EventEmitter {
         host: string;
     }>;
     restore(): void;
-    getPersistedEntry(sessionId: string): PersistedEntry | undefined;
+    getPersistedEntry(sessionId: string, agentId?: AgentId): PersistedEntry | undefined;
     get displayOrder(): string[];
     set displayOrder(order: string[]);
 }

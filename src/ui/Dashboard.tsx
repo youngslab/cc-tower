@@ -2,6 +2,7 @@ import React, { useState, useRef, useReducer, useEffect } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { Session } from '../core/session-store.js';
 import { EmptyState } from './EmptyState.js';
+import { agentShortBadge } from '../agents/types.js';
 
 interface Props {
   sessions: Session[];
@@ -237,6 +238,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, termWidth, termHe
 
         // Name = "label · workspace" when named, else just the workspace (no raw session id)
         const markers = (session.favorite ? '★ ' : '') + (session.sshTarget ? '⌁ ' : '');
+        const agent = agentShortBadge(session.agentId);
         const nameText = markers + (session.label ? `${session.label} · ${session.projectName}` : session.projectName);
         const summaryText = session.summaryLoading
           ? '⟳ summarizing...'
@@ -255,6 +257,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, termWidth, termHe
               <Text color={isCursor ? 'cyan' : undefined} bold={isCursor}>{isCursor ? '▸' : ' '}</Text>
               <Text color={isCursor ? 'cyan' : undefined} dimColor={!isCursor}> {pad(`${i + 1}`, 2)} </Text>
               <Text color={isCursor ? 'cyan' : color}>{icon} </Text>
+              <Text color={isCursor ? 'cyan' : 'gray'}>[{agent}] </Text>
               <Text color={isCursor ? 'cyan' : undefined} bold={isCursor} dimColor={!isCursor && isDim}>{truncate(nameText, maxTaskWidth)}</Text>
               {session.sshTarget && <Text dimColor>  (remote)</Text>}
               {session.needsAttention && <Text color={blinkOn ? 'red' : undefined} bold={blinkOn}> ⚠ 관심 필요</Text>}
@@ -317,6 +320,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, termWidth, termHe
             <Text color="cyan">◑</Text><Text dimColor> Agent  </Text>
             <Text color="white">○</Text><Text dimColor> Idle  </Text>
             <Text color="red">✕</Text><Text dimColor> Dead</Text>
+            <Text dimColor>  │  [C] Claude [X] Codex</Text>
           </Box>
           <Box>
             <Text dimColor>  j/k Nav · Enter Detail · g Go · / Search · R Resume · f Fav · n New · x Kill · q Quit</Text>

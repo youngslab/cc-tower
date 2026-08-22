@@ -15,8 +15,8 @@ export function EmptyState({ inTmux, hookInstalled }: Props) {
         </Box>
       )}
 
-      <Text>No active Claude Code sessions.</Text>
-      <Text dimColor>Sessions will be auto-detected when claude is running.</Text>
+      <Text>No active AI coding sessions.</Text>
+      <Text dimColor>Sessions will be auto-detected when Claude or local Codex is running.</Text>
 
       {!hookInstalled && (
         <Box marginTop={1}>

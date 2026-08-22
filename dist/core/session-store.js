@@ -5,8 +5,18 @@ import { dirname } from 'node:path';
 import { logger } from '../utils/logger.js';
 import { cwdToSlug } from '../utils/slug.js';
 import { computeNeedsAttention } from './queued-status.js';
+import { normalizeAgentId } from '../agents/types.js';
 export function sessionIdentity(s) {
     return s.paneId ?? String(s.pid);
+}
+export function sessionMetaKey(s) {
+    const agentId = normalizeAgentId(s.agentId);
+    return agentId === 'claude' ? s.sessionId : `${agentId}::${s.sessionId}`;
+}
+function decodePersistedSessionKey(key, entry) {
+    if (key.startsWith('codex::'))
+        return { agentId: 'codex', sessionId: key.slice('codex::'.length) };
+    return { agentId: normalizeAgentId(entry.agentId), sessionId: key };
 }
 const META_FIELDS = new Set(['label', 'tags', 'goalSummary', 'contextSummary', 'nextSteps']);
 export class SessionStore extends EventEmitter {
@@ -28,7 +38,7 @@ export class SessionStore extends EventEmitter {
     getAll() {
         const result = [];
         for (const instance of this.instances.values()) {
-            const meta = this.sessionMeta.get(instance.sessionId);
+            const meta = this.sessionMeta.get(sessionMetaKey(instance));
             result.push({ ...instance, ...(meta ?? {}) });
         }
         return result;
@@ -37,20 +47,20 @@ export class SessionStore extends EventEmitter {
         const instance = this.instances.get(identity);
         if (!instance)
             return undefined;
-        return { ...instance, ...(this.sessionMeta.get(instance.sessionId) ?? {}) };
+        return { ...instance, ...(this.sessionMeta.get(sessionMetaKey(instance)) ?? {}) };
     }
     getByPid(pid) {
         for (const instance of this.instances.values()) {
             if (instance.pid === pid) {
-                return { ...instance, ...(this.sessionMeta.get(instance.sessionId) ?? {}) };
+                return { ...instance, ...(this.sessionMeta.get(sessionMetaKey(instance)) ?? {}) };
             }
         }
         return undefined;
     }
-    getBySessionId(sessionId) {
+    getBySessionId(sessionId, agentId) {
         for (const instance of this.instances.values()) {
-            if (instance.sessionId === sessionId) {
-                return { ...instance, ...(this.sessionMeta.get(instance.sessionId) ?? {}) };
+            if (instance.sessionId === sessionId && (agentId === undefined || normalizeAgentId(instance.agentId) === normalizeAgentId(agentId))) {
+                return { ...instance, ...(this.sessionMeta.get(sessionMetaKey(instance)) ?? {}) };
             }
         }
         return undefined;
@@ -68,6 +78,11 @@ export class SessionStore extends EventEmitter {
         logger.debug('session-store: rekeyed session', { oldIdentity, newIdentity });
     }
     register(session, opts) {
+        session.agentId = normalizeAgentId(session.agentId);
+        if (session.resumable === undefined)
+            session.resumable = session.agentId === 'claude';
+        if (!session.resumeId && session.resumable)
+            session.resumeId = session.sessionId;
         // Skip duplicate registration (same PID already registered under a different identity)
         const existingByPid = Array.from(this.instances.values()).find(i => i.pid === session.pid && i.pid > 0);
         if (existingByPid) {
@@ -83,9 +98,10 @@ export class SessionStore extends EventEmitter {
             session.projectName = cwdToSlug(session.cwd);
         }
         // Merge persisted session metadata (label, tags, summaries) from previous run
-        const persisted = this.persistedMeta.get(session.sessionId);
+        let metaKey = sessionMetaKey(session);
+        const persisted = this.persistedMeta.get(metaKey) ?? (session.agentId === 'claude' ? this.persistedMeta.get(session.sessionId) : undefined);
         if (persisted) {
-            const existing = this.sessionMeta.get(session.sessionId) ?? {};
+            const existing = this.sessionMeta.get(metaKey) ?? {};
             const merged = { ...existing };
             if (persisted.label !== undefined && !merged.label)
                 merged.label = persisted.label;
@@ -97,7 +113,13 @@ export class SessionStore extends EventEmitter {
                 merged.contextSummary = persisted.contextSummary;
             if (persisted.nextSteps !== undefined && !merged.nextSteps)
                 merged.nextSteps = persisted.nextSteps;
-            this.sessionMeta.set(session.sessionId, merged);
+            this.sessionMeta.set(metaKey, merged);
+            if (!session.resumeId && persisted.resumeId)
+                session.resumeId = persisted.resumeId;
+            if (session.resumable === undefined && persisted.resumable !== undefined)
+                session.resumable = persisted.resumable;
+            if (!session.labelSource && persisted.labelSource)
+                session.labelSource = persisted.labelSource;
         }
         // Merge persisted instance data (favorite + cached sessionId) by identity
         const identity = sessionIdentity(session);
@@ -135,13 +157,16 @@ export class SessionStore extends EventEmitter {
                 const convMatchesCache = persistedInst.lastConversationId !== undefined
                     && chosenConversationId !== undefined
                     && persistedInst.lastConversationId === chosenConversationId;
-                const alreadyClaimed = Array.from(this.instances.values()).some(i => i.sessionId === persistedInst.lastSessionId);
+                const alreadyClaimed = Array.from(this.instances.values()).some(i => i.agentId === session.agentId && i.sessionId === persistedInst.lastSessionId);
                 if (!alreadyClaimed && convMatchesCache) {
                     logger.info('session-store: using cached sessionId (pid.json stale)', {
                         identity, stale: session.sessionId.slice(0, 12), cached: persistedInst.lastSessionId.slice(0, 12),
                         chosenConvId: chosenConversationId?.slice(0, 12),
                     });
                     session.sessionId = persistedInst.lastSessionId;
+                    if (session.agentId === 'claude' && session.resumable)
+                        session.resumeId = session.sessionId;
+                    metaKey = sessionMetaKey(session);
                 }
                 else {
                     logger.info('session-store: skipping cached sessionId override', {
@@ -172,8 +197,8 @@ export class SessionStore extends EventEmitter {
         if (session.nextSteps !== undefined)
             incomingMeta.nextSteps = session.nextSteps;
         if (Object.keys(incomingMeta).length > 0) {
-            const existing = this.sessionMeta.get(session.sessionId) ?? {};
-            this.sessionMeta.set(session.sessionId, { ...existing, ...incomingMeta });
+            const existing = this.sessionMeta.get(metaKey) ?? {};
+            this.sessionMeta.set(metaKey, { ...existing, ...incomingMeta });
         }
         this.instances.set(sessionIdentity(session), instancePart);
         this.emit('session-added', this.get(sessionIdentity(session)));
@@ -254,8 +279,9 @@ export class SessionStore extends EventEmitter {
             instance.favoriteSetAt = Date.now();
         }
         if (hasMeta) {
-            const existing = this.sessionMeta.get(instance.sessionId) ?? {};
-            this.sessionMeta.set(instance.sessionId, { ...existing, ...metaPatch });
+            const key = sessionMetaKey(instance);
+            const existing = this.sessionMeta.get(key) ?? {};
+            this.sessionMeta.set(key, { ...existing, ...metaPatch });
         }
         // Instance-only patches previously never persisted (meta-only condition below).
         // needsAttention/status/favorite must survive a process restart, so
@@ -275,8 +301,9 @@ export class SessionStore extends EventEmitter {
         const instance = this.instances.get(identity);
         if (!instance)
             return;
-        const existing = this.sessionMeta.get(instance.sessionId) ?? {};
-        this.sessionMeta.set(instance.sessionId, { ...existing, ...patch });
+        const key = sessionMetaKey(instance);
+        const existing = this.sessionMeta.get(key) ?? {};
+        this.sessionMeta.set(key, { ...existing, ...patch });
         // label changes must be visible to the next popup open immediately (no 2s debounce)
         if ('label' in patch) {
             this.persistSync();
@@ -293,11 +320,14 @@ export class SessionStore extends EventEmitter {
     reassociateMeta(oldSessionId, newSessionId) {
         if (oldSessionId === newSessionId)
             return;
-        const meta = this.sessionMeta.get(oldSessionId);
+        const agentId = 'claude';
+        const oldKey = sessionMetaKey({ agentId, sessionId: oldSessionId });
+        const newKey = sessionMetaKey({ agentId, sessionId: newSessionId });
+        const meta = this.sessionMeta.get(oldKey);
         if (!meta)
             return;
-        this.sessionMeta.set(newSessionId, meta);
-        this.sessionMeta.delete(oldSessionId);
+        this.sessionMeta.set(newKey, meta);
+        this.sessionMeta.delete(oldKey);
     }
     /**
      * Per Principle 3 of the cross-contamination RCA: when a conversation rotates
@@ -314,7 +344,9 @@ export class SessionStore extends EventEmitter {
         if (!instance)
             return null;
         const oldSid = instance.sessionId;
-        const meta = this.sessionMeta.get(oldSid);
+        const oldKey = sessionMetaKey(instance);
+        const newKey = sessionMetaKey({ agentId: instance.agentId, sessionId: newSessionId });
+        const meta = this.sessionMeta.get(oldKey);
         // Always set the marker so the next update({ sessionId }) does not warn,
         // even if there was no prior meta.
         this._dropExpected = identity;
@@ -333,8 +365,8 @@ export class SessionStore extends EventEmitter {
             droppedKeys.push('contextSummary');
         if (meta.nextSteps !== undefined)
             droppedKeys.push('nextSteps');
-        this.sessionMeta.set(newSessionId, identityScoped);
-        this.sessionMeta.delete(oldSid);
+        this.sessionMeta.set(newKey, identityScoped);
+        this.sessionMeta.delete(oldKey);
         logger.debug('session-store: dropped conversation-scoped meta', { identity, oldSid: oldSid.slice(0, 12), newSid: newSessionId.slice(0, 12), droppedKeys });
         return { droppedKeys, oldSid };
     }
@@ -415,13 +447,21 @@ export class SessionStore extends EventEmitter {
         for (const [identity, instance] of this.instances) {
             if (instance.status === 'dead')
                 continue;
-            liveSessionIds.add(instance.sessionId);
-            const meta = this.sessionMeta.get(instance.sessionId) ?? {};
+            const key = sessionMetaKey(instance);
+            liveSessionIds.add(key);
+            const meta = this.sessionMeta.get(key) ?? {};
             const entry = {};
+            entry.agentId = normalizeAgentId(instance.agentId);
             if (meta.label !== undefined)
                 entry.label = meta.label;
+            if (instance.labelSource !== undefined)
+                entry.labelSource = instance.labelSource;
             if (meta.tags !== undefined)
                 entry.tags = meta.tags;
+            if (instance.resumeId !== undefined)
+                entry.resumeId = instance.resumeId;
+            if (instance.resumable !== undefined)
+                entry.resumable = instance.resumable;
             if (meta.goalSummary !== undefined)
                 entry.goalSummary = meta.goalSummary;
             if (meta.contextSummary !== undefined)
@@ -437,9 +477,10 @@ export class SessionStore extends EventEmitter {
                 entry.sshTarget = instance.sshTarget;
                 entry.host = instance.host;
             }
-            data.sessions[instance.sessionId] = entry;
+            data.sessions[key] = entry;
             const instData = {};
             const onDisk = onDiskFields.get(identity);
+            instData.agentId = normalizeAgentId(instance.agentId);
             // Last-write-wins across concurrent processes: compare timestamps, not
             // "did I ever touch this" — a process holding a stale in-memory value
             // must not out-rank a more recent change (or vice versa) written by
@@ -511,13 +552,19 @@ export class SessionStore extends EventEmitter {
     /** Returns persisted sessions matching the given cwd, sorted by startedAt desc. */
     getPastSessionsByCwd(cwd) {
         const result = [];
-        const activeIds = new Set(this.getAll().map(s => s.sessionId));
-        for (const [sessionId, entry] of this.persistedMeta) {
-            if (entry.cwd === cwd && !activeIds.has(sessionId)) {
+        const activeIds = new Set(this.getAll().map(s => sessionMetaKey(s)));
+        for (const [key, entry] of this.persistedMeta) {
+            const decoded = decodePersistedSessionKey(key, entry);
+            const resumable = entry.resumable ?? decoded.agentId === 'claude';
+            if (entry.cwd === cwd && resumable && !activeIds.has(key)) {
                 result.push({
-                    sessionId,
+                    agentId: decoded.agentId,
+                    sessionId: decoded.sessionId,
+                    resumeId: entry.resumeId ?? decoded.sessionId,
+                    resumable,
                     startedAt: entry.startedAt ?? 0,
                     label: entry.label,
+                    labelSource: entry.labelSource,
                     goalSummary: entry.goalSummary,
                     contextSummary: entry.contextSummary,
                     nextSteps: entry.nextSteps,
@@ -532,101 +579,124 @@ export class SessionStore extends EventEmitter {
      * Excludes currently active sessions.
      */
     getPastSessionsByTarget(sshTarget) {
-        const activeIds = new Set(this.getAll().map(s => s.sessionId));
+        const activeIds = new Set(this.getAll().map(s => sessionMetaKey(s)));
         const all = [];
-        for (const [sessionId, entry] of this.persistedMeta) {
+        for (const [key, entry] of this.persistedMeta) {
+            const decoded = decodePersistedSessionKey(key, entry);
+            const resumable = entry.resumable ?? decoded.agentId === 'claude';
             if (entry.sshTarget !== sshTarget)
                 continue;
             if (!entry.cwd)
                 continue;
-            if (activeIds.has(sessionId))
+            if (!resumable)
                 continue;
-            all.push({ sessionId, cwd: entry.cwd, startedAt: entry.startedAt ?? 0, label: entry.label, goalSummary: entry.goalSummary, contextSummary: entry.contextSummary, sshTarget: entry.sshTarget });
+            if (activeIds.has(key))
+                continue;
+            all.push({ agentId: decoded.agentId, sessionId: decoded.sessionId, resumeId: entry.resumeId ?? decoded.sessionId, resumable, cwd: entry.cwd, startedAt: entry.startedAt ?? 0, label: entry.label, labelSource: entry.labelSource, goalSummary: entry.goalSummary, contextSummary: entry.contextSummary, sshTarget: entry.sshTarget });
         }
         all.sort((a, b) => b.startedAt - a.startedAt);
         const byCwd = new Map();
         for (const s of all) {
-            if (!byCwd.has(s.cwd))
-                byCwd.set(s.cwd, s);
+            const key = `${s.agentId}::${s.cwd}`;
+            if (!byCwd.has(key))
+                byCwd.set(key, s);
         }
         return Array.from(byCwd.values());
     }
     /** Returns all past sessions across all hosts, sorted by most recent. */
     getAllPastSessions() {
-        const activeIds = new Set(this.getAll().map(s => s.sessionId));
+        const activeIds = new Set(this.getAll().map(s => sessionMetaKey(s)));
         const all = [];
-        for (const [sessionId, entry] of this.persistedMeta) {
+        for (const [key, entry] of this.persistedMeta) {
+            const decoded = decodePersistedSessionKey(key, entry);
+            const resumable = entry.resumable ?? decoded.agentId === 'claude';
             if (!entry.cwd)
                 continue;
-            if (activeIds.has(sessionId))
+            if (!resumable)
                 continue;
-            all.push({ sessionId, cwd: entry.cwd, startedAt: entry.startedAt ?? 0, label: entry.label, goalSummary: entry.goalSummary, contextSummary: entry.contextSummary, sshTarget: entry.sshTarget });
+            if (activeIds.has(key))
+                continue;
+            all.push({ agentId: decoded.agentId, sessionId: decoded.sessionId, resumeId: entry.resumeId ?? decoded.sessionId, resumable, cwd: entry.cwd, startedAt: entry.startedAt ?? 0, label: entry.label, labelSource: entry.labelSource, goalSummary: entry.goalSummary, contextSummary: entry.contextSummary, sshTarget: entry.sshTarget });
         }
         all.sort((a, b) => b.startedAt - a.startedAt);
-        // Deduplicate by (sshTarget, cwd) — keep most recent
+        // Deduplicate by (sshTarget, agentId, cwd) — keep most recent
         const seen = new Map();
         for (const s of all) {
-            const key = `${s.sshTarget ?? ''}::${s.cwd}`;
+            const key = `${s.sshTarget ?? ''}::${s.agentId}::${s.cwd}`;
             if (!seen.has(key))
                 seen.set(key, s);
         }
         return Array.from(seen.values());
     }
     /**
-     * Merge on-disk scanned sessions with state.json metadata for the resume picker.
-     * Union by sessionId: scanned (local disk) provides cwd/startedAt for the many
-     * sessions popmux never tracked; state.json wins for human metadata
-     * (label/goalSummary/contextSummary/sshTarget) and contributes persisted-only
-     * sessions not on local disk (e.g. remote). Currently-active sessions are
-     * excluded; result is sorted most-recent-first.
+     * Merge on-disk scanned Claude sessions with state.json metadata for the
+     * resume picker. Codex sessions are sourced from persisted state only because
+     * their metadata comes from the read-only Codex SQLite adapter, not Claude
+     * JSONL scans. Currently-active sessions are excluded; result is sorted
+     * most-recent-first.
      */
     getAllResumableSessions(scanned, scanComplete = false) {
         const merged = new Map();
-        // 1. Scanned local-disk sessions — cwd/startedAt from JSONL content; the
-        //    `/rename` customTitle becomes the label.
         for (const s of scanned) {
-            merged.set(s.sessionId, { sessionId: s.sessionId, cwd: s.cwd, startedAt: s.startedAt, label: s.customTitle });
+            const key = sessionMetaKey({ agentId: 'claude', sessionId: s.sessionId });
+            merged.set(key, {
+                agentId: 'claude',
+                sessionId: s.sessionId,
+                resumeId: s.sessionId,
+                resumable: true,
+                cwd: s.cwd,
+                startedAt: s.startedAt,
+                label: s.customTitle,
+                labelSource: s.customTitle ? 'claude-custom-title' : undefined,
+            });
         }
-        // 2. Overlay state.json metadata; add persisted-only (e.g. remote) sessions.
-        for (const [sessionId, entry] of this.persistedMeta) {
-            const base = merged.get(sessionId);
-            // Once a full disk scan has run, a persisted-only local (no sshTarget)
-            // entry not found on disk is stale/deleted — hide it rather than
-            // resurrecting a session that no longer exists. Remote entries
-            // (sshTarget set) can never be confirmed by the local scan, so they
-            // always remain eligible.
-            if (scanComplete && !base && !entry.sshTarget)
+        for (const [key, entry] of this.persistedMeta) {
+            const decoded = decodePersistedSessionKey(key, entry);
+            const resumable = entry.resumable ?? decoded.agentId === 'claude';
+            if (!resumable)
+                continue;
+            const base = merged.get(key);
+            // Once a full Claude disk scan has run, a persisted-only local Claude
+            // entry not found on disk is stale/deleted. Codex and remote entries
+            // cannot be confirmed by that scan, so they remain eligible.
+            if (scanComplete && decoded.agentId === 'claude' && !base && !entry.sshTarget)
                 continue;
             const cwd = base?.cwd ?? entry.cwd;
             if (!cwd)
-                continue; // can't resurrect without a cwd
-            merged.set(sessionId, {
-                sessionId,
+                continue;
+            merged.set(key, {
+                agentId: decoded.agentId,
+                sessionId: decoded.sessionId,
+                resumeId: entry.resumeId ?? base?.resumeId ?? decoded.sessionId,
+                resumable,
                 cwd,
                 startedAt: base?.startedAt ?? entry.startedAt ?? 0,
-                // Scanned customTitle (the JSONL's actual `/rename` record) wins over a
-                // persisted state.json label — the latter can be a stale fallback name
-                // cached before the label was successfully read (e.g. a late /rename
-                // that landed past the scanner's old head-only read window).
                 label: base?.label ?? entry.label,
+                labelSource: base?.labelSource ?? entry.labelSource,
                 goalSummary: entry.goalSummary,
                 contextSummary: entry.contextSummary,
                 sshTarget: entry.sshTarget,
             });
         }
-        // 3. Exclude currently-active sessions, sort recent-first.
-        const activeIds = new Set(this.getAll().map(s => s.sessionId));
-        const out = Array.from(merged.values()).filter(s => !activeIds.has(s.sessionId));
+        const activeIds = new Set(this.getAll().map(s => sessionMetaKey(s)));
+        const out = Array.from(merged.entries())
+            .filter(([key]) => !activeIds.has(key))
+            .map(([, value]) => value);
         out.sort((a, b) => b.startedAt - a.startedAt);
         return out;
     }
     /** Removes a past session from persistedMeta and rewrites state.json immediately. */
-    deletePersistedSession(sessionId) {
-        this.persistedMeta.delete(sessionId);
+    deletePersistedSession(sessionId, agentId) {
+        const keys = agentId
+            ? [sessionMetaKey({ agentId, sessionId })]
+            : [sessionId, `codex::${sessionId}`];
+        for (const key of keys)
+            this.persistedMeta.delete(key);
         try {
             const raw = readFileSync(this.persistPath, 'utf8');
             const data = JSON.parse(raw);
-            delete data.sessions[sessionId];
+            for (const key of keys)
+                delete data.sessions[key];
             writeFileSync(this.persistPath, JSON.stringify(data, null, 2));
         }
         catch { }
@@ -643,9 +713,12 @@ export class SessionStore extends EventEmitter {
     getRestoredRemoteSessions() {
         const result = [];
         for (const [sessionId, entry] of this.persistedMeta) {
+            const decoded = decodePersistedSessionKey(sessionId, entry);
+            if (decoded.agentId !== 'claude')
+                continue;
             if (entry.sshTarget && entry.pid && entry.cwd && entry.host) {
                 result.push({
-                    sessionId,
+                    sessionId: decoded.sessionId,
                     pid: entry.pid,
                     sshTarget: entry.sshTarget,
                     cwd: entry.cwd,
@@ -668,6 +741,12 @@ export class SessionStore extends EventEmitter {
             const now = Date.now();
             const maxAge = 30 * 24 * 60 * 60 * 1000; // 30 days
             for (const [sessionId, entry] of Object.entries(data.sessions)) {
+                const decoded = decodePersistedSessionKey(sessionId, entry);
+                entry.agentId = decoded.agentId;
+                if (entry.resumable === undefined)
+                    entry.resumable = decoded.agentId === 'claude';
+                if (entry.resumeId === undefined && entry.resumable)
+                    entry.resumeId = decoded.sessionId;
                 // v2 TTL eviction: skip old non-favorited entries
                 if (version >= 2 && entry.startedAt && !entry.favorite && (now - entry.startedAt > maxAge)) {
                     logger.debug('session-store: evicting stale entry', { sessionId, age: Math.round((now - entry.startedAt) / 86400000) + 'd' });
@@ -679,10 +758,11 @@ export class SessionStore extends EventEmitter {
             const instances = data.instances;
             if (instances) {
                 for (const [identity, inst] of Object.entries(instances)) {
+                    inst.agentId = normalizeAgentId(inst.agentId);
                     // Claim E: backfill lastSeenAt for older state.json that didn't write it.
                     // Use startedAt of the matching session entry if available, else now (one-shot grace).
                     if (inst.lastSeenAt === undefined) {
-                        const sessEntry = inst.lastSessionId ? data.sessions[inst.lastSessionId] : undefined;
+                        const sessEntry = inst.lastSessionId ? (data.sessions[inst.lastSessionId] ?? data.sessions[sessionMetaKey({ agentId: inst.agentId, sessionId: inst.lastSessionId })]) : undefined;
                         inst.lastSeenAt = sessEntry?.startedAt ?? now;
                     }
                     this.persistedInstances.set(identity, inst);
@@ -701,8 +781,8 @@ export class SessionStore extends EventEmitter {
             }
         }
     }
-    getPersistedEntry(sessionId) {
-        return this.persistedMeta.get(sessionId);
+    getPersistedEntry(sessionId, agentId = 'claude') {
+        return this.persistedMeta.get(sessionMetaKey({ agentId, sessionId })) ?? this.persistedMeta.get(sessionId);
     }
     get displayOrder() { return this._displayOrder; }
     set displayOrder(order) { this._displayOrder = order; this.persist(); }

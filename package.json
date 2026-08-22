@@ -20,7 +20,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "build": "tsc"
+    "build": "tsc",
+    "codex:mvp": "tsx experiments/codex-mvp/index.ts",
+    "typecheck:codex-mvp": "tsc -p tsconfig.codex-mvp.json --noEmit"
   },
   "keywords": [
     "claude",

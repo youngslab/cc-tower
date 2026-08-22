@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fuzzyMatch } from './fuzzy.js';
+import { agentLabel, agentShortBadge, normalizeAgentId } from '../agents/types.js';
 function remoteListDirs(host, dir) {
     try {
         const cmd = `ls -1 -d ${dir}/*/ 2>/dev/null | xargs -I{} basename {}`;
@@ -118,6 +119,7 @@ export function NewSession({ hosts, onSelect, onCancel, getPastSessionsByTarget 
     const [query, setQuery] = useState('');
     const [mode, setMode] = useState(() => hosts.length > 0 ? 'host' : 'pick');
     const [selectedHost, setSelectedHost] = useState(undefined);
+    const [selectedAgent, setSelectedAgent] = useState('claude');
     // Host options: "local" + configured remote hosts
     const hostOptions = [
         { label: 'local' },
@@ -137,8 +139,8 @@ export function NewSession({ hosts, onSelect, onCancel, getPastSessionsByTarget 
     }, [showStartIn, query, selectedHost]);
     const rowCount = filtered.length + (showStartIn ? 1 : 0);
     const handlePathSelected = useCallback((projectPath) => {
-        onSelect(projectPath, selectedHost);
-    }, [onSelect, selectedHost]);
+        onSelect(projectPath, selectedHost, undefined, selectedHost ? 'claude' : selectedAgent);
+    }, [onSelect, selectedHost, selectedAgent]);
     useInput((input, key) => {
         if (key.escape) {
             if (mode === 'pick' && query) {
@@ -172,6 +174,10 @@ export function NewSession({ hosts, onSelect, onCancel, getPastSessionsByTarget 
             return;
         }
         // pick mode
+        if (input === 'a' && !selectedHost) {
+            setSelectedAgent(a => a === 'claude' ? 'codex' : 'claude');
+            return;
+        }
         if (key.upArrow) {
             setCursor(c => Math.max(0, c - 1));
             return;
@@ -207,6 +213,6 @@ export function NewSession({ hosts, onSelect, onCancel, getPastSessionsByTarget 
             setCursor(0);
         }
     });
-    return (_jsxs(Box, { flexDirection: "column", children: [_jsx(Text, { bold: true, color: "cyan", children: "New Claude Session" }), mode === 'host' ? (_jsxs(_Fragment, { children: [_jsx(Text, { dimColor: true, children: "Select target host" }), _jsx(Text, { children: " " }), hostOptions.map((h, i) => (_jsx(Box, { children: _jsxs(Text, { color: i === cursor ? 'cyan' : undefined, bold: i === cursor, children: [i === cursor ? '▸ ' : '  ', h.label] }) }, h.label))), _jsx(Text, { children: " " }), _jsx(Text, { dimColor: true, children: "\u2191\u2193 navigate \u00B7 Enter select \u00B7 Esc cancel" })] })) : (_jsxs(_Fragment, { children: [_jsxs(Box, { children: [_jsx(Text, { dimColor: true, children: "Path or filter: " }), _jsx(Text, { color: "cyan", children: query || '' }), query ? _jsx(Text, { color: "gray", children: "\u258B" }) : _jsx(Text, { dimColor: true, children: " (type to filter or enter a path)" })] }), _jsx(Text, { children: " " }), showStartIn && (_jsxs(Box, { children: [_jsxs(Text, { color: cursor === 0 ? 'cyan' : undefined, bold: cursor === 0, children: [cursor === 0 ? '▸ ' : '  ', "Start in: ", expand(query)] }), _jsx(Text, { dimColor: true, children: "   (Tab complete)" })] })), completions.length > 1 && (_jsx(Box, { flexDirection: "column", children: completions.map(c => (_jsxs(Text, { dimColor: true, children: ["  ", c, "/"] }, c))) })), filtered.map((s, i) => (_jsxs(Box, { children: [_jsxs(Text, { color: cursor === (showStartIn ? i + 1 : i) ? 'cyan' : undefined, bold: cursor === (showStartIn ? i + 1 : i), children: [cursor === (showStartIn ? i + 1 : i) ? '▸ ' : '  ', path.basename(s.cwd)] }), _jsxs(Text, { dimColor: true, children: [" ", s.cwd, "  \u00B7  ", formatAge(s.startedAt)] })] }, s.cwd))), filtered.length === 0 && !showStartIn && query && (_jsxs(Text, { dimColor: true, children: ["  No matches for \"", query, "\""] })), _jsx(Text, { children: " " }), _jsx(Text, { dimColor: true, children: "\u2191\u2193 navigate \u00B7 type = filter or path (/,~,.) \u00B7 Tab complete \u00B7 Enter select \u00B7 Esc back/cancel" })] }))] }));
+    return (_jsxs(Box, { flexDirection: "column", children: [_jsx(Text, { bold: true, color: "cyan", children: "New AI Session" }), mode === 'host' ? (_jsxs(_Fragment, { children: [_jsx(Text, { dimColor: true, children: "Select target host" }), _jsx(Text, { children: " " }), hostOptions.map((h, i) => (_jsx(Box, { children: _jsxs(Text, { color: i === cursor ? 'cyan' : undefined, bold: i === cursor, children: [i === cursor ? '▸ ' : '  ', h.label] }) }, h.label))), _jsx(Text, { children: " " }), _jsx(Text, { dimColor: true, children: "\u2191\u2193 navigate \u00B7 Enter select \u00B7 Esc cancel" })] })) : (_jsxs(_Fragment, { children: [_jsxs(Box, { children: [_jsx(Text, { dimColor: true, children: "Path or filter: " }), _jsx(Text, { color: "cyan", children: query || '' }), query ? _jsx(Text, { color: "gray", children: "\u258B" }) : _jsx(Text, { dimColor: true, children: " (type to filter or enter a path)" })] }), !selectedHost && (_jsxs(Text, { dimColor: true, children: ["Agent: ", agentLabel(selectedAgent), " \u00B7 press a to toggle"] })), _jsx(Text, { children: " " }), showStartIn && (_jsxs(Box, { children: [_jsxs(Text, { color: cursor === 0 ? 'cyan' : undefined, bold: cursor === 0, children: [cursor === 0 ? '▸ ' : '  ', "Start in: ", expand(query)] }), _jsx(Text, { dimColor: true, children: "   (Tab complete)" })] })), completions.length > 1 && (_jsx(Box, { flexDirection: "column", children: completions.map(c => (_jsxs(Text, { dimColor: true, children: ["  ", c, "/"] }, c))) })), filtered.map((s, i) => (_jsxs(Box, { children: [_jsxs(Text, { color: cursor === (showStartIn ? i + 1 : i) ? 'cyan' : undefined, bold: cursor === (showStartIn ? i + 1 : i), children: [cursor === (showStartIn ? i + 1 : i) ? '▸ ' : '  ', "[", agentShortBadge(normalizeAgentId(s.agentId)), "] ", path.basename(s.cwd)] }), _jsxs(Text, { dimColor: true, children: [" ", s.cwd, "  \u00B7  ", formatAge(s.startedAt)] })] }, s.cwd))), filtered.length === 0 && !showStartIn && query && (_jsxs(Text, { dimColor: true, children: ["  No matches for \"", query, "\""] })), _jsx(Text, { children: " " }), _jsx(Text, { dimColor: true, children: "\u2191\u2193 navigate \u00B7 a toggle agent \u00B7 type = filter or path (/,~,.) \u00B7 Tab complete \u00B7 Enter select \u00B7 Esc back/cancel" })] }))] }));
 }
 //# sourceMappingURL=NewSession.js.map

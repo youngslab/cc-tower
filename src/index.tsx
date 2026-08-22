@@ -2,17 +2,20 @@
 import { program } from 'commander';
 import React from 'react';
 import { render } from 'ink';
-import { execSync, spawn } from 'node:child_process';
+import { execSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { Tower } from './core/tower.js';
 import { App } from './ui/App.js';
+import { tmux } from './tmux/commands.js';
 import { logger, setTuiMode } from './utils/logger.js';
 import { loadConfig } from './config/loader.js';
 import { markSpawn } from './picker/protocol.js';
 import { detectLegacy, migrateFromCcTower } from './migrate/from-cc-tower.js';
 import { disableLegacyCcTowerPlugin } from './migrate/legacy-plugin.js';
+import { agentWindowName, buildAgentCommand } from './agents/commands.js';
+import { normalizeAgentId, type AgentId } from './agents/types.js';
 
 // Mark spawn time as early as possible — used by --picker --output to compute
 // "READY <ms>" perf SLO for sub-second popup spawn.
@@ -289,6 +292,42 @@ program
     await tower.stop();
   });
 
+// Send command
+program
+  .command('send <session> <message>')
+  .option('--agent <agent>', 'Only match this agent: claude or codex')
+  .action(async (sessionArg: string, message: string, opts: { agent?: AgentId }) => {
+    const tower = new Tower(undefined, { skipHooks: true });
+    await tower.start();
+    const sessions = tower.store.getAll();
+    const requestedAgent = opts.agent ? normalizeAgentId(opts.agent) : undefined;
+    const matches = sessions.filter(s => {
+      if (requestedAgent && normalizeAgentId(s.agentId) !== requestedAgent) return false;
+      return s.sessionId.startsWith(sessionArg) || s.label === sessionArg || s.paneId === sessionArg;
+    });
+    const s = matches[0];
+    if (!s) {
+      console.log(`Session not found: ${sessionArg}`);
+    } else if (!requestedAgent && matches.length > 1) {
+      console.log(`Session selector is ambiguous: ${sessionArg}. Use --agent claude or --agent codex.`);
+    } else if (s.sshTarget) {
+      const escaped = message.replace(/'/g, "'\\''");
+      const cmd = `ssh ${s.sshTarget} "tmux send-keys -t ${s.paneId} '${escaped}' Enter"`;
+      await new Promise<void>((resolve) => {
+        const child = spawn('sh', ['-c', cmd], { stdio: 'inherit' });
+        child.on('close', () => resolve());
+        child.on('error', () => resolve());
+      });
+      console.log(`Sent to ${s.label ?? s.projectName} (${s.sshTarget}:${s.paneId})`);
+    } else if (!s.paneId) {
+      console.log('Session has no tmux pane');
+    } else {
+      await tmux.sendKeys(s.paneId, message);
+      console.log(`Sent to ${s.label ?? s.projectName} (${s.paneId})`);
+    }
+    await tower.stop();
+  });
+
 // Inspect — debug session summary vs actual JSONL content (no tower needed)
 program
   .command('inspect <session>')
@@ -491,13 +530,27 @@ program
     // to itself. (The package bin/ dir is NOT usable: there `popmux` is
     // `popmux.js`, not a runnable `popmux` command.)
     let binDir: string;
+    let togglePath: string | undefined;
     try {
       binDir = path.join(execSync('npm prefix -g', { encoding: 'utf8' }).trim(), 'bin');
     } catch {
       console.error('✗ Could not determine npm global bin dir (is npm installed?).');
       process.exit(1);
     }
-    const togglePath = path.join(binDir, 'popmux-toggle');
+
+    try {
+      const pathToggle = execSync('command -v popmux-toggle', {
+        encoding: 'utf8',
+        shell: '/bin/sh',
+      }).trim();
+      if (pathToggle && fs.existsSync(pathToggle)) {
+        togglePath = pathToggle;
+      }
+    } catch {
+      // Fall back to npm's global prefix below.
+    }
+
+    togglePath ??= path.join(binDir, 'popmux-toggle');
     if (!fs.existsSync(togglePath)) {
       console.error(`✗ popmux-toggle not found at ${togglePath}`);
       console.error('  Reinstall popmux so its binaries are linked, then retry:');
@@ -726,19 +779,25 @@ program
 // Spawn — create a new claude session (stub; B4 wrapper will use this)
 program
   .command('spawn')
-  .description('Spawn a new claude session locally or via ssh (used by popmux-go wrapper)')
+  .description('Spawn a new Claude or local Codex session (used by popmux-go wrapper)')
   .option('--cwd <path>', 'Working directory (local only)')
+  .option('--agent <agent>', 'Agent to launch: claude or codex', 'claude')
   .option('--host <host>', 'Remote host name (placeholder — full impl in B4)')
   .option('--ssh-target <target>', 'SSH target (placeholder — full impl in B4)')
   .option('--resume <sessionId>', 'Resume an existing session id')
-  .action(async (opts: { cwd?: string; host?: string; sshTarget?: string; resume?: string }) => {
+  .action(async (opts: { cwd?: string; agent?: AgentId; host?: string; sshTarget?: string; resume?: string }) => {
     // B3 ships a minimal stub — B4 will flesh out the full local + remote
     // spawn flow. The wrapper-script integration lives in B4 too. For now,
     // the local case is enough to validate the CLI surface.
     if (opts.host && opts.host !== 'local') {
+      if (normalizeAgentId(opts.agent) === 'codex') {
+        console.error('spawn: remote Codex is not supported in this MVP');
+        process.exit(2);
+      }
       console.error('spawn: remote host spawn is implemented in B4. Use the dashboard for now.');
       process.exit(2);
     }
+    const agentId = normalizeAgentId(opts.agent);
     const cwd = opts.cwd ?? process.cwd();
     if (!fs.existsSync(cwd)) {
       console.error(`spawn: cwd does not exist: ${cwd}`);
@@ -748,23 +807,26 @@ program
       console.error('spawn: must run inside a tmux session');
       process.exit(2);
     }
-    // Build the claude command. Resume takes precedence; otherwise fresh.
-    //
-    // Resolve an absolute path rather than trusting PATH: this command is
-    // dispatched from popmux-go, itself invoked via `tmux run-shell` (the F12
-    // binding). run-shell processes get tmux's bare server-default PATH
-    // (/usr/bin, /bin, ...), NOT the interactive shell's PATH — so a `claude`
-    // installed under ~/.local/bin (a common install location) resolves fine
-    // when popmux is run directly from a terminal, but 404s as "command not
-    // found" here, killing the new pane before the user can see why.
-    const claudeBin = resolveClaudeBin();
-    const claudeArgs = opts.resume ? ['--resume', opts.resume] : [];
-    const cmd = `${claudeBin} ${claudeArgs.map((a) => JSON.stringify(a)).join(' ')}`.trim();
+    // Build the agent command through the shared platform boundary. For Claude,
+    // resolve an absolute path rather than trusting PATH: this command is
+    // dispatched from popmux-go via `tmux run-shell`, which sees tmux's bare
+    // server-default PATH rather than the user's interactive shell PATH.
+    const cmd = buildAgentCommand({
+      agentId,
+      cwd,
+      resumeId: opts.resume,
+      claudeBin: agentId === 'claude' ? resolveClaudeBin() : undefined,
+    });
+    const projectName = path.basename(cwd) || cwd;
+    const windowName = agentWindowName(agentId, projectName);
     // Spawn in a new tmux window in the current session.
     try {
-      execSync(`tmux new-window -c ${JSON.stringify(cwd)} -n claude ${JSON.stringify(cmd)}`, {
-        stdio: 'inherit',
-      });
+      const tmuxArgs = ['new-window', '-c', cwd, '-n', windowName, cmd];
+      const result = spawnSync('tmux', tmuxArgs, { stdio: 'inherit' });
+      if (result.error) throw result.error;
+      if (result.status !== 0) {
+        throw new Error(`tmux exited with status ${result.status ?? 'unknown'}`);
+      }
     } catch (err) {
       console.error(`spawn: tmux new-window failed: ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);

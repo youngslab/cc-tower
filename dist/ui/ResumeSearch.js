@@ -3,6 +3,7 @@ import { useState, useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { basename } from 'node:path';
 import { fuzzyMatch } from './fuzzy.js';
+import { agentShortBadge } from '../agents/types.js';
 // Rows consumed above/below the list itself: title(1) + margin+query(2) +
 // list-container margin(1) + footer margin+text(2).
 const CHROME_ROWS = 6;
@@ -79,14 +80,14 @@ export function ResumeSearch({ getSessions, generation = 0, scanning = false, on
             setSelectedId(null);
         }
     });
-    return (_jsxs(Box, { flexDirection: "column", children: [_jsxs(Box, { children: [_jsx(Text, { bold: true, color: "cyan", children: "Resume past session " }), _jsx(Text, { dimColor: true, children: "(claude --resume)" })] }), _jsxs(Box, { marginTop: 1, children: [_jsx(Text, { dimColor: true, children: "R " }), _jsx(Text, { color: "cyan", children: query }), _jsx(Text, { dimColor: true, children: "\u2588" })] }), _jsxs(Box, { marginTop: 1, flexDirection: "column", children: [sessions.length === 0 && (_jsx(Text, { dimColor: true, children: scanning ? 'Scanning all sessions…' : 'No past sessions to resume.' })), sessions.length > 0 && filtered.length === 0 && (_jsx(Text, { dimColor: true, children: "No match." })), showScrollUp && _jsxs(Text, { dimColor: true, children: ["  \u2191 ", viewStart, " more"] }), filtered.slice(viewStart, viewEnd).map((s, localI) => {
+    return (_jsxs(Box, { flexDirection: "column", children: [_jsxs(Box, { children: [_jsx(Text, { bold: true, color: "cyan", children: "Resume past session " }), _jsx(Text, { dimColor: true, children: "(Claude/Codex resume)" })] }), _jsxs(Box, { marginTop: 1, children: [_jsx(Text, { dimColor: true, children: "R " }), _jsx(Text, { color: "cyan", children: query }), _jsx(Text, { dimColor: true, children: "\u2588" })] }), _jsxs(Box, { marginTop: 1, flexDirection: "column", children: [sessions.length === 0 && (_jsx(Text, { dimColor: true, children: scanning ? 'Scanning all sessions…' : 'No past sessions to resume.' })), sessions.length > 0 && filtered.length === 0 && (_jsx(Text, { dimColor: true, children: "No match." })), showScrollUp && _jsxs(Text, { dimColor: true, children: ["  \u2191 ", viewStart, " more"] }), filtered.slice(viewStart, viewEnd).map((s, localI) => {
                         const i = viewStart + localI;
                         const isCursor = i === cursorIdx;
                         const summary = s.goalSummary ?? s.contextSummary;
                         // Unlabeled sessions show their summary as the name (more useful than
                         // a row of identical '(unnamed)' entries for the same project).
                         const name = s.label ?? (summary ? truncate(summary, 50) : '(unnamed)');
-                        return (_jsxs(Box, { children: [_jsxs(Text, { color: isCursor ? 'cyan' : undefined, bold: isCursor, children: [isCursor ? '▸ ' : '  ', name] }), _jsxs(Text, { dimColor: true, children: [" \u00B7 ", basename(s.cwd), " \u00B7 ", formatAge(s.startedAt)] }), s.sshTarget && _jsx(Text, { dimColor: true, children: "  (remote)" })] }, s.sessionId));
+                        return (_jsxs(Box, { children: [_jsxs(Text, { color: isCursor ? 'cyan' : undefined, bold: isCursor, children: [isCursor ? '▸ ' : '  ', "[", agentShortBadge(s.agentId), "] ", name] }), _jsxs(Text, { dimColor: true, children: [" \u00B7 ", basename(s.cwd), " \u00B7 ", formatAge(s.startedAt)] }), s.sshTarget && _jsx(Text, { dimColor: true, children: "  (remote)" })] }, s.sessionId));
                     }), showScrollDown && _jsxs(Text, { dimColor: true, children: ["  \u2193 ", filtered.length - viewEnd, " more"] })] }), _jsxs(Box, { marginTop: 1, children: [_jsx(Text, { dimColor: true, children: "  \u2191\u2193 navigate \u00B7 type to search \u00B7 Enter resume \u00B7 Esc cancel" }), scanning && _jsx(Text, { color: "yellow", children: " \u00B7 scanning all sessions\u2026" })] })] }));
 }
 function truncate(s, max) {

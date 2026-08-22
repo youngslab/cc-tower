@@ -1,3 +1,7 @@
+import { type AgentId } from './types.js';
+import type { AgentAdapter } from './adapter.js';
+export type { AgentId, LabelSource } from './types.js';
+export type { AgentAdapter, AgentCommandInput, AgentDiscoveryContext, AgentStatus } from './adapter.js';
 export declare const agents: {
     readonly claude: {
         readonly parseSessionFile: typeof import("./claude/detector.js").parseSessionFile;
@@ -16,5 +20,10 @@ export declare const agents: {
         readonly stopLlmSession: typeof import("./claude/summarizer.js").stopLlmSession;
         readonly getLlmSessionName: typeof import("./claude/summarizer.js").getLlmSessionName;
     };
+    readonly codex: {
+        discoverLiveSessions: typeof import("./codex/detector.js").discoverLiveCodexSessions;
+    };
+    readonly adapters: Record<AgentId, AgentAdapter>;
 };
-export type AgentId = keyof typeof agents;
+export declare function getAgentAdapter(agentId: AgentId | undefined): AgentAdapter;
+export declare function listAgentAdapters(): AgentAdapter[];
