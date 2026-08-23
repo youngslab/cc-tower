@@ -200,7 +200,7 @@ export function NewSession({ onSelect, onCancel, getPastSessionsByTarget }: Prop
           {filtered.map((s, i) => (
             <Box key={pastSessionIdentity(s)}>
               <Text color={cursor === (showStartIn ? i + 1 : i) ? 'cyan' : undefined} bold={cursor === (showStartIn ? i + 1 : i)}>
-                {cursor === (showStartIn ? i + 1 : i) ? '▸ ' : '  '}[{agentShortBadge(normalizeAgentId(s.agentId))}] {path.basename(s.cwd)}
+                {cursor === (showStartIn ? i + 1 : i) ? '▸ ' : '  '}{agentShortBadge(normalizeAgentId(s.agentId))} {path.basename(s.cwd)}
               </Text>
               <Text dimColor> {s.cwd}  ·  {formatAge(s.startedAt)}</Text>
             </Box>

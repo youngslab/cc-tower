@@ -72,8 +72,8 @@ describe('ResumeSearch (ink-testing-library)', () => {
     const frame = lastFrame()!;
     expect(frame).toContain('first');
     expect(frame).toContain('second'); // both shown — not collapsed to one per cwd
-    expect(frame).toContain('[C] first');
-    expect(frame).toContain('[X] second');
+    expect(frame).toContain('Ⓒ first');
+    expect(frame).toContain('Ⓧ second');
     unmount();
   });
 

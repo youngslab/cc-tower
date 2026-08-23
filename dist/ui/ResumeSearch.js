@@ -88,7 +88,7 @@ export function ResumeSearch({ getSessions, generation = 0, scanning = false, on
                         // Unlabeled sessions show their summary as the name (more useful than
                         // a row of identical '(unnamed)' entries for the same project).
                         const name = s.label ?? (summary ? truncate(summary, 50) : '(unnamed)');
-                        return (_jsxs(Box, { children: [_jsxs(Text, { color: isCursor ? 'cyan' : undefined, bold: isCursor, children: [isCursor ? '▸ ' : '  ', "[", agentShortBadge(s.agentId), "] ", name] }), _jsxs(Text, { dimColor: true, children: [" \u00B7 ", basename(s.cwd), " \u00B7 ", formatAge(s.startedAt)] }), s.sshTarget && _jsx(Text, { dimColor: true, children: "  (remote)" })] }, identityOf(s)));
+                        return (_jsxs(Box, { children: [_jsxs(Text, { color: isCursor ? 'cyan' : undefined, bold: isCursor, children: [isCursor ? '▸ ' : '  ', agentShortBadge(s.agentId), " ", name] }), _jsxs(Text, { dimColor: true, children: [" \u00B7 ", basename(s.cwd), " \u00B7 ", formatAge(s.startedAt)] }), s.sshTarget && _jsx(Text, { dimColor: true, children: "  (remote)" })] }, identityOf(s)));
                     }), showScrollDown && _jsxs(Text, { dimColor: true, children: ["  \u2193 ", filtered.length - viewEnd, " more"] })] }), _jsxs(Box, { marginTop: 1, children: [_jsx(Text, { dimColor: true, children: "  \u2191\u2193 navigate \u00B7 type to search \u00B7 Enter resume \u00B7 Esc cancel" }), scanning && _jsx(Text, { color: "yellow", children: " \u00B7 scanning all sessions\u2026" })] })] }));
 }
 function truncate(s, max) {

@@ -54,9 +54,9 @@ describe('Dashboard agent coexistence', () => {
     );
 
     const frame = lastFrame()!;
-    expect(frame).toContain('[C] repo-a');
-    expect(frame).toContain('[X] repo-b');
-    expect(frame).toContain('[C] Claude [X] Codex');
+    expect(frame).toContain('Ⓒ repo-a');
+    expect(frame).toContain('Ⓧ repo-b');
+    expect(frame).toContain('Ⓒ Claude Ⓧ Codex');
     unmount();
   });
 

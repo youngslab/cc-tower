@@ -257,7 +257,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, termWidth, termHe
               <Text color={isCursor ? 'cyan' : undefined} bold={isCursor}>{isCursor ? '▸' : ' '}</Text>
               <Text color={isCursor ? 'cyan' : undefined} dimColor={!isCursor}> {pad(`${i + 1}`, 2)} </Text>
               <Text color={isCursor ? 'cyan' : color}>{icon} </Text>
-              <Text color={isCursor ? 'cyan' : 'gray'}>[{agent}] </Text>
+              <Text color={isCursor ? 'cyan' : 'gray'}>{agent} </Text>
               <Text color={isCursor ? 'cyan' : undefined} bold={isCursor} dimColor={!isCursor && isDim}>{truncate(nameText, maxTaskWidth)}</Text>
               {session.sshTarget && <Text dimColor>  (remote)</Text>}
               {session.needsAttention && <Text color={blinkOn ? 'red' : undefined} bold={blinkOn}> ⚠ 관심 필요</Text>}
@@ -320,7 +320,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, termWidth, termHe
             <Text color="cyan">◑</Text><Text dimColor> Agent  </Text>
             <Text color="white">○</Text><Text dimColor> Idle  </Text>
             <Text color="red">✕</Text><Text dimColor> Dead</Text>
-            <Text dimColor>  │  [C] Claude [X] Codex</Text>
+            <Text dimColor>  │  Ⓒ Claude Ⓧ Codex</Text>
           </Box>
           <Box>
             <Text dimColor>  j/k Nav · Enter Detail · g Go · / Search · R Resume · f Fav · n New · x Kill · q Quit</Text>

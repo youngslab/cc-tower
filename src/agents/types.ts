@@ -19,5 +19,5 @@ export function agentBadge(agentId: AgentId | undefined): string {
 }
 
 export function agentShortBadge(agentId: AgentId | undefined): string {
-  return normalizeAgentId(agentId) === 'codex' ? 'X' : 'C';
+  return normalizeAgentId(agentId) === 'codex' ? 'Ⓧ' : 'Ⓒ';
 }

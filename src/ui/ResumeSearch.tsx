@@ -129,7 +129,7 @@ export function ResumeSearch({ getSessions, generation = 0, scanning = false, on
           return (
             <Box key={identityOf(s)}>
               <Text color={isCursor ? 'cyan' : undefined} bold={isCursor}>
-                {isCursor ? '▸ ' : '  '}[{agentShortBadge(s.agentId)}] {name}
+                {isCursor ? '▸ ' : '  '}{agentShortBadge(s.agentId)} {name}
               </Text>
               <Text dimColor> · {basename(s.cwd)} · {formatAge(s.startedAt)}</Text>
               {s.sshTarget && <Text dimColor>  (remote)</Text>}

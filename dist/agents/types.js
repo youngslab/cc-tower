@@ -8,6 +8,6 @@ export function agentBadge(agentId) {
     return normalizeAgentId(agentId) === 'codex' ? '[Codex]' : '[Claude]';
 }
 export function agentShortBadge(agentId) {
-    return normalizeAgentId(agentId) === 'codex' ? 'X' : 'C';
+    return normalizeAgentId(agentId) === 'codex' ? 'Ⓧ' : 'Ⓒ';
 }
 //# sourceMappingURL=types.js.map

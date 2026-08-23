@@ -270,8 +270,8 @@ describe('picker keys (ink-testing-library)', () => {
     await settle();
 
     const frame = lastFrame()!;
-    expect(frame).toContain('[C] shared-workspace');
-    expect(frame).toContain('[X] shared-workspace');
+    expect(frame).toContain('Ⓒ shared-workspace');
+    expect(frame).toContain('Ⓧ shared-workspace');
 
     unmount();
   });
