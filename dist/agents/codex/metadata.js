@@ -83,11 +83,11 @@ conn.close()
 function latestFirst(rows) {
     return [...rows].sort((a, b) => (b.updatedAt ?? b.createdAt ?? 0) - (a.updatedAt ?? a.createdAt ?? 0));
 }
-function labelFromThread(row) {
+function labelFromThread(row, opts = {}) {
     if (row.name)
         return { label: row.name, labelSource: 'codex-rename' };
     if (row.title)
-        return { label: row.title, labelSource: 'codex-title' };
+        return { label: row.title, labelSource: opts.titleAsRename ? 'codex-rename' : 'codex-title' };
     return {};
 }
 function closeToStartedAt(rows, sessionStartedAt) {
@@ -159,6 +159,15 @@ export function resolveCodexThreadMetadata(input) {
                 resumable: true,
             };
         }
+    }
+    if (input.resumeWithoutArg && cwdMatches.length > 0) {
+        const match = cwdMatches[0];
+        return {
+            threadId: match.id,
+            ...labelFromThread(match, { titleAsRename: true }),
+            confidence: 'high',
+            resumable: true,
+        };
     }
     if (cwdMatches.length === 1) {
         const match = cwdMatches[0];

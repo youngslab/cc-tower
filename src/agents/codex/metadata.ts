@@ -91,9 +91,12 @@ function latestFirst(rows: CodexThreadRow[]): CodexThreadRow[] {
   return [...rows].sort((a, b) => (b.updatedAt ?? b.createdAt ?? 0) - (a.updatedAt ?? a.createdAt ?? 0));
 }
 
-function labelFromThread(row: CodexThreadRow): { label?: string; labelSource?: 'codex-title' | 'codex-rename' } {
+function labelFromThread(
+  row: CodexThreadRow,
+  opts: { titleAsRename?: boolean } = {},
+): { label?: string; labelSource?: 'codex-title' | 'codex-rename' } {
   if (row.name) return { label: row.name, labelSource: 'codex-rename' };
-  if (row.title) return { label: row.title, labelSource: 'codex-title' };
+  if (row.title) return { label: row.title, labelSource: opts.titleAsRename ? 'codex-rename' : 'codex-title' };
   return {};
 }
 
@@ -108,6 +111,7 @@ function closeToStartedAt(rows: CodexThreadRow[], sessionStartedAt: number): Cod
 export function resolveCodexThreadMetadata(input: {
   cwd: string;
   resumeArg?: string | undefined;
+  resumeWithoutArg?: boolean | undefined;
   sessionStartedAt?: number | undefined;
   threads: CodexThreadRow[];
   claimedThreadIds?: Set<string>;
@@ -184,6 +188,16 @@ export function resolveCodexThreadMetadata(input: {
         resumable: true,
       };
     }
+  }
+
+  if (input.resumeWithoutArg && cwdMatches.length > 0) {
+    const match = cwdMatches[0]!;
+    return {
+      threadId: match.id,
+      ...labelFromThread(match, { titleAsRename: true }),
+      confidence: 'high',
+      resumable: true,
+    };
   }
 
   if (cwdMatches.length === 1) {

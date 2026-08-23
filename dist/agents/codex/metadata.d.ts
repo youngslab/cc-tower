@@ -13,6 +13,7 @@ export declare function readCodexThreads(opts?: {
 export declare function resolveCodexThreadMetadata(input: {
     cwd: string;
     resumeArg?: string | undefined;
+    resumeWithoutArg?: boolean | undefined;
     sessionStartedAt?: number | undefined;
     threads: CodexThreadRow[];
     claimedThreadIds?: Set<string>;

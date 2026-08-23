@@ -101,11 +101,60 @@ export function isInteractiveCodex(row: ProcessRow): boolean {
   return true;
 }
 
+const RESUME_OPTION_VALUE_FLAGS = new Set([
+  '-c',
+  '--config',
+  '-C',
+  '--cd',
+  '--cwd',
+  '-m',
+  '--model',
+  '--model-provider',
+  '--profile',
+  '--sandbox',
+  '--approval-policy',
+  '--ask-for-approval',
+]);
+
+function findResumeSubcommandIndex(row: ProcessRow): number {
+  const rest = tokensAfterExecutable(row);
+  for (let index = 0; index < rest.length; index += 1) {
+    const token = rest[index]!;
+    if (token === '--') return -1;
+    if (token.startsWith('-')) {
+      if (optionConsumesValue(token)) index += 1;
+      continue;
+    }
+    return token === 'resume' ? index : -1;
+  }
+  return -1;
+}
+
+function hasResumeSubcommand(row: ProcessRow): boolean {
+  return findResumeSubcommandIndex(row) !== -1;
+}
+
+function optionConsumesValue(token: string): boolean {
+  if (token.includes('=')) return false;
+  return RESUME_OPTION_VALUE_FLAGS.has(token);
+}
+
 function extractResumeArg(row: ProcessRow): string | undefined {
   const rest = tokensAfterExecutable(row);
-  const resumeIndex = rest.indexOf('resume');
+  const resumeIndex = findResumeSubcommandIndex(row);
   if (resumeIndex === -1) return undefined;
-  return rest.slice(resumeIndex + 1).find((token) => !token.startsWith('-'));
+
+  for (let index = resumeIndex + 1; index < rest.length; index += 1) {
+    const token = rest[index]!;
+    if (token === '--') return rest[index + 1];
+    if (token.startsWith('-')) {
+      if (optionConsumesValue(token)) index += 1;
+      continue;
+    }
+    return token;
+  }
+
+  return undefined;
 }
 
 function parseOmxSessionStartedAt(sessionId: string | undefined | null): number | undefined {
@@ -191,9 +240,10 @@ export async function discoverCodexSessions(opts: {
     if (!cwd) continue;
 
     const resumeArg = extractResumeArg(row);
+    const resumeWithoutArg = hasResumeSubcommand(row) && !resumeArg;
     const sessionStartedAt = await readOmxSessionStartedAt(row, wrapper, opts.procReader);
     const pane = mapProcessToPane(row, byPid, panes);
-    const metadata = resolveCodexThreadMetadata({ cwd, resumeArg, sessionStartedAt, threads, claimedThreadIds });
+    const metadata = resolveCodexThreadMetadata({ cwd, resumeArg, resumeWithoutArg, sessionStartedAt, threads, claimedThreadIds });
     if (metadata.threadId) claimedThreadIds.add(metadata.threadId);
     const stableSessionId = metadata.threadId ?? (resumeArg && metadata.confidence === 'high' ? resumeArg : undefined);
     const authoritativeLabel = metadata.confidence === 'high' && metadata.labelSource === 'codex-rename' ? metadata.label : undefined;
@@ -206,7 +256,7 @@ export async function discoverCodexSessions(opts: {
       startedAt: Date.now(),
       paneId: pane?.paneId,
       projectName: projectNameFromCwd(cwd),
-      launchKind: resumeArg ? 'resume' : 'fresh',
+      launchKind: resumeArg || resumeWithoutArg ? 'resume' : 'fresh',
       resumeId: stableSessionId,
       resumable: Boolean(stableSessionId && metadata.resumable),
       label: authoritativeLabel,

@@ -113,6 +113,25 @@ describe('codex metadata resolver', () => {
     });
   });
 
+  it('treats the latest same-cwd title as a user rename for codex resume without an id', () => {
+    const result = resolveCodexThreadMetadata({
+      cwd: '/repo',
+      resumeWithoutArg: true,
+      threads: [
+        { id: 'older-thread', cwd: '/repo', title: 'Generated prompt title', updatedAt: 1 },
+        { id: 'latest-resumed-thread', cwd: '/repo', title: 'cc-tower', updatedAt: 5 },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      threadId: 'latest-resumed-thread',
+      label: 'cc-tower',
+      labelSource: 'codex-rename',
+      confidence: 'high',
+      resumable: true,
+    });
+  });
+
   it('fails closed on duplicate same-cwd sessions by withholding resumeId', () => {
     const result = resolveCodexThreadMetadata({
       cwd: '/repo',

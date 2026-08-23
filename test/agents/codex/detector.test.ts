@@ -60,6 +60,37 @@ describe('codex live detector metadata labels', () => {
     ]);
   });
 
+  it('exposes Codex rename titles for codex resume without an explicit thread id', async () => {
+    const cwdByPid = new Map<number, string>([[225, '/repo']]);
+    const processes: ProcessRow[] = [
+      {
+        pid: 225,
+        ppid: 1,
+        tty: '/dev/pts/6',
+        command: 'codex',
+        args: '/usr/bin/codex resume --dangerously-bypass-approvals-and-sandbox -c model_reasoning_effort=high -C /repo',
+      },
+    ];
+    const threads: CodexThreadRow[] = [
+      { id: 'older-thread', cwd: '/repo', title: 'Generated prompt title', updatedAt: 1 },
+      { id: 'latest-resumed-thread', cwd: '/repo', title: 'cc-tower', updatedAt: 5 },
+    ];
+
+    const sessions = await discoverCodexSessions({ processes, procReader: procReader(cwdByPid), threads });
+
+    expect(sessions).toEqual([
+      expect.objectContaining({
+        sessionId: 'latest-resumed-thread',
+        resumeId: 'latest-resumed-thread',
+        launchKind: 'resume',
+        label: 'cc-tower',
+        labelSource: 'codex-rename',
+        metadataConfidence: 'high',
+        resumable: true,
+      }),
+    ]);
+  });
+
   it('does not expose generated Codex titles as live dashboard labels without a user rename', async () => {
     const cwdByPid = new Map<number, string>([[250, '/repo']]);
     const processes: ProcessRow[] = [
