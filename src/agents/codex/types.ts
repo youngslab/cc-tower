@@ -18,6 +18,7 @@ export interface PaneSnapshot {
 
 export interface ProcReader {
   readCwd(pid: number): string | null | Promise<string | null>;
+  readEnv?(pid: number, name: string): string | null | Promise<string | null>;
 }
 
 export interface CodexThreadRow {
@@ -40,7 +41,7 @@ export interface CodexSessionInfo {
   resumeId?: string | undefined;
   resumable: boolean;
   label?: string | undefined;
-  labelSource?: 'codex-title' | 'codex-name-diagnostic' | 'popmux' | undefined;
+  labelSource?: 'codex-title' | 'codex-rename' | 'popmux' | undefined;
   metadataConfidence?: 'low' | 'medium' | 'high' | undefined;
   launchKind: 'fresh' | 'resume' | 'unknown';
 }

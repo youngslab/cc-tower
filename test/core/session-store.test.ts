@@ -900,7 +900,7 @@ describe('SessionStore agent-aware persistence', () => {
     expect(session?.resumeId).toBeUndefined();
   });
 
-  it('still restores conversation labels for stable Codex thread ids', async () => {
+  it('still restores user rename labels for stable Codex thread ids', async () => {
     const stateData = {
       version: 4,
       sessions: {
@@ -908,8 +908,8 @@ describe('SessionStore agent-aware persistence', () => {
           agentId: 'codex',
           cwd: '/repo',
           startedAt: Date.now(),
-          label: 'stable title',
-          labelSource: 'codex-title',
+          label: 'stable rename',
+          labelSource: 'codex-rename',
           resumeId: 'thread-1',
           resumable: true,
         },
@@ -927,8 +927,8 @@ describe('SessionStore agent-aware persistence', () => {
     expect(store.get('%102')).toMatchObject({
       agentId: 'codex',
       sessionId: 'thread-1',
-      label: 'stable title',
-      labelSource: 'codex-title',
+      label: 'stable rename',
+      labelSource: 'codex-rename',
       resumeId: 'thread-1',
       resumable: true,
     });

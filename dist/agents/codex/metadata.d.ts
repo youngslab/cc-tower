@@ -13,12 +13,13 @@ export declare function readCodexThreads(opts?: {
 export declare function resolveCodexThreadMetadata(input: {
     cwd: string;
     resumeArg?: string | undefined;
+    sessionStartedAt?: number | undefined;
     threads: CodexThreadRow[];
     claimedThreadIds?: Set<string>;
 }): {
     threadId?: string;
     label?: string;
-    labelSource?: 'codex-title' | 'codex-name-diagnostic';
+    labelSource?: 'codex-title' | 'codex-rename';
     confidence: 'low' | 'medium' | 'high';
     resumable: boolean;
 };

@@ -83,6 +83,21 @@ conn.close()
 function latestFirst(rows) {
     return [...rows].sort((a, b) => (b.updatedAt ?? b.createdAt ?? 0) - (a.updatedAt ?? a.createdAt ?? 0));
 }
+function labelFromThread(row) {
+    if (row.name)
+        return { label: row.name, labelSource: 'codex-rename' };
+    if (row.title)
+        return { label: row.title, labelSource: 'codex-title' };
+    return {};
+}
+function closeToStartedAt(rows, sessionStartedAt) {
+    const toleranceSeconds = 30;
+    return rows.filter((row) => {
+        if (row.createdAt === undefined)
+            return false;
+        return Math.abs(row.createdAt - sessionStartedAt) <= toleranceSeconds;
+    });
+}
 export function resolveCodexThreadMetadata(input) {
     const claimed = input.claimedThreadIds ?? new Set();
     const unclaimed = input.threads.filter((row) => !claimed.has(row.id));
@@ -91,8 +106,7 @@ export function resolveCodexThreadMetadata(input) {
         if (exact) {
             return {
                 threadId: exact.id,
-                label: exact.title,
-                labelSource: exact.title ? 'codex-title' : undefined,
+                ...labelFromThread(exact),
                 confidence: 'high',
                 resumable: true,
             };
@@ -100,8 +114,7 @@ export function resolveCodexThreadMetadata(input) {
         const claimedExact = input.threads.find((row) => row.id === input.resumeArg);
         if (claimedExact) {
             return {
-                label: claimedExact.title,
-                labelSource: claimedExact.title ? 'codex-title' : undefined,
+                ...labelFromThread(claimedExact),
                 confidence: 'medium',
                 resumable: false,
             };
@@ -112,8 +125,7 @@ export function resolveCodexThreadMetadata(input) {
             const match = unclaimedTitleMatches[0];
             return {
                 threadId: match.id,
-                label: match.title,
-                labelSource: 'codex-title',
+                ...labelFromThread(match),
                 confidence: 'high',
                 resumable: true,
             };
@@ -121,8 +133,7 @@ export function resolveCodexThreadMetadata(input) {
         if (titleMatches.length > 1) {
             const match = latestFirst(titleMatches)[0];
             return {
-                label: match.title,
-                labelSource: 'codex-title',
+                ...labelFromThread(match),
                 confidence: 'medium',
                 resumable: false,
             };
@@ -130,20 +141,30 @@ export function resolveCodexThreadMetadata(input) {
         if (titleMatches.length > 0) {
             const match = titleMatches[0];
             return {
-                label: match.title,
-                labelSource: 'codex-title',
+                ...labelFromThread(match),
                 confidence: 'medium',
                 resumable: false,
             };
         }
     }
     const cwdMatches = latestFirst(unclaimed.filter((row) => row.cwd === input.cwd));
+    if (input.sessionStartedAt !== undefined) {
+        const startedAtMatches = latestFirst(closeToStartedAt(cwdMatches, input.sessionStartedAt));
+        if (startedAtMatches.length === 1) {
+            const match = startedAtMatches[0];
+            return {
+                threadId: match.id,
+                ...labelFromThread(match),
+                confidence: 'high',
+                resumable: true,
+            };
+        }
+    }
     if (cwdMatches.length === 1) {
         const match = cwdMatches[0];
         return {
             threadId: match.id,
-            label: match.title,
-            labelSource: match.title ? 'codex-title' : undefined,
+            ...labelFromThread(match),
             confidence: 'high',
             resumable: true,
         };
@@ -151,8 +172,7 @@ export function resolveCodexThreadMetadata(input) {
     if (cwdMatches.length > 1) {
         const match = cwdMatches[0];
         return {
-            label: match.title,
-            labelSource: match.title ? 'codex-title' : undefined,
+            ...labelFromThread(match),
             confidence: 'medium',
             resumable: false,
         };

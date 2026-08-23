@@ -3,11 +3,27 @@ import { readFileSync } from 'node:fs';
 import { resolveCodexThreadMetadata } from '../../../src/agents/codex/metadata.js';
 
 describe('codex metadata resolver', () => {
-  it('uses threads.title as the primary label for an exact resume UUID', () => {
+  it('uses threads.name as the user rename label for an exact resume UUID', () => {
     const result = resolveCodexThreadMetadata({
       cwd: '/repo',
       resumeArg: 'uuid-1',
       threads: [{ id: 'uuid-1', cwd: '/repo', title: 'Build Codex support', name: 'diagnostic-name', updatedAt: 2 }],
+    });
+
+    expect(result).toMatchObject({
+      threadId: 'uuid-1',
+      label: 'diagnostic-name',
+      labelSource: 'codex-rename',
+      confidence: 'high',
+      resumable: true,
+    });
+  });
+
+  it('falls back to threads.title when no user rename is set for an exact resume UUID', () => {
+    const result = resolveCodexThreadMetadata({
+      cwd: '/repo',
+      resumeArg: 'uuid-1',
+      threads: [{ id: 'uuid-1', cwd: '/repo', title: 'Build Codex support', updatedAt: 2 }],
     });
 
     expect(result).toMatchObject({
@@ -67,15 +83,34 @@ describe('codex metadata resolver', () => {
     expect(result.resumable).toBe(false);
   });
 
-  it('does not use session_index or diagnostic name as authoritative label', () => {
+  it('uses threads.name as the user rename label for an authoritative cwd match', () => {
     const result = resolveCodexThreadMetadata({
       cwd: '/repo',
-      threads: [{ id: 'uuid-1', cwd: '/repo', name: 'db-name-only', updatedAt: 2 }],
+      threads: [{ id: 'uuid-1', cwd: '/repo', title: 'Auto title', name: 'user rename', updatedAt: 2 }],
     });
 
     expect(result.threadId).toBe('uuid-1');
-    expect(result.label).toBeUndefined();
-    expect(result.labelSource).toBeUndefined();
+    expect(result.label).toBe('user rename');
+    expect(result.labelSource).toBe('codex-rename');
+  });
+
+  it('uses OMX session start time to pick the matching renamed thread among same-cwd rows', () => {
+    const result = resolveCodexThreadMetadata({
+      cwd: '/repo',
+      sessionStartedAt: 2000,
+      threads: [
+        { id: 'matching-thread', cwd: '/repo', title: 'Auto title', name: 'user rename', createdAt: 2001, updatedAt: 3 },
+        { id: 'other-thread', cwd: '/repo', title: 'Newest unrelated', name: 'wrong rename', createdAt: 3000, updatedAt: 4 },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      threadId: 'matching-thread',
+      label: 'user rename',
+      labelSource: 'codex-rename',
+      confidence: 'high',
+      resumable: true,
+    });
   });
 
   it('fails closed on duplicate same-cwd sessions by withholding resumeId', () => {

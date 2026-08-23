@@ -3,7 +3,7 @@ export type AgentId = 'claude' | 'codex';
 export type LabelSource =
   | 'claude-custom-title'
   | 'codex-title'
-  | 'codex-name-diagnostic'
+  | 'codex-rename'
   | 'popmux';
 
 export function normalizeAgentId(value: unknown): AgentId {

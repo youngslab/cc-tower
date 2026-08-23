@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { readlinkSync } from 'node:fs';
+import { readFileSync, readlinkSync } from 'node:fs';
 import { execa } from 'execa';
 import { readCodexThreads, resolveCodexThreadMetadata } from './metadata.js';
 import type { CodexSessionInfo, CodexThreadRow, PaneSnapshot, ProcReader, ProcessRow } from './types.js';
@@ -108,6 +108,21 @@ function extractResumeArg(row: ProcessRow): string | undefined {
   return rest.slice(resumeIndex + 1).find((token) => !token.startsWith('-'));
 }
 
+function parseOmxSessionStartedAt(sessionId: string | undefined | null): number | undefined {
+  const match = sessionId?.match(/^omx-(\d{13})-/);
+  if (!match) return undefined;
+  const startedAtMs = Number(match[1]);
+  if (!Number.isFinite(startedAtMs)) return undefined;
+  return startedAtMs / 1000;
+}
+
+async function readOmxSessionStartedAt(row: ProcessRow, wrapper: ProcessRow | undefined, procReader: ProcReader): Promise<number | undefined> {
+  if (!procReader.readEnv) return undefined;
+  const fromRow = await procReader.readEnv(row.pid, 'OMX_SESSION_ID');
+  const fromWrapper = fromRow ? undefined : wrapper ? await procReader.readEnv(wrapper.pid, 'OMX_SESSION_ID') : undefined;
+  return parseOmxSessionStartedAt(fromRow ?? fromWrapper);
+}
+
 function findAncestor(
   row: ProcessRow,
   byPid: Map<number, ProcessRow>,
@@ -176,11 +191,12 @@ export async function discoverCodexSessions(opts: {
     if (!cwd) continue;
 
     const resumeArg = extractResumeArg(row);
+    const sessionStartedAt = await readOmxSessionStartedAt(row, wrapper, opts.procReader);
     const pane = mapProcessToPane(row, byPid, panes);
-    const metadata = resolveCodexThreadMetadata({ cwd, resumeArg, threads, claimedThreadIds });
+    const metadata = resolveCodexThreadMetadata({ cwd, resumeArg, sessionStartedAt, threads, claimedThreadIds });
     if (metadata.threadId) claimedThreadIds.add(metadata.threadId);
     const stableSessionId = metadata.threadId ?? (resumeArg && metadata.confidence === 'high' ? resumeArg : undefined);
-    const authoritativeLabel = metadata.confidence === 'high' ? metadata.label : undefined;
+    const authoritativeLabel = metadata.confidence === 'high' && metadata.labelSource === 'codex-rename' ? metadata.label : undefined;
     const authoritativeLabelSource = authoritativeLabel ? metadata.labelSource : undefined;
     sessions.push({
       agentId: 'codex',
@@ -222,6 +238,17 @@ export const liveProcReader: ProcReader = {
   readCwd(pid: number): string | null {
     try {
       return readlinkSync(`/proc/${pid}/cwd`);
+    } catch {
+      return null;
+    }
+  },
+  readEnv(pid: number, name: string): string | null {
+    try {
+      const prefix = `${name}=`;
+      const value = readFileSync(`/proc/${pid}/environ`, 'utf8')
+        .split('\0')
+        .find((entry) => entry.startsWith(prefix));
+      return value ? value.slice(prefix.length) : null;
     } catch {
       return null;
     }
