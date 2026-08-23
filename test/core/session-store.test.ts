@@ -862,6 +862,78 @@ describe('SessionStore agent-aware persistence', () => {
     expect(data.sessions['codex::same-id']).toMatchObject({ agentId: 'codex', label: 'Codex title', resumeId: 'same-id', resumable: true, labelSource: 'codex-title' });
   });
 
+  it('does not restore stale conversation labels for Codex process pseudo session ids', async () => {
+    const stateData = {
+      version: 4,
+      sessions: {
+        'codex::codex-proc-101': {
+          agentId: 'codex',
+          cwd: '/repo',
+          startedAt: Date.now(),
+          label: 'stale sqlite title',
+          labelSource: 'codex-title',
+          goalSummary: 'stale goal',
+          contextSummary: 'stale context',
+          nextSteps: 'stale next',
+          resumeId: 'stale-thread',
+          resumable: true,
+          tags: ['keep-tag'],
+        },
+      },
+    };
+    const { writeFile, mkdir } = await import('node:fs/promises');
+    const { dirname } = await import('node:path');
+    await mkdir(dirname(persistPath), { recursive: true });
+    await writeFile(persistPath, JSON.stringify(stateData), 'utf8');
+
+    const store = new SessionStore(persistPath);
+    store.restore();
+    store.register(makeSession({ agentId: 'codex', paneId: '%101', pid: 101, sessionId: 'codex-proc-101', cwd: '/repo', projectName: 'repo', resumable: false }));
+
+    const session = store.get('%101');
+    expect(session).toMatchObject({ agentId: 'codex', sessionId: 'codex-proc-101', resumable: false, tags: ['keep-tag'] });
+    expect(session?.label).toBeUndefined();
+    expect(session?.labelSource).toBeUndefined();
+    expect(session?.goalSummary).toBeUndefined();
+    expect(session?.contextSummary).toBeUndefined();
+    expect(session?.nextSteps).toBeUndefined();
+    expect(session?.resumeId).toBeUndefined();
+  });
+
+  it('still restores conversation labels for stable Codex thread ids', async () => {
+    const stateData = {
+      version: 4,
+      sessions: {
+        'codex::thread-1': {
+          agentId: 'codex',
+          cwd: '/repo',
+          startedAt: Date.now(),
+          label: 'stable title',
+          labelSource: 'codex-title',
+          resumeId: 'thread-1',
+          resumable: true,
+        },
+      },
+    };
+    const { writeFile, mkdir } = await import('node:fs/promises');
+    const { dirname } = await import('node:path');
+    await mkdir(dirname(persistPath), { recursive: true });
+    await writeFile(persistPath, JSON.stringify(stateData), 'utf8');
+
+    const store = new SessionStore(persistPath);
+    store.restore();
+    store.register(makeSession({ agentId: 'codex', paneId: '%102', pid: 102, sessionId: 'thread-1', cwd: '/repo', projectName: 'repo', resumable: true }));
+
+    expect(store.get('%102')).toMatchObject({
+      agentId: 'codex',
+      sessionId: 'thread-1',
+      label: 'stable title',
+      labelSource: 'codex-title',
+      resumeId: 'thread-1',
+      resumable: true,
+    });
+  });
+
   it('migrates legacy unprefixed Claude session keys to v4 namespaced keys on persist', async () => {
     const stateData = {
       version: 3,

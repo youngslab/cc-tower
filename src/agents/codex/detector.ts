@@ -2,7 +2,7 @@ import path from 'node:path';
 import { readlinkSync } from 'node:fs';
 import { execa } from 'execa';
 import { readCodexThreads, resolveCodexThreadMetadata } from './metadata.js';
-import type { CodexSessionInfo, PaneSnapshot, ProcReader, ProcessRow } from './types.js';
+import type { CodexSessionInfo, CodexThreadRow, PaneSnapshot, ProcReader, ProcessRow } from './types.js';
 
 const INTERACTIVE_SUBCOMMANDS = new Set(['resume', 'fork']);
 const NON_INTERACTIVE_SUBCOMMANDS = new Set([
@@ -158,10 +158,11 @@ export async function discoverCodexSessions(opts: {
   processes: ProcessRow[];
   panes?: PaneSnapshot[];
   procReader: ProcReader;
+  threads?: CodexThreadRow[];
 }): Promise<CodexSessionInfo[]> {
   const panes = opts.panes ?? [];
   const byPid = new Map(opts.processes.map((row) => [row.pid, row]));
-  const threads = readCodexThreads();
+  const threads = opts.threads ?? readCodexThreads();
   const claimedThreadIds = new Set<string>();
   const sessions: CodexSessionInfo[] = [];
 
@@ -179,6 +180,8 @@ export async function discoverCodexSessions(opts: {
     const metadata = resolveCodexThreadMetadata({ cwd, resumeArg, threads, claimedThreadIds });
     if (metadata.threadId) claimedThreadIds.add(metadata.threadId);
     const stableSessionId = metadata.threadId ?? (resumeArg && metadata.confidence === 'high' ? resumeArg : undefined);
+    const authoritativeLabel = metadata.confidence === 'high' ? metadata.label : undefined;
+    const authoritativeLabelSource = authoritativeLabel ? metadata.labelSource : undefined;
     sessions.push({
       agentId: 'codex',
       sessionId: stableSessionId ?? `codex-proc-${row.pid}`,
@@ -190,8 +193,8 @@ export async function discoverCodexSessions(opts: {
       launchKind: resumeArg ? 'resume' : 'fresh',
       resumeId: stableSessionId,
       resumable: Boolean(stableSessionId && metadata.resumable),
-      label: metadata.label,
-      labelSource: metadata.labelSource,
+      label: authoritativeLabel,
+      labelSource: authoritativeLabelSource,
       metadataConfidence: metadata.confidence,
     });
   }

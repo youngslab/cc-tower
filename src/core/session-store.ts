@@ -228,21 +228,27 @@ export class SessionStore extends EventEmitter {
     if (!session.projectName) {
       session.projectName = cwdToSlug(session.cwd);
     }
-    // Merge persisted session metadata (label, tags, summaries) from previous run
+    // Merge persisted session metadata (label, tags, summaries) from previous run.
+    // Codex process-derived ids (`codex-proc-*`) are not stable conversation ids;
+    // reusing their persisted title/summary/resume metadata can attach a stale
+    // SQLite thread title to the wrong live pane after process restart.
     let metaKey = sessionMetaKey(session);
     const persisted = this.persistedMeta.get(metaKey) ?? (session.agentId === 'claude' ? this.persistedMeta.get(session.sessionId) : undefined);
+    const canMergePersistedConversationMeta = !(session.agentId === 'codex' && session.sessionId.startsWith('codex-proc-'));
     if (persisted) {
       const existing = this.sessionMeta.get(metaKey) ?? {} as SessionMeta;
       const merged: SessionMeta = { ...existing };
-      if (persisted.label !== undefined && !merged.label) merged.label = persisted.label;
+      if (canMergePersistedConversationMeta) {
+        if (persisted.label !== undefined && !merged.label) merged.label = persisted.label;
+        if (persisted.goalSummary !== undefined) merged.goalSummary = persisted.goalSummary;
+        if (persisted.contextSummary !== undefined && !merged.contextSummary) merged.contextSummary = persisted.contextSummary;
+        if (persisted.nextSteps !== undefined && !merged.nextSteps) merged.nextSteps = persisted.nextSteps;
+      }
       if (persisted.tags !== undefined && !merged.tags) merged.tags = persisted.tags;
-      if (persisted.goalSummary !== undefined) merged.goalSummary = persisted.goalSummary;
-      if (persisted.contextSummary !== undefined && !merged.contextSummary) merged.contextSummary = persisted.contextSummary;
-      if (persisted.nextSteps !== undefined && !merged.nextSteps) merged.nextSteps = persisted.nextSteps;
       this.sessionMeta.set(metaKey, merged);
-      if (!session.resumeId && persisted.resumeId) session.resumeId = persisted.resumeId;
-      if (session.resumable === undefined && persisted.resumable !== undefined) session.resumable = persisted.resumable;
-      if (!session.labelSource && persisted.labelSource) session.labelSource = persisted.labelSource;
+      if (canMergePersistedConversationMeta && !session.resumeId && persisted.resumeId) session.resumeId = persisted.resumeId;
+      if (canMergePersistedConversationMeta && session.resumable === undefined && persisted.resumable !== undefined) session.resumable = persisted.resumable;
+      if (canMergePersistedConversationMeta && !session.labelSource && persisted.labelSource) session.labelSource = persisted.labelSource;
     }
     // Merge persisted instance data (favorite + cached sessionId) by identity
     const identity = sessionIdentity(session);

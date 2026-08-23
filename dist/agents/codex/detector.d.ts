@@ -1,4 +1,4 @@
-import type { CodexSessionInfo, PaneSnapshot, ProcReader, ProcessRow } from './types.js';
+import type { CodexSessionInfo, CodexThreadRow, PaneSnapshot, ProcReader, ProcessRow } from './types.js';
 export declare function parsePsOutput(stdout: string): ProcessRow[];
 export declare function parseTmuxPanes(stdout: string): PaneSnapshot[];
 export declare function isNativeCodex(row: ProcessRow): boolean;
@@ -9,6 +9,7 @@ export declare function discoverCodexSessions(opts: {
     processes: ProcessRow[];
     panes?: PaneSnapshot[];
     procReader: ProcReader;
+    threads?: CodexThreadRow[];
 }): Promise<CodexSessionInfo[]>;
 export declare function readLiveProcesses(): Promise<ProcessRow[]>;
 export declare function readLiveTmuxPanes(): Promise<PaneSnapshot[]>;

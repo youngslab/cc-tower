@@ -148,7 +148,7 @@ function projectNameFromCwd(cwd) {
 export async function discoverCodexSessions(opts) {
     const panes = opts.panes ?? [];
     const byPid = new Map(opts.processes.map((row) => [row.pid, row]));
-    const threads = readCodexThreads();
+    const threads = opts.threads ?? readCodexThreads();
     const claimedThreadIds = new Set();
     const sessions = [];
     for (const row of opts.processes) {
@@ -166,6 +166,8 @@ export async function discoverCodexSessions(opts) {
         if (metadata.threadId)
             claimedThreadIds.add(metadata.threadId);
         const stableSessionId = metadata.threadId ?? (resumeArg && metadata.confidence === 'high' ? resumeArg : undefined);
+        const authoritativeLabel = metadata.confidence === 'high' ? metadata.label : undefined;
+        const authoritativeLabelSource = authoritativeLabel ? metadata.labelSource : undefined;
         sessions.push({
             agentId: 'codex',
             sessionId: stableSessionId ?? `codex-proc-${row.pid}`,
@@ -177,8 +179,8 @@ export async function discoverCodexSessions(opts) {
             launchKind: resumeArg ? 'resume' : 'fresh',
             resumeId: stableSessionId,
             resumable: Boolean(stableSessionId && metadata.resumable),
-            label: metadata.label,
-            labelSource: metadata.labelSource,
+            label: authoritativeLabel,
+            labelSource: authoritativeLabelSource,
             metadataConfidence: metadata.confidence,
         });
     }
