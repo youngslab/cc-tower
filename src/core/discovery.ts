@@ -14,6 +14,10 @@ export interface SessionInfo {
   resumable?: boolean;
   label?: string;
   labelSource?: LabelSource;
+  goalSummary?: string;
+  contextSummary?: string;
+  nextSteps?: string;
+  currentTask?: string;
   paneId?: string;
   cwd: string;
   startedAt: number;

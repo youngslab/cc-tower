@@ -2,6 +2,7 @@ import path from 'node:path';
 import { readFileSync, readlinkSync } from 'node:fs';
 import { execa } from 'execa';
 import { readCodexThreads, resolveCodexThreadMetadata } from './metadata.js';
+import { summarizeCodexThread } from './rollout-summary.js';
 import type { CodexSessionInfo, CodexThreadRow, PaneSnapshot, ProcReader, ProcessRow } from './types.js';
 
 const INTERACTIVE_SUBCOMMANDS = new Set(['resume', 'fork']);
@@ -246,6 +247,8 @@ export async function discoverCodexSessions(opts: {
     const metadata = resolveCodexThreadMetadata({ cwd, resumeArg, resumeWithoutArg, sessionStartedAt, threads, claimedThreadIds });
     if (metadata.threadId) claimedThreadIds.add(metadata.threadId);
     const stableSessionId = metadata.threadId ?? (resumeArg && metadata.confidence === 'high' ? resumeArg : undefined);
+    const thread = stableSessionId ? threads.find(candidate => candidate.id === stableSessionId) : undefined;
+    const summaries = metadata.confidence === 'high' && thread ? summarizeCodexThread(thread) : undefined;
     const authoritativeLabel = metadata.confidence === 'high' && metadata.labelSource === 'codex-rename' ? metadata.label : undefined;
     const authoritativeLabelSource = authoritativeLabel ? metadata.labelSource : undefined;
     sessions.push({
@@ -261,6 +264,9 @@ export async function discoverCodexSessions(opts: {
       resumable: Boolean(stableSessionId && metadata.resumable),
       label: authoritativeLabel,
       labelSource: authoritativeLabelSource,
+      goalSummary: summaries?.goal,
+      contextSummary: summaries?.context,
+      nextSteps: summaries?.nextSteps,
       metadataConfidence: metadata.confidence,
     });
   }

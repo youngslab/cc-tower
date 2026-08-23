@@ -11,7 +11,7 @@ export const codexAdapter: AgentAdapter = {
     hooks: false,
     resume: true,
     remote: false,
-    summaries: false,
+    summaries: true,
     jsonl: false,
     sqlite: true,
   },

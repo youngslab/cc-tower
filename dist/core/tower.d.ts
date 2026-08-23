@@ -94,8 +94,7 @@ export declare class Tower extends EventEmitter {
      */
     private refreshSessionAfterResume;
     /**
-     * Refresh goal + context + nextSteps in a single combined LLM call.
-     * Reads earlyContext (head) for goal, recentContext (tail) for context/nextSteps.
+     * Refresh goal + context + nextSteps through the session's agent-specific summary provider.
      */
     private refreshAllSummaries;
     private refreshGoalSummary;

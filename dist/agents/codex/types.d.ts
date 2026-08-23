@@ -25,6 +25,9 @@ export interface CodexThreadRow {
     name?: string | undefined;
     updatedAt?: number | undefined;
     createdAt?: number | undefined;
+    firstUserMessage?: string | undefined;
+    preview?: string | undefined;
+    rolloutPath?: string | undefined;
 }
 export interface CodexSessionInfo {
     agentId: 'codex';
@@ -38,6 +41,10 @@ export interface CodexSessionInfo {
     resumable: boolean;
     label?: string | undefined;
     labelSource?: 'codex-title' | 'codex-rename' | 'popmux' | undefined;
+    goalSummary?: string | undefined;
+    contextSummary?: string | undefined;
+    nextSteps?: string | undefined;
+    currentTask?: string | undefined;
     metadataConfidence?: 'low' | 'medium' | 'high' | undefined;
     launchKind: 'fresh' | 'resume' | 'unknown';
 }

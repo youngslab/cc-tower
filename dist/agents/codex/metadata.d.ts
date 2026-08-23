@@ -10,6 +10,10 @@ export declare function readCodexThreads(opts?: {
     dbPath?: string;
     limit?: number;
 }): CodexThreadRow[];
+export declare function readCodexThreadById(threadId: string, opts?: {
+    codexHome?: string;
+    dbPath?: string;
+}): CodexThreadRow | undefined;
 export declare function resolveCodexThreadMetadata(input: {
     cwd: string;
     resumeArg?: string | undefined;

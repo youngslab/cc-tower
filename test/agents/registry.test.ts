@@ -6,7 +6,7 @@ describe('agent adapter registry', () => {
     const ids = listAgentAdapters().map(a => a.id).sort();
     expect(ids).toEqual(['claude', 'codex']);
     expect(getAgentAdapter('claude').capabilities).toMatchObject({ hooks: true, remote: false, jsonl: true, sqlite: false });
-    expect(getAgentAdapter('codex').capabilities).toMatchObject({ hooks: false, remote: false, jsonl: false, sqlite: true });
+    expect(getAgentAdapter('codex').capabilities).toMatchObject({ hooks: false, remote: false, summaries: true, jsonl: false, sqlite: true });
   });
 
   it('keeps command construction behind the adapter boundary', () => {
@@ -51,11 +51,12 @@ describe('agent adapter registry', () => {
     expect(claude.generateAllSummaries).toBeTypeOf('function');
   });
 
-  it('keeps unsupported Codex lifecycle hooks absent rather than branching in core', () => {
+  it('keeps unsupported Codex JSONL lifecycle hooks absent while summaries use providers', () => {
     const codex = getAgentAdapter('codex');
     expect(codex.parseSessionFile).toBeUndefined();
     expect(codex.coldStartStatus).toBeUndefined();
     expect(codex.generateAllSummaries).toBeUndefined();
+    expect(codex.capabilities.summaries).toBe(true);
     expect(codex.discoverLiveSessions).toBeTypeOf('function');
   });
 

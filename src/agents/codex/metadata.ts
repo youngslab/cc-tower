@@ -12,6 +12,9 @@ interface RawThreadRow {
   name?: unknown;
   updated_at?: unknown;
   created_at?: unknown;
+  first_user_message?: unknown;
+  preview?: unknown;
+  rollout_path?: unknown;
 }
 
 export function findCodexStateDb(codexHome = process.env['CODEX_HOME'] ?? join(homedir(), '.codex')): string | undefined {
@@ -50,6 +53,9 @@ function normalizeRows(rows: RawThreadRow[]): CodexThreadRow[] {
         name: typeof row.name === 'string' && row.name ? row.name : undefined,
         updatedAt: toMs(row.updated_at),
         createdAt: toMs(row.created_at),
+        firstUserMessage: typeof row.first_user_message === 'string' && row.first_user_message ? row.first_user_message : undefined,
+        preview: typeof row.preview === 'string' && row.preview ? row.preview : undefined,
+        rolloutPath: typeof row.rollout_path === 'string' && row.rollout_path ? row.rollout_path : undefined,
       };
     })
     .filter((row): row is CodexThreadRow => row !== null);
@@ -70,7 +76,7 @@ path = sys.argv[1]
 limit = int(sys.argv[2])
 conn = sqlite3.connect('file:' + path + '?mode=ro', uri=True, timeout=0.2)
 conn.row_factory = sqlite3.Row
-rows = conn.execute('select id, cwd, title, name, updated_at, created_at from threads order by coalesce(updated_at, created_at) desc limit ?', (limit,)).fetchall()
+rows = conn.execute('select id, cwd, title, name, updated_at, created_at, first_user_message, preview, rollout_path from threads order by coalesce(updated_at, created_at) desc limit ?', (limit,)).fetchall()
 print(json.dumps([dict(row) for row in rows]))
 conn.close()
 `;
@@ -84,6 +90,34 @@ conn.close()
   } catch (err) {
     logger.debug('codex.metadata: read failed', { dbPath, error: String(err) });
     return [];
+  }
+}
+
+
+export function readCodexThreadById(threadId: string, opts: { codexHome?: string; dbPath?: string } = {}): CodexThreadRow | undefined {
+  const dbPath = opts.dbPath ?? findCodexStateDb(opts.codexHome);
+  if (!dbPath) return undefined;
+  const script = String.raw`
+import json, sqlite3, sys
+path = sys.argv[1]
+thread_id = sys.argv[2]
+conn = sqlite3.connect('file:' + path + '?mode=ro', uri=True, timeout=0.2)
+conn.row_factory = sqlite3.Row
+row = conn.execute('select id, cwd, title, name, updated_at, created_at, first_user_message, preview, rollout_path from threads where id = ? limit 1', (thread_id,)).fetchone()
+print(json.dumps(dict(row) if row else None))
+conn.close()
+`;
+  try {
+    const stdout = execFileSync('python3', ['-c', script, dbPath, threadId], {
+      encoding: 'utf8',
+      timeout: 800,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const parsed = JSON.parse(stdout) as RawThreadRow | null;
+    return parsed ? normalizeRows([parsed])[0] : undefined;
+  } catch (err) {
+    logger.debug('codex.metadata: read thread failed', { dbPath, threadId, error: String(err) });
+    return undefined;
   }
 }
 

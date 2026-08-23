@@ -17,6 +17,7 @@ import { isHeadlessProcess, isPidAlive, getPpid } from '../utils/pid-resolver.js
 import { tmux } from '../tmux/commands.js';
 import { cleanDisplayText, isInternalMessage } from '../utils/slug.js';
 import { getAgentAdapter } from '../agents/registry.js';
+import { getSummaryProvider, listSummaryProviders } from '../agents/summary-providers.js';
 import { agentResumable, agentResumeId, type AgentAdapter, type AgentStatus } from '../agents/adapter.js';
 import { agentWindowName, buildAgentCommand } from '../agents/commands.js';
 import { normalizeAgentId, type AgentId } from '../agents/types.js';
@@ -313,9 +314,11 @@ export class Tower extends EventEmitter {
       }
     }
 
-    // 10. Start hidden LLM session (non-blocking, boots in background)
+    // 10. Start summary providers (non-blocking; providers may keep warm state)
     if (!this.skipSummary) {
-      void this.claude.startLlmSession?.();
+      for (const provider of listSummaryProviders()) {
+        void Promise.resolve(provider.start?.()).catch(() => {});
+      }
     }
 
     // 11. Remote sessions are intentionally disabled for the current MVP.
@@ -838,7 +841,7 @@ export class Tower extends EventEmitter {
     logger.info('tower: refreshSession called', { sessionId, host: session.host, sshTarget: session.sshTarget });
 
     // Clear UI immediately
-    this.claude.clearSummaryCache?.(sessionId);
+    getSummaryProvider(session.agentId).clearCache?.(sessionId);
     this.store.updateMeta(identity, { goalSummary: undefined, contextSummary: undefined, nextSteps: undefined });
     this.store.update(identity, { summaryLoading: true });
 
@@ -872,6 +875,8 @@ export class Tower extends EventEmitter {
         void this.refreshGoalSummary(identity, jp);
         void this.refreshContextSummary(identity, jp);
         void this.refreshNextSteps(identity, jp);
+      } else if (!this.skipSummary && getSummaryProvider(session.agentId).agentId !== 'claude') {
+        await this.refreshAllSummaries(identity);
       } else {
         // No JSONL available — clear loading state
         this.store.update(identity, { summaryLoading: false });
@@ -937,38 +942,32 @@ export class Tower extends EventEmitter {
   }
 
   /**
-   * Refresh goal + context + nextSteps in a single combined LLM call.
-   * Reads earlyContext (head) for goal, recentContext (tail) for context/nextSteps.
+   * Refresh goal + context + nextSteps through the session's agent-specific summary provider.
    */
-  private async refreshAllSummaries(identity: string, jsonlPath: string): Promise<void> {
+  private async refreshAllSummaries(identity: string, artifactPath?: string): Promise<void> {
     if (this.skipSummary) return;
     try {
       const session = this.store.get(identity);
-      const sessionId = session?.sessionId ?? identity;
-      logger.info('tower: refreshing all summaries', { identity, jsonlPath });
-
-      const [earlyMessages, recentMessages] = await Promise.all([
-        this.jsonlWatcher.readEarlyContext(jsonlPath, 15),
-        this.jsonlWatcher.readRecentContext(jsonlPath, 15),
-      ]);
-
-      if (!recentMessages || recentMessages.length < 20) {
-        logger.info('tower: messages too short for LLM summary', { identity });
-        this.store.update(identity, { summaryLoading: false });
-        return;
-      }
+      if (!session) return;
+      const provider = getSummaryProvider(session.agentId);
+      logger.info('tower: refreshing all summaries', { identity, agentId: provider.agentId, artifactPath });
 
       this.store.update(identity, { summaryLoading: true });
-      logger.info('tower: calling LLM for all summaries', { identity });
-      const result = await this.claude.generateAllSummaries?.(sessionId, earlyMessages ?? recentMessages, recentMessages);
+      const result = await provider.generate({
+        sessionId: session.sessionId,
+        cwd: session.cwd,
+        artifactPath,
+        readEarlyContext: (file, maxMessages) => this.jsonlWatcher.readEarlyContext(file, maxMessages),
+        readRecentContext: (file, maxMessages) => this.jsonlWatcher.readRecentContext(file, maxMessages),
+      });
 
       if (result) {
         if (result.goal) this.store.updateMeta(identity, { goalSummary: result.goal });
         if (result.context) this.store.updateMeta(identity, { contextSummary: result.context });
         if (result.nextSteps) this.store.updateMeta(identity, { nextSteps: result.nextSteps });
-        logger.info('tower: all summaries received', { identity, goal: result.goal, context: result.context });
+        logger.info('tower: all summaries received', { identity, agentId: provider.agentId, goal: result.goal, context: result.context });
       } else {
-        logger.info('tower: LLM returned no summaries', { identity });
+        logger.info('tower: summary provider returned no summaries', { identity, agentId: provider.agentId });
       }
       this.store.update(identity, { summaryLoading: false });
     } catch (err) {
@@ -1001,7 +1000,9 @@ export class Tower extends EventEmitter {
     this.store.persistSync();
     // Fire-and-forget: don't await these to avoid slow shutdown
     this.hookReceiver.stop().catch(() => {});
-    Promise.resolve(this.claude.stopLlmSession?.()).catch(() => {});
+    for (const provider of listSummaryProviders()) {
+      Promise.resolve(provider.stop?.()).catch(() => {});
+    }
   }
 
   private async registerSession(info: SessionInfo, opts: { skipJsonlFallback?: boolean } = {}): Promise<void> {
@@ -1091,10 +1092,11 @@ export class Tower extends EventEmitter {
     };
     const registerChosenConvId = path.basename(jsonlPath, '.jsonl');
     this.store.register(session, { chosenConversationId: registerChosenConvId });
+    const identity = sessionIdentity(session);
     // Observability (Step 6 / Amendment 3): debug trail of register decisions.
     logger.debug('tower: register decision', {
       event: 'register',
-      identity: sessionIdentity(session),
+      identity,
       hookSid: info.sessionId.slice(0, 12),
       chosenConvId: registerChosenConvId.slice(0, 12),
       persistedConvId: persistedConvId?.slice(0, 12),
@@ -1108,7 +1110,7 @@ export class Tower extends EventEmitter {
       const correctedJsonl = this.claudeArtifactPath(info.cwd, registeredSession.sessionId, { rootDir: claudeDir });
       if (fs.existsSync(correctedJsonl)) {
         logger.info('tower: sessionId corrected by cache, switching JSONL', {
-          identity: sessionIdentity(session), old: info.sessionId.slice(0, 12), corrected: registeredSession.sessionId.slice(0, 12),
+          identity, old: info.sessionId.slice(0, 12), corrected: registeredSession.sessionId.slice(0, 12),
         });
         jsonlPath = correctedJsonl;
         info.sessionId = registeredSession.sessionId;
@@ -1123,7 +1125,6 @@ export class Tower extends EventEmitter {
     }
 
     // f. Create state machine
-    const identity = sessionIdentity(session);
     const fsm = new SessionStateMachine(info.sessionId, initialState);
     fsm.on('state-change', (change) => {
       const currentSession = this.store.get(identity);
@@ -1264,12 +1265,30 @@ export class Tower extends EventEmitter {
       host: info.host ?? 'local',
       sshTarget: info.sshTarget,
       ...(info.label ? { label: info.label } : {}),
+      ...(info.currentTask ? { currentTask: info.currentTask } : {}),
     };
 
     this.store.register(session);
+    const identity = sessionIdentity(session);
+    const initialMeta: Partial<import('./session-store.js').SessionMeta> = {};
+    if (info.goalSummary !== undefined) initialMeta.goalSummary = info.goalSummary;
+    if (info.contextSummary !== undefined) initialMeta.contextSummary = info.contextSummary;
+    if (info.nextSteps !== undefined) initialMeta.nextSteps = info.nextSteps;
+    if (Object.keys(initialMeta).length > 0) {
+      this.store.updateMeta(identity, initialMeta);
+    } else if (!this.skipSummary) {
+      const generated = await getSummaryProvider(adapter.id).generate({ sessionId: session.sessionId, cwd: session.cwd });
+      if (generated) {
+        const generatedMeta: Partial<import('./session-store.js').SessionMeta> = {};
+        if (generated.goal !== undefined) generatedMeta.goalSummary = generated.goal;
+        if (generated.context !== undefined) generatedMeta.contextSummary = generated.context;
+        if (generated.nextSteps !== undefined) generatedMeta.nextSteps = generated.nextSteps;
+        this.store.updateMeta(identity, generatedMeta);
+      }
+    }
     logger.info('tower: process agent session registered', {
       agentId: adapter.id,
-      identity: sessionIdentity(session),
+      identity,
       sessionId: info.sessionId,
       resumeId: session.resumeId,
       pane: mapping.paneId ?? 'none',

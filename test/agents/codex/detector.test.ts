@@ -73,7 +73,7 @@ describe('codex live detector metadata labels', () => {
     ];
     const threads: CodexThreadRow[] = [
       { id: 'older-thread', cwd: '/repo', title: 'Generated prompt title', updatedAt: 1 },
-      { id: 'latest-resumed-thread', cwd: '/repo', title: 'cc-tower', updatedAt: 5 },
+      { id: 'latest-resumed-thread', cwd: '/repo', title: 'cc-tower', preview: 'Codex rename dashboard work', updatedAt: 5 },
     ];
 
     const sessions = await discoverCodexSessions({ processes, procReader: procReader(cwdByPid), threads });
@@ -85,6 +85,7 @@ describe('codex live detector metadata labels', () => {
         launchKind: 'resume',
         label: 'cc-tower',
         labelSource: 'codex-rename',
+        goalSummary: 'Codex rename dashboard work',
         metadataConfidence: 'high',
         resumable: true,
       }),
