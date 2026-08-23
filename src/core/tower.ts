@@ -17,7 +17,7 @@ import { isHeadlessProcess, isPidAlive, getPpid } from '../utils/pid-resolver.js
 import { tmux } from '../tmux/commands.js';
 import { cleanDisplayText, isInternalMessage } from '../utils/slug.js';
 import { getAgentAdapter } from '../agents/registry.js';
-import type { AgentAdapter, AgentStatus } from '../agents/adapter.js';
+import { agentResumable, agentResumeId, type AgentAdapter, type AgentStatus } from '../agents/adapter.js';
 import { agentWindowName, buildAgentCommand } from '../agents/commands.js';
 import { normalizeAgentId, type AgentId } from '../agents/types.js';
 import { logger } from '../utils/logger.js';
@@ -54,7 +54,6 @@ export class Tower extends EventEmitter {
   private resolver!: ConversationResolver;
   private ledger?: ConversationLedger;
   private readonly claude: AgentAdapter = getAgentAdapter('claude');
-  private readonly codex: AgentAdapter = getAgentAdapter('codex');
 
   constructor(config?: Config, opts?: { skipHooks?: boolean; skipColdStart?: boolean; skipSummary?: boolean; readOnly?: boolean }) {
     super();
@@ -373,7 +372,8 @@ export class Tower extends EventEmitter {
 
   private async rehydrateCodexFromProcess(): Promise<void> {
     try {
-      const sessions = await (this.codex.discoverLiveSessions?.() ?? []);
+      const codex = getAgentAdapter('codex');
+      const sessions = await (codex.discoverLiveSessions?.() ?? []);
       for (const info of sessions) {
         await this.registerSession(info);
       }
@@ -1006,8 +1006,9 @@ export class Tower extends EventEmitter {
 
   private async registerSession(info: SessionInfo, opts: { skipJsonlFallback?: boolean } = {}): Promise<void> {
     const agentId = normalizeAgentId(info.agentId);
-    if (agentId === 'codex') {
-      await this.registerCodexSession(info);
+    const adapter = getAgentAdapter(agentId);
+    if (!adapter.capabilities.jsonl) {
+      await this.registerProcessAgentSession(info, adapter);
       return;
     }
 
@@ -1068,11 +1069,11 @@ export class Tower extends EventEmitter {
     // e. Register in store
     const projectName = path.basename(info.cwd);
     const session: Session = {
-      agentId: 'claude',
+      agentId: adapter.id,
       pid: info.pid,
       sessionId: info.sessionId,
-      resumeId: info.resumeId ?? info.sessionId,
-      resumable: info.resumable ?? true,
+      resumeId: agentResumeId(adapter, info),
+      resumable: agentResumable(adapter, info),
       labelSource: info.labelSource,
       paneId: mapping.paneId,
       hasTmux: mapping.hasTmux,
@@ -1227,7 +1228,7 @@ export class Tower extends EventEmitter {
     });
   }
 
-  private async registerCodexSession(info: SessionInfo): Promise<void> {
+  private async registerProcessAgentSession(info: SessionInfo, adapter: AgentAdapter): Promise<void> {
     if (info.cwd.startsWith('/tmp')) return;
 
     const mapping = info.paneId
@@ -1237,18 +1238,18 @@ export class Tower extends EventEmitter {
     if (mapping.paneId) {
       for (const existing of this.store.getAll()) {
         if (existing.paneId === mapping.paneId && existing.sessionId !== info.sessionId && existing.status !== 'dead') {
-          logger.info('tower: evicting session — same pane taken by codex session', { evicted: existing.sessionId, new: info.sessionId, paneId: mapping.paneId });
+          logger.info('tower: evicting session — same pane taken by process agent session', { agentId: adapter.id, evicted: existing.sessionId, new: info.sessionId, paneId: mapping.paneId });
           this.cleanupSession(sessionIdentity(existing));
         }
       }
     }
 
     const session: Session = {
-      agentId: 'codex',
+      agentId: adapter.id,
       pid: info.pid,
       sessionId: info.sessionId,
-      resumeId: info.resumeId,
-      resumable: info.resumable ?? Boolean(info.resumeId && !info.sessionId.startsWith('codex-proc-')),
+      resumeId: agentResumeId(adapter, info),
+      resumable: agentResumable(adapter, info),
       labelSource: info.labelSource,
       paneId: mapping.paneId,
       hasTmux: mapping.hasTmux,
@@ -1266,10 +1267,11 @@ export class Tower extends EventEmitter {
     };
 
     this.store.register(session);
-    logger.info('tower: codex session registered', {
+    logger.info('tower: process agent session registered', {
+      agentId: adapter.id,
       identity: sessionIdentity(session),
       sessionId: info.sessionId,
-      resumeId: info.resumeId,
+      resumeId: session.resumeId,
       pane: mapping.paneId ?? 'none',
       labelSource: info.labelSource,
     });

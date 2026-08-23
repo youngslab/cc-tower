@@ -96,6 +96,10 @@ function expand(q: string): string {
   return q.startsWith('~') ? q.replace('~', process.env['HOME'] ?? '') : q;
 }
 
+function pastSessionIdentity(s: PastSessionByCwd): string {
+  return `${normalizeAgentId(s.agentId)}::${s.sessionId || s.cwd}`;
+}
+
 export function NewSession({ onSelect, onCancel, getPastSessionsByTarget }: Props) {
   const [cursor, setCursor] = useState(0);
   const [query, setQuery] = useState('');
@@ -124,6 +128,10 @@ export function NewSession({ onSelect, onCancel, getPastSessionsByTarget }: Prop
     onSelect(projectPath, undefined, undefined, selectedAgent);
   }, [onSelect, selectedAgent]);
 
+  const handlePastSessionSelected = useCallback((past: PastSessionByCwd) => {
+    onSelect(past.cwd, undefined, undefined, normalizeAgentId(past.agentId));
+  }, [onSelect]);
+
   useInput((input, key) => {
     if (key.escape) {
       if (query) { setQuery(''); setCursor(0); return; }
@@ -148,7 +156,7 @@ export function NewSession({ onSelect, onCancel, getPastSessionsByTarget }: Prop
         handlePathSelected(expand(query).replace(/\/$/, ''));
       } else {
         const idx = showStartIn ? cursor - 1 : cursor;
-        if (filtered[idx]) handlePathSelected(filtered[idx]!.cwd);
+        if (filtered[idx]) handlePastSessionSelected(filtered[idx]!);
       }
       return;
     }
@@ -190,7 +198,7 @@ export function NewSession({ onSelect, onCancel, getPastSessionsByTarget }: Prop
             </Box>
           )}
           {filtered.map((s, i) => (
-            <Box key={s.cwd}>
+            <Box key={pastSessionIdentity(s)}>
               <Text color={cursor === (showStartIn ? i + 1 : i) ? 'cyan' : undefined} bold={cursor === (showStartIn ? i + 1 : i)}>
                 {cursor === (showStartIn ? i + 1 : i) ? '▸ ' : '  '}[{agentShortBadge(normalizeAgentId(s.agentId))}] {path.basename(s.cwd)}
               </Text>

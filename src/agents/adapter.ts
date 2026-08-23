@@ -75,6 +75,8 @@ export interface AgentAdapter {
   buildCommand(input: AgentCommandInput): string;
   windowName(projectName: string): string;
   inferPaneBusy(title: string): boolean | undefined;
+  defaultResumeId?(info: AgentSessionInfo): string | undefined;
+  defaultResumable?(info: AgentSessionInfo): boolean;
   sessionArtifactPath?(input: AgentSessionArtifactPathInput): string;
   sessionArtifactDir?(input: AgentSessionArtifactDirInput): string;
 
@@ -93,4 +95,12 @@ export interface AgentAdapter {
   generateGoalSummary?(sessionId: string, earlyMessages: string): Promise<string | undefined>;
   generateContextSummary?(sessionId: string, recentMessages: string): Promise<string | undefined>;
   generateNextSteps?(sessionId: string, recentMessages: string): Promise<string | undefined>;
+}
+
+export function agentResumeId(adapter: AgentAdapter, info: AgentSessionInfo): string | undefined {
+  return info.resumeId ?? adapter.defaultResumeId?.(info);
+}
+
+export function agentResumable(adapter: AgentAdapter, info: AgentSessionInfo): boolean {
+  return info.resumable ?? adapter.defaultResumable?.(info) ?? adapter.capabilities.resume;
 }

@@ -59,6 +59,7 @@ function makeMockStore(sessions: Session[], pastSessions: PastEntry[] = []) {
   const ee = new EventEmitter();
   return {
     getAll: () => sessions,
+    get: (identity: string) => sessions.find(s => (s.paneId ?? String(s.pid)) === identity),
     on: (event: string, listener: (...args: unknown[]) => void) => { ee.on(event, listener); return () => ee.off(event, listener); },
     off: (event: string, listener: (...args: unknown[]) => void) => { ee.off(event, listener); },
     update: vi.fn(),
@@ -255,6 +256,26 @@ describe('picker keys (ink-testing-library)', () => {
     unmount();
   });
 
+  it('n opens NewSession showing coexisting Claude and Codex rows for the same cwd', async () => {
+    const claudePast = { agentId: 'claude' as const, sessionId: 'claude-past', cwd: '/home/me/shared-workspace', startedAt: 2, label: 'claude shared' };
+    const codexPast = { agentId: 'codex' as const, sessionId: 'codex-past', cwd: '/home/me/shared-workspace', startedAt: 1, label: 'codex shared' };
+    const tower = makeMockTower([makeSession()], [claudePast, codexPast]);
+
+    const { stdin, lastFrame, unmount } = render(
+      <App tower={tower} pickerMode={true} outputPath={outputPath} />,
+    );
+
+    await settle();
+    stdin.write('n');
+    await settle();
+
+    const frame = lastFrame()!;
+    expect(frame).toContain('[C] shared-workspace');
+    expect(frame).toContain('[X] shared-workspace');
+
+    unmount();
+  });
+
   // ── Test 3c: typing a path in NewSession shows a "Start in" row ──────────
   it('n opens NewSession; typing a path shows Start in row', async () => {
     const localPast = { sessionId: 'past-local', cwd: '/home/me/workspace-alpha', startedAt: 1, label: 'alpha' };
@@ -273,6 +294,76 @@ describe('picker keys (ink-testing-library)', () => {
     const frame = lastFrame()!;
     expect(frame).toContain('Start in:');
     expect(frame).toContain('/tmp/x');
+
+    unmount();
+  });
+
+  it('n opens NewSession; selecting a Codex history row starts Codex even before toggling', async () => {
+    const tower = makeMockTower([makeSession()], [
+      { agentId: 'codex', sessionId: 'codex-past', cwd: '/home/me/codex-workspace', startedAt: 1, label: 'codex workspace' },
+    ]);
+
+    const { stdin, unmount } = render(
+      <App tower={tower} pickerMode={true} outputPath={outputPath} />,
+    );
+
+    await settle();
+    stdin.write('n');
+    await settle();
+    stdin.write('\r');
+    await settle(200);
+
+    const result = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
+    expect(result.action).toBe('new');
+    expect(result.cwd).toBe('/home/me/codex-workspace');
+    expect(result.agentId).toBe('codex');
+    expect(result.resumeSessionId).toBeNull();
+
+    unmount();
+  });
+
+  it('favorite reorder uses pane identity when Claude and Codex session ids collide', async () => {
+    const first = makeSession({ agentId: 'claude', pid: 101, paneId: '%101', sessionId: 'same', favorite: true, favoritedAt: 1 });
+    const second = makeSession({ agentId: 'codex', pid: 102, paneId: '%102', sessionId: 'same', favorite: true, favoritedAt: 2, detectionMode: 'process' });
+    const tower = makeMockTower([first, second]);
+
+    const { stdin, unmount } = render(
+      <App tower={tower} pickerMode={true} outputPath={outputPath} />,
+    );
+
+    await settle();
+    stdin.write(']');
+    await settle();
+
+    expect(tower.store.update).toHaveBeenCalledWith('%101', { favoritedAt: 2 });
+    expect(tower.store.update).toHaveBeenCalledWith('%102', { favoritedAt: 1 });
+    expect(tower.store.persistSync).toHaveBeenCalled();
+
+    unmount();
+  });
+
+  it('n opens NewSession; toggling agent starts exactly one Codex session', async () => {
+    const tower = makeMockTower([makeSession()]);
+
+    const { stdin, unmount } = render(
+      <App tower={tower} pickerMode={true} outputPath={outputPath} />,
+    );
+
+    await settle();
+    stdin.write('n');
+    await settle();
+    stdin.write('a'); // Claude -> Codex
+    await settle();
+    stdin.write('/tmp/codex-only');
+    await settle();
+    stdin.write('\r');
+    await settle(200);
+
+    const result = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
+    expect(result.action).toBe('new');
+    expect(result.cwd).toBe('/tmp/codex-only');
+    expect(result.agentId).toBe('codex');
+    expect(result.resumeSessionId).toBeNull();
 
     unmount();
   });

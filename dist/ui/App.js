@@ -108,14 +108,11 @@ export function App({ tower, pickerMode, outputPath, originPaneId }) {
         setView('dashboard');
         setSelectedSession(null);
     }, []);
-    const handleSwapFavoriteOrder = useCallback((idA, idB) => {
-        const all = tower.store.getAll();
-        const a = all.find(s => s.sessionId === idA);
-        const b = all.find(s => s.sessionId === idB);
+    const handleSwapFavoriteOrder = useCallback((identityA, identityB) => {
+        const a = tower.store.get(identityA);
+        const b = tower.store.get(identityB);
         if (!a || !b)
             return;
-        const identityA = a.paneId ?? String(a.pid);
-        const identityB = b.paneId ?? String(b.pid);
         tower.store.update(identityA, { favoritedAt: b.favoritedAt });
         tower.store.update(identityB, { favoritedAt: a.favoritedAt });
         tower.store.persistSync();

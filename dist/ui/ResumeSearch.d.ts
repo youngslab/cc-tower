@@ -17,7 +17,7 @@ interface Props {
 }
 /**
  * Fuzzy-search overlay over DEAD/past sessions. Enter resurrects the chosen
- * session via `claude --resume`. Searches by label and the cwd basename
+ * session via the selected agent's resume command. Searches by label and the cwd basename
  * (past sessions frequently have no label). Navigation is arrow-only so every
  * printable character (incl. j/k) is typeable into the query.
  */

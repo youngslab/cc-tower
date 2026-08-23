@@ -1,9 +1,9 @@
 /**
  * ResumeSearch — Tier 1 (in-process, ink-testing-library)
  *
- * Covers: lists all past sessions (incl. unlabeled), fuzzy by label and by cwd
- * basename, empty state, Enter→onSelect, Esc→onCancel, empty-list Enter no-op,
- * and the (remote) tag rendering.
+ * Covers: lists named past sessions, name-only fuzzy search, empty state,
+ * Enter→onSelect, Esc→onCancel, empty-list Enter no-op, and agent-aware
+ * identities for coexisting Claude/Codex sessions.
  */
 import { describe, it, expect, vi } from 'vitest';
 import { render } from 'ink-testing-library';
@@ -62,8 +62,8 @@ describe('ResumeSearch (ink-testing-library)', () => {
 
   it('shows multiple past sessions from the SAME cwd (no cwd dedup)', async () => {
     const sameCwd: PastSessionByCwd[] = [
-      { sessionId: 's1', cwd: '/home/me/proj', startedAt: 2, label: 'first' },
-      { sessionId: 's2', cwd: '/home/me/proj', startedAt: 1, label: 'second' },
+      { agentId: 'claude', sessionId: 's1', cwd: '/home/me/proj', startedAt: 2, label: 'first' },
+      { agentId: 'codex', sessionId: 's2', cwd: '/home/me/proj', startedAt: 1, label: 'second' },
     ];
     const { lastFrame, unmount } = render(
       <ResumeSearch getSessions={get(sameCwd)} onSelect={vi.fn()} onCancel={vi.fn()} />,
@@ -72,6 +72,27 @@ describe('ResumeSearch (ink-testing-library)', () => {
     const frame = lastFrame()!;
     expect(frame).toContain('first');
     expect(frame).toContain('second'); // both shown — not collapsed to one per cwd
+    expect(frame).toContain('[C] first');
+    expect(frame).toContain('[X] second');
+    unmount();
+  });
+
+  it('tracks cursor by agent + session id when Claude and Codex ids collide', async () => {
+    const sameId: PastSessionByCwd[] = [
+      { agentId: 'claude', sessionId: 'same', cwd: '/home/me/claude', startedAt: 2, label: 'claude-old' },
+      { agentId: 'codex', sessionId: 'same', resumeId: 'codex-resume', cwd: '/home/me/codex', startedAt: 1, label: 'codex-old' },
+    ];
+    const onSelect = vi.fn();
+    const { stdin, unmount } = render(
+      <ResumeSearch getSessions={get(sameId)} onSelect={onSelect} onCancel={vi.fn()} />,
+    );
+    await settle();
+    stdin.write('\x1B[B'); // down arrow
+    await settle();
+    stdin.write('\r');
+    await settle();
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect.mock.calls[0][0]).toMatchObject({ agentId: 'codex', resumeId: 'codex-resume' });
     unmount();
   });
 

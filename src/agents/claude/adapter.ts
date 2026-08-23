@@ -26,6 +26,12 @@ export const claudeAdapter: AgentAdapter = {
     return prefixedWindowName('claude', projectName);
   },
   inferPaneBusy: inferClaudePaneBusy,
+  defaultResumeId(info) {
+    return info.sessionId;
+  },
+  defaultResumable() {
+    return true;
+  },
   sessionArtifactPath(input) {
     return ClaudeAgent.sessionArtifactPath(input);
   },

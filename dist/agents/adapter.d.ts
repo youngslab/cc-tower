@@ -58,6 +58,8 @@ export interface AgentAdapter {
     buildCommand(input: AgentCommandInput): string;
     windowName(projectName: string): string;
     inferPaneBusy(title: string): boolean | undefined;
+    defaultResumeId?(info: AgentSessionInfo): string | undefined;
+    defaultResumable?(info: AgentSessionInfo): boolean;
     sessionArtifactPath?(input: AgentSessionArtifactPathInput): string;
     sessionArtifactDir?(input: AgentSessionArtifactDirInput): string;
     discoverLiveSessions?(context?: AgentDiscoveryContext): Promise<AgentSessionInfo[]> | AgentSessionInfo[];
@@ -74,3 +76,5 @@ export interface AgentAdapter {
     generateContextSummary?(sessionId: string, recentMessages: string): Promise<string | undefined>;
     generateNextSteps?(sessionId: string, recentMessages: string): Promise<string | undefined>;
 }
+export declare function agentResumeId(adapter: AgentAdapter, info: AgentSessionInfo): string | undefined;
+export declare function agentResumable(adapter: AgentAdapter, info: AgentSessionInfo): boolean;

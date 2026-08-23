@@ -3,6 +3,7 @@ import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { logger } from '../utils/logger.js';
 import { getAgentAdapter, listAgentAdapters } from '../agents/registry.js';
+import { agentResumable, agentResumeId } from '../agents/adapter.js';
 export class DiscoveryEngine extends EventEmitter {
     config;
     interval = null;
@@ -35,6 +36,14 @@ export class DiscoveryEngine extends EventEmitter {
             clearInterval(this.interval);
             this.interval = null;
         }
+    }
+    withAdapterDefaults(adapter, info) {
+        return {
+            ...info,
+            agentId: adapter.id,
+            resumeId: agentResumeId(adapter, info),
+            resumable: agentResumable(adapter, info),
+        };
     }
     async scanOnce() {
         const sessionsDir = join(this.config.claude_dir, 'sessions');
@@ -69,7 +78,7 @@ export class DiscoveryEngine extends EventEmitter {
                 }
                 continue;
             }
-            const sessionInfo = { ...info, agentId: 'claude', resumable: true, resumeId: info.sessionId };
+            const sessionInfo = this.withAdapterDefaults(this.primaryAdapter, info);
             if (!this.known.has(info.pid)) {
                 this.known.set(info.pid, sessionInfo);
                 this.emit('session-found', sessionInfo);
@@ -140,7 +149,7 @@ export class DiscoveryEngine extends EventEmitter {
         }) ?? []);
         const active = [];
         for (const info of detected) {
-            const sessionInfo = { ...info, agentId: 'claude', resumable: true, resumeId: info.sessionId };
+            const sessionInfo = this.withAdapterDefaults(this.primaryAdapter, info);
             if (!this.known.has(info.pid)) {
                 this.known.set(info.pid, sessionInfo);
                 this.emit('session-found', sessionInfo);
@@ -167,7 +176,7 @@ export class DiscoveryEngine extends EventEmitter {
             try {
                 const sessions = await adapter.discoverLiveSessions();
                 for (const info of sessions) {
-                    const sessionInfo = { ...info, agentId: adapter.id };
+                    const sessionInfo = this.withAdapterDefaults(adapter, info);
                     if (!this.known.has(sessionInfo.pid)) {
                         this.known.set(sessionInfo.pid, sessionInfo);
                         this.emit('session-found', sessionInfo);

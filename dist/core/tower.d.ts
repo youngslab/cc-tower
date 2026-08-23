@@ -33,7 +33,6 @@ export declare class Tower extends EventEmitter {
     private resolver;
     private ledger?;
     private readonly claude;
-    private readonly codex;
     constructor(config?: Config, opts?: {
         skipHooks?: boolean;
         skipColdStart?: boolean;
@@ -104,7 +103,7 @@ export declare class Tower extends EventEmitter {
     private refreshNextSteps;
     stop(): Promise<void>;
     private registerSession;
-    private registerCodexSession;
+    private registerProcessAgentSession;
     /** Immediate cleanup — no dead state, no 30s delay. Used for session migration (clear/resume). */
     private cleanupSession;
     private deregisterSession;

@@ -31,6 +31,7 @@ export declare class DiscoveryEngine extends EventEmitter {
     /** Update known sessionId for a PID — prevents discovery from overriding hook corrections */
     updateKnown(pid: number, sessionId: string): void;
     stop(): void;
+    private withAdapterDefaults;
     scanOnce(): Promise<SessionInfo[]>;
     /**
      * Fallback path: ask the claude agent to scan running processes, then

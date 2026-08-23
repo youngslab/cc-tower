@@ -23,6 +23,12 @@ export const codexAdapter: AgentAdapter = {
     return prefixedWindowName('codex', projectName);
   },
   inferPaneBusy: inferCodexPaneBusy,
+  defaultResumeId(info) {
+    return info.resumeId;
+  },
+  defaultResumable(info) {
+    return Boolean(info.resumeId && !info.sessionId.startsWith('codex-proc-'));
+  },
   discoverLiveSessions() {
     return CodexAgent.discoverLiveSessions();
   },

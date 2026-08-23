@@ -9,7 +9,7 @@ import { agentShortBadge } from '../agents/types.js';
 const CHROME_ROWS = 6;
 /**
  * Fuzzy-search overlay over DEAD/past sessions. Enter resurrects the chosen
- * session via `claude --resume`. Searches by label and the cwd basename
+ * session via the selected agent's resume command. Searches by label and the cwd basename
  * (past sessions frequently have no label). Navigation is arrow-only so every
  * printable character (incl. j/k) is typeable into the query.
  */
@@ -19,7 +19,8 @@ export function ResumeSearch({ getSessions, generation = 0, scanning = false, on
     // /rename, or a summary) are listed — unnamed ones are noise.
     const sessions = useMemo(() => getSessions().filter(s => s.label || s.goalSummary || s.contextSummary), [generation]);
     const [query, setQuery] = useState('');
-    // Identity-based cursor (selected sessionId, not an array index) — the
+    const identityOf = (s) => `${s.agentId ?? 'claude'}::${s.sessionId}`;
+    // Identity-based cursor (agent + selected sessionId, not an array index) — the
     // underlying list can shrink out from under the user (e.g. an orphaned
     // entry gets hidden once the background scan completes and `generation`
     // bumps). An index-based cursor would silently point at whatever item
@@ -34,7 +35,7 @@ export function ResumeSearch({ getSessions, generation = 0, scanning = false, on
     // Resolve the identity to its current position; falls back to the top of
     // the list when the selected session vanished (scanned away) or on first
     // render.
-    const foundIdx = selectedId === null ? -1 : filtered.findIndex(s => s.sessionId === selectedId);
+    const foundIdx = selectedId === null ? -1 : filtered.findIndex(s => identityOf(s) === selectedId);
     const cursorIdx = foundIdx >= 0 ? foundIdx : 0;
     // Viewport scrolling: keep the cursor centered in the visible window rather
     // than rendering the whole (possibly 100+ item) list and relying on the
@@ -61,13 +62,13 @@ export function ResumeSearch({ getSessions, generation = 0, scanning = false, on
         if (key.upArrow) {
             const next = filtered[Math.max(0, cursorIdx - 1)];
             if (next)
-                setSelectedId(next.sessionId);
+                setSelectedId(identityOf(next));
             return;
         }
         if (key.downArrow) {
             const next = filtered[Math.min(filtered.length - 1, cursorIdx + 1)];
             if (next)
-                setSelectedId(next.sessionId);
+                setSelectedId(identityOf(next));
             return;
         }
         if (key.backspace || key.delete) {
@@ -87,7 +88,7 @@ export function ResumeSearch({ getSessions, generation = 0, scanning = false, on
                         // Unlabeled sessions show their summary as the name (more useful than
                         // a row of identical '(unnamed)' entries for the same project).
                         const name = s.label ?? (summary ? truncate(summary, 50) : '(unnamed)');
-                        return (_jsxs(Box, { children: [_jsxs(Text, { color: isCursor ? 'cyan' : undefined, bold: isCursor, children: [isCursor ? '▸ ' : '  ', "[", agentShortBadge(s.agentId), "] ", name] }), _jsxs(Text, { dimColor: true, children: [" \u00B7 ", basename(s.cwd), " \u00B7 ", formatAge(s.startedAt)] }), s.sshTarget && _jsx(Text, { dimColor: true, children: "  (remote)" })] }, s.sessionId));
+                        return (_jsxs(Box, { children: [_jsxs(Text, { color: isCursor ? 'cyan' : undefined, bold: isCursor, children: [isCursor ? '▸ ' : '  ', "[", agentShortBadge(s.agentId), "] ", name] }), _jsxs(Text, { dimColor: true, children: [" \u00B7 ", basename(s.cwd), " \u00B7 ", formatAge(s.startedAt)] }), s.sshTarget && _jsx(Text, { dimColor: true, children: "  (remote)" })] }, identityOf(s)));
                     }), showScrollDown && _jsxs(Text, { dimColor: true, children: ["  \u2193 ", filtered.length - viewEnd, " more"] })] }), _jsxs(Box, { marginTop: 1, children: [_jsx(Text, { dimColor: true, children: "  \u2191\u2193 navigate \u00B7 type to search \u00B7 Enter resume \u00B7 Esc cancel" }), scanning && _jsx(Text, { color: "yellow", children: " \u00B7 scanning all sessions\u2026" })] })] }));
 }
 function truncate(s, max) {

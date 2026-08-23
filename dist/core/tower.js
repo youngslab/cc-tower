@@ -15,6 +15,7 @@ import { mapPidToPane } from '../tmux/pane-mapper.js';
 import { isHeadlessProcess, isPidAlive, getPpid } from '../utils/pid-resolver.js';
 import { cleanDisplayText, isInternalMessage } from '../utils/slug.js';
 import { getAgentAdapter } from '../agents/registry.js';
+import { agentResumable, agentResumeId } from '../agents/adapter.js';
 import { normalizeAgentId } from '../agents/types.js';
 import { logger } from '../utils/logger.js';
 import { ConversationResolver } from './conversation-resolver.js';
@@ -46,7 +47,6 @@ export class Tower extends EventEmitter {
     resolver;
     ledger;
     claude = getAgentAdapter('claude');
-    codex = getAgentAdapter('codex');
     constructor(config, opts) {
         super();
         this.config = config ?? loadConfig();
@@ -354,7 +354,8 @@ export class Tower extends EventEmitter {
     }
     async rehydrateCodexFromProcess() {
         try {
-            const sessions = await (this.codex.discoverLiveSessions?.() ?? []);
+            const codex = getAgentAdapter('codex');
+            const sessions = await (codex.discoverLiveSessions?.() ?? []);
             for (const info of sessions) {
                 await this.registerSession(info);
             }
@@ -1000,8 +1001,9 @@ export class Tower extends EventEmitter {
     }
     async registerSession(info, opts = {}) {
         const agentId = normalizeAgentId(info.agentId);
-        if (agentId === 'codex') {
-            await this.registerCodexSession(info);
+        const adapter = getAgentAdapter(agentId);
+        if (!adapter.capabilities.jsonl) {
+            await this.registerProcessAgentSession(info, adapter);
             return;
         }
         // Skip /tmp sessions (LLM summarizer, ephemeral subprocesses, etc.)
@@ -1055,11 +1057,11 @@ export class Tower extends EventEmitter {
         // e. Register in store
         const projectName = path.basename(info.cwd);
         const session = {
-            agentId: 'claude',
+            agentId: adapter.id,
             pid: info.pid,
             sessionId: info.sessionId,
-            resumeId: info.resumeId ?? info.sessionId,
-            resumable: info.resumable ?? true,
+            resumeId: agentResumeId(adapter, info),
+            resumable: agentResumable(adapter, info),
             labelSource: info.labelSource,
             paneId: mapping.paneId,
             hasTmux: mapping.hasTmux,
@@ -1203,7 +1205,7 @@ export class Tower extends EventEmitter {
             mode: detectionMode,
         });
     }
-    async registerCodexSession(info) {
+    async registerProcessAgentSession(info, adapter) {
         if (info.cwd.startsWith('/tmp'))
             return;
         const mapping = info.paneId
@@ -1212,17 +1214,17 @@ export class Tower extends EventEmitter {
         if (mapping.paneId) {
             for (const existing of this.store.getAll()) {
                 if (existing.paneId === mapping.paneId && existing.sessionId !== info.sessionId && existing.status !== 'dead') {
-                    logger.info('tower: evicting session — same pane taken by codex session', { evicted: existing.sessionId, new: info.sessionId, paneId: mapping.paneId });
+                    logger.info('tower: evicting session — same pane taken by process agent session', { agentId: adapter.id, evicted: existing.sessionId, new: info.sessionId, paneId: mapping.paneId });
                     this.cleanupSession(sessionIdentity(existing));
                 }
             }
         }
         const session = {
-            agentId: 'codex',
+            agentId: adapter.id,
             pid: info.pid,
             sessionId: info.sessionId,
-            resumeId: info.resumeId,
-            resumable: info.resumable ?? Boolean(info.resumeId && !info.sessionId.startsWith('codex-proc-')),
+            resumeId: agentResumeId(adapter, info),
+            resumable: agentResumable(adapter, info),
             labelSource: info.labelSource,
             paneId: mapping.paneId,
             hasTmux: mapping.hasTmux,
@@ -1239,10 +1241,11 @@ export class Tower extends EventEmitter {
             ...(info.label ? { label: info.label } : {}),
         };
         this.store.register(session);
-        logger.info('tower: codex session registered', {
+        logger.info('tower: process agent session registered', {
+            agentId: adapter.id,
             identity: sessionIdentity(session),
             sessionId: info.sessionId,
-            resumeId: info.resumeId,
+            resumeId: session.resumeId,
             pane: mapping.paneId ?? 'none',
             labelSource: info.labelSource,
         });

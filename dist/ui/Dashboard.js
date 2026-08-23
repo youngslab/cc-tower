@@ -88,12 +88,12 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, termWidth, termHe
             moveCursor(Math.min(sorted.length - 1, cursor + 1));
         // [ / ] = move current session up/down within its group (no cross-group movement)
         // [ / ] = reorder within group. Cursor follows the moved session automatically
-        // (cursorSessionId stays the same, position updates after re-render)
+        // (cursorIdentity stays the same, position updates after re-render)
         if (input === '[' && sorted[cursor]) {
             const inFav = cursor < favGroupEnd;
             if (inFav && cursor > 0) {
                 // cursorIdentity stays as current session → auto-resolves to new position after re-render
-                onSwapFavoriteOrder(sorted[cursor].sessionId, sorted[cursor - 1].sessionId);
+                onSwapFavoriteOrder(identityOf(sorted[cursor]), identityOf(sorted[cursor - 1]));
             }
             else if (!inFav && cursor > favGroupEnd) {
                 const idx = cursor - favGroupEnd;
@@ -107,7 +107,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, termWidth, termHe
         if (input === ']' && sorted[cursor]) {
             const inFav = cursor < favGroupEnd;
             if (inFav && cursor < favGroupEnd - 1) {
-                onSwapFavoriteOrder(sorted[cursor].sessionId, sorted[cursor + 1].sessionId);
+                onSwapFavoriteOrder(identityOf(sorted[cursor]), identityOf(sorted[cursor + 1]));
             }
             else if (!inFav && cursor < sorted.length - 1) {
                 const idx = cursor - favGroupEnd;

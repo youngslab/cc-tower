@@ -16,6 +16,18 @@ describe('agent adapter registry', () => {
       .toBe("codex resume '019f' -C '/repo'");
   });
 
+  it('keeps default resume policy behind the adapter boundary', () => {
+    const claude = getAgentAdapter('claude');
+    const codex = getAgentAdapter('codex');
+
+    expect(claude.defaultResumeId?.({ pid: 1, sessionId: 'claude-sid', cwd: '/repo', startedAt: 1 })).toBe('claude-sid');
+    expect(claude.defaultResumable?.({ pid: 1, sessionId: 'claude-sid', cwd: '/repo', startedAt: 1 })).toBe(true);
+
+    expect(codex.defaultResumeId?.({ pid: 2, sessionId: 'codex-sid', resumeId: 'codex-resume', cwd: '/repo', startedAt: 1 })).toBe('codex-resume');
+    expect(codex.defaultResumable?.({ pid: 2, sessionId: 'codex-sid', resumeId: 'codex-resume', cwd: '/repo', startedAt: 1 })).toBe(true);
+    expect(codex.defaultResumable?.({ pid: 3, sessionId: 'codex-proc-123', cwd: '/repo', startedAt: 1 })).toBe(false);
+  });
+
   it('keeps pane-title status inference behind the adapter boundary', () => {
     expect(getAgentAdapter('claude').inferPaneBusy('◐ repo')).toBe(true);
     expect(getAgentAdapter('claude').inferPaneBusy('repo')).toBeUndefined();

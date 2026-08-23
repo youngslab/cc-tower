@@ -9,7 +9,7 @@ interface Props {
     headerHeight: number;
     cursorIdentity: string | null;
     onCursorChange: (identity: string | null) => void;
-    onSwapFavoriteOrder: (idA: string, idB: string) => void;
+    onSwapFavoriteOrder: (identityA: string, identityB: string) => void;
     onSelect: (session: Session) => void;
     onOpenSearch: () => void;
     onOpenResumeSearch: () => void;

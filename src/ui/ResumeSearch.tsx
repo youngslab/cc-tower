@@ -28,7 +28,7 @@ const CHROME_ROWS = 6;
 
 /**
  * Fuzzy-search overlay over DEAD/past sessions. Enter resurrects the chosen
- * session via `claude --resume`. Searches by label and the cwd basename
+ * session via the selected agent's resume command. Searches by label and the cwd basename
  * (past sessions frequently have no label). Navigation is arrow-only so every
  * printable character (incl. j/k) is typeable into the query.
  */
@@ -41,7 +41,8 @@ export function ResumeSearch({ getSessions, generation = 0, scanning = false, on
     [generation],
   );
   const [query, setQuery] = useState('');
-  // Identity-based cursor (selected sessionId, not an array index) — the
+  const identityOf = (s: PastSessionByCwd): string => `${s.agentId ?? 'claude'}::${s.sessionId}`;
+  // Identity-based cursor (agent + selected sessionId, not an array index) — the
   // underlying list can shrink out from under the user (e.g. an orphaned
   // entry gets hidden once the background scan completes and `generation`
   // bumps). An index-based cursor would silently point at whatever item
@@ -58,7 +59,7 @@ export function ResumeSearch({ getSessions, generation = 0, scanning = false, on
   // Resolve the identity to its current position; falls back to the top of
   // the list when the selected session vanished (scanned away) or on first
   // render.
-  const foundIdx = selectedId === null ? -1 : filtered.findIndex(s => s.sessionId === selectedId);
+  const foundIdx = selectedId === null ? -1 : filtered.findIndex(s => identityOf(s) === selectedId);
   const cursorIdx = foundIdx >= 0 ? foundIdx : 0;
 
   // Viewport scrolling: keep the cursor centered in the visible window rather
@@ -85,12 +86,12 @@ export function ResumeSearch({ getSessions, generation = 0, scanning = false, on
     }
     if (key.upArrow) {
       const next = filtered[Math.max(0, cursorIdx - 1)];
-      if (next) setSelectedId(next.sessionId);
+      if (next) setSelectedId(identityOf(next));
       return;
     }
     if (key.downArrow) {
       const next = filtered[Math.min(filtered.length - 1, cursorIdx + 1)];
-      if (next) setSelectedId(next.sessionId);
+      if (next) setSelectedId(identityOf(next));
       return;
     }
     if (key.backspace || key.delete) { setQuery(q => q.slice(0, -1)); setSelectedId(null); return; }
@@ -126,7 +127,7 @@ export function ResumeSearch({ getSessions, generation = 0, scanning = false, on
           // a row of identical '(unnamed)' entries for the same project).
           const name = s.label ?? (summary ? truncate(summary, 50) : '(unnamed)');
           return (
-            <Box key={s.sessionId}>
+            <Box key={identityOf(s)}>
               <Text color={isCursor ? 'cyan' : undefined} bold={isCursor}>
                 {isCursor ? '▸ ' : '  '}[{agentShortBadge(s.agentId)}] {name}
               </Text>
