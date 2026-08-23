@@ -125,12 +125,27 @@ function latestFirst(rows: CodexThreadRow[]): CodexThreadRow[] {
   return [...rows].sort((a, b) => (b.updatedAt ?? b.createdAt ?? 0) - (a.updatedAt ?? a.createdAt ?? 0));
 }
 
+function comparableTitle(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.split(/\s+/).join(' ') : undefined;
+}
+
+function isLikelyUserRenameTitle(row: CodexThreadRow): boolean {
+  const title = comparableTitle(row.title);
+  if (!title) return false;
+  if (title.length > 80) return false;
+  const preview = comparableTitle(row.preview);
+  const firstUserMessage = comparableTitle(row.firstUserMessage);
+  if (!preview && !firstUserMessage) return false;
+  return title !== preview && title !== firstUserMessage;
+}
+
 function labelFromThread(
   row: CodexThreadRow,
   opts: { titleAsRename?: boolean } = {},
 ): { label?: string; labelSource?: 'codex-title' | 'codex-rename' } {
   if (row.name) return { label: row.name, labelSource: 'codex-rename' };
-  if (row.title) return { label: row.title, labelSource: opts.titleAsRename ? 'codex-rename' : 'codex-title' };
+  if (row.title) return { label: row.title, labelSource: opts.titleAsRename || isLikelyUserRenameTitle(row) ? 'codex-rename' : 'codex-title' };
   return {};
 }
 

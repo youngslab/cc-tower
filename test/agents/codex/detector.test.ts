@@ -115,6 +115,34 @@ describe('codex live detector metadata labels', () => {
     ]);
   });
 
+  it('exposes a Codex title rename for a fresh process matched by OMX session start time', async () => {
+    const cwdByPid = new Map<number, string>([[275, '/home/me']]);
+    const envByPid = new Map<number, Record<string, string>>([
+      [275, { OMX_SESSION_ID: 'omx-2000001000000-travel' }],
+    ]);
+    const processes: ProcessRow[] = [
+      { pid: 275, ppid: 1, tty: '/dev/pts/7', command: 'codex', args: '/usr/bin/codex -C /home/me' },
+    ];
+    const threads: CodexThreadRow[] = [
+      { id: 'travel-thread', cwd: '/home/me', title: 'travel', preview: 'gws를 설치하고 싶어', firstUserMessage: 'gws를 설치하고 싶어', createdAt: 2000001001, updatedAt: 2 },
+      { id: 'newer-unrelated', cwd: '/home/me', title: 'Newest unrelated prompt', preview: '다른 작업', createdAt: 2000005000, updatedAt: 3 },
+    ];
+
+    const sessions = await discoverCodexSessions({ processes, procReader: procReader(cwdByPid, envByPid), threads });
+
+    expect(sessions).toEqual([
+      expect.objectContaining({
+        sessionId: 'travel-thread',
+        resumeId: 'travel-thread',
+        label: 'travel',
+        labelSource: 'codex-rename',
+        goalSummary: 'gws를 설치하고 싶어',
+        metadataConfidence: 'high',
+        resumable: true,
+      }),
+    ]);
+  });
+
   it('uses OMX_SESSION_ID start time to expose a user rename for a process pseudo session safely', async () => {
     const cwdByPid = new Map<number, string>([[301, '/repo']]);
     const envByPid = new Map<number, Record<string, string>>([

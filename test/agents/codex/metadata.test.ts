@@ -94,6 +94,25 @@ describe('codex metadata resolver', () => {
     expect(result.labelSource).toBe('codex-rename');
   });
 
+  it('treats a short high-confidence title that differs from preview as a Codex rename', () => {
+    const result = resolveCodexThreadMetadata({
+      cwd: '/home/me',
+      sessionStartedAt: 2000,
+      threads: [
+        { id: 'travel-thread', cwd: '/home/me', title: 'travel', preview: 'gws를 설치하고 싶어', firstUserMessage: 'gws를 설치하고 싶어', createdAt: 2001, updatedAt: 3 },
+        { id: 'other-thread', cwd: '/home/me', title: 'other', preview: '다른 작업', createdAt: 3000, updatedAt: 4 },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      threadId: 'travel-thread',
+      label: 'travel',
+      labelSource: 'codex-rename',
+      confidence: 'high',
+      resumable: true,
+    });
+  });
+
   it('uses OMX session start time to pick the matching renamed thread among same-cwd rows', () => {
     const result = resolveCodexThreadMetadata({
       cwd: '/repo',
