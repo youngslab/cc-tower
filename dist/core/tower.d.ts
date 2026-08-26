@@ -76,6 +76,7 @@ export declare class Tower extends EventEmitter {
      * path, so the attention-banner transition detection applies normally.
      */
     private reconcilePaneTitles;
+    private static readonly PANE_TITLE_OVERRIDE_GRACE_MS;
     /** Split out from reconcilePaneTitles() for direct unit testing (avoids mocking execSync). */
     private applyPaneTitles;
     private applyQueuedEvent;

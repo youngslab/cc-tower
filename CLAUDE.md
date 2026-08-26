@@ -72,7 +72,7 @@ grep "error\|warn\|fail" /tmp/debug.log
 
 ## Version Strategy
 
-**현재 버전: 2.8.9**
+**현재 버전: 2.8.10**
 
 ### 규칙: 코드 변경 시 반드시 버전을 올려야 한다.
 
@@ -124,6 +124,7 @@ npm version major
 | 2.8.7 | fix: picker에서 실제 사용자가 세션에 진입하는 주경로인 `Enter`(`handleSelect`)가 `handleGo`(`g` 키)와는 완전히 별개의 `{"action":"go",...}` 작성 코드 경로였는데, 2.8.0의 needsAttention 해제 로직이 `handleGo`에만 추가되고 `handleSelect`엔 빠져있던 버그 — 실제 tmux 창에서 진짜 picker 바이너리로 F12→scroll→Enter→F12 전체 플로우를 재현하다 발견. `handleSelect`에도 동일한 clear+persistSync 로직 추가, 두 "go" 작성 경로 모두 커버 확인 |
 | 2.8.8 | style: Attention Banner(`⚠ 관심 필요`) 배지 색상을 yellow → red로 변경 — 시인성 개선 |
 | 2.8.9 | feat: Attention Banner 배지에 500ms 주기 blink 효과 추가(red+bold ↔ 기본색 토글). `needsAttention`인 세션이 하나도 없으면 타이머를 돌리지 않아 불필요한 재렌더링 방지. 실제 picker에서 tmux capture-pane -e로 ANSI 컬러 코드가 토글되는 것을 확인 |
+| 2.8.10 | fix: 2.8.4의 `reconcilePaneTitles()`가 서브에이전트에 위임 중인 세션("← 1 agent")에서 Claude Code가 pane title을 갱신하지 않는 케이스를 처리 못해, 훅이 같은 드레인 틱에서 정확히 감지한 `thinking`/`executing`을 곧바로 stuck idle 글리프로 덮어쓰던 버그 — 실시간 디버그 로그로 "훅 적용 → 같은 틱에서 즉시 idle로 재덮어씀"을 직접 확인. `applyQueuedEvent`에 `lastActivity` 갱신을 추가하고, `applyPaneTitles()`가 busy→idle 다운그레이드 방향에서만 "훅이 8초 이내 최근에 확인했으면 title보다 훅을 신뢰"하도록 gating 추가(idle→busy 업그레이드는 정보 손실 위험이 없어 그대로 즉시 적용). 실제 세션으로 재검증: thinking 유지 → 훅 침묵 8초 후에만 idle로 정정, 실제 상태와 일치 |
 | 2.7.4 | refactor: `NewSession`을 순수 workspace(작업 디렉터리) picker로 단순화 — resume/recent/label/summary UI 전부 제거(그건 `R` ResumeSearch 오버레이 담당), 모드를 `host → list → custom` 3단으로 통합. 목록 소스를 단일화해 항상 `getPastSessionsByTarget(selectedHost?.ssh)`(cwd dedup, 최신순) 사용 — 기존 `recentProjects`(slug 기반 경로 복원, 하이픈/점 포함 디렉터리에서 조용히 누락되던 버그) 제거. 모든 선택 경로는 resumeSessionId 없이 fresh `onSelect(cwd, host)`. `projects`/`getPastSessions`/`getAllPastSessions`/`onDeleteSession` prop 및 `PastSession` 인터페이스, `src/utils/recent-projects.ts` 모듈 삭제 |
 | 2.7.2 | fix: picker(readOnly) 상태가 항상 idle로 고정되던 버그 — drain 가드가 `event.pid`(hook이 쓰는 `$PPID` = ephemeral wrapper, drain 시점엔 죽음)로 liveness를 판정해 thinking/executing/agent를 전부 idle로 강제. pane liveness 기준으로 교체하고 `resolveQueuedStatus()` 순수 함수로 추출 + 단위 테스트. |
 | 2.7.1 | fix: resume 오버레이 — 스캐너가 JSONL의 `custom-title`(=`/rename` 이름) 추출해 label로 사용, 이름(label/summary) 없는 세션은 목록에서 제외, fuzzy 검색은 이름만(workspace 경로 제외). |

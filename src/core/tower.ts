@@ -743,8 +743,15 @@ export class Tower extends EventEmitter {
     this.applyPaneTitles(titles);
   }
 
+  // A hook confirmed activity this recently → trust it over a possibly-stuck
+  // pane title. Comfortably longer than the 3s drain interval (a couple of
+  // ticks of grace) but short enough to still self-heal genuinely stale
+  // sessions promptly. See applyPaneTitles() below.
+  private static readonly PANE_TITLE_OVERRIDE_GRACE_MS = 8000;
+
   /** Split out from reconcilePaneTitles() for direct unit testing (avoids mocking execSync). */
   private applyPaneTitles(titles: Map<string, string>): void {
+    const now = Date.now();
     for (const session of this.store.getAll()) {
       if (!session.paneId || session.status === 'dead') continue;
       const title = titles.get(session.paneId);
@@ -754,9 +761,20 @@ export class Tower extends EventEmitter {
 
       const isCurrentlyBusy = RUNNING_STATUSES.has(session.status);
       if (busy && !isCurrentlyBusy) {
+        // Upgrading idle→busy never discards information a hook just gave us
+        // (idle has no "how idle" nuance to lose), so this is always safe.
         this.store.update(sessionIdentity(session), { status: 'thinking' }, { statusEvent: true });
       } else if (!busy && isCurrentlyBusy) {
-        this.store.update(sessionIdentity(session), { status: 'idle' }, { statusEvent: true });
+        // Downgrading busy→idle CAN discard a hook event from this very tick
+        // (or a recent one) if Claude Code's pane title glyph is stuck idle —
+        // observed while a subagent is running ("← 1 agent"): the main
+        // process's title stops animating even though hooks correctly report
+        // real activity. Only trust the title here once hooks have been
+        // silent long enough that they're no longer a competing signal.
+        const recentlyConfirmedBusy = now - session.lastActivity.getTime() < Tower.PANE_TITLE_OVERRIDE_GRACE_MS;
+        if (!recentlyConfirmedBusy) {
+          this.store.update(sessionIdentity(session), { status: 'idle' }, { statusEvent: true });
+        }
       }
     }
   }
@@ -839,7 +857,12 @@ export class Tower extends EventEmitter {
     // already dead by drain time — using it forced every active status to idle).
     const newStatus = resolveQueuedStatus(event, livePanes);
     if (newStatus) {
-      this.store.update(identity, { status: newStatus }, { statusEvent: true });
+      // lastActivity lets applyPaneTitles() tell "hooks just confirmed this"
+      // apart from "no hook signal in a while, title is our only info" —
+      // without it, a stuck-idle pane title (e.g. Claude Code doesn't repaint
+      // it while delegating to a subagent) would immediately override a hook
+      // event from the very same drain tick.
+      this.store.update(identity, { status: newStatus, lastActivity: new Date() }, { statusEvent: true });
       logger.debug('tower: drainEventQueue: applied', { event: event.event, identity, newStatus });
     }
   }

@@ -58,6 +58,10 @@ function makeTower(tmpDir: string): Tower {
   return tower;
 }
 
+// Older than Tower's PANE_TITLE_OVERRIDE_GRACE_MS (8s) — simulates "hooks
+// have been silent for a while, the title is our only signal now".
+const STALE_ACTIVITY = new Date(Date.now() - 30000);
+
 function makeSession(overrides: Partial<Session> = {}): Session {
   return {
     pid: 1,
@@ -68,7 +72,7 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     cwd: '/home/user/project',
     projectName: 'project',
     status: 'idle',
-    lastActivity: new Date(),
+    lastActivity: STALE_ACTIVITY,
     startedAt: new Date(),
     messageCount: 0,
     toolCallCount: 0,
@@ -110,6 +114,18 @@ describe('Tower.applyPaneTitles (pane-title reconciliation)', () => {
     tower.store.register(makeSession({ status: 'executing' }));
     (tower as any).applyPaneTitles(new Map([['%7', '✳ manager']]));
     expect(tower.store.get('%7')?.needsAttention).toBe(true);
+  });
+
+  // Regression: Claude Code doesn't repaint the pane title while delegating
+  // to a subagent ("← 1 agent") — it stays stuck on the fixed idle glyph even
+  // though hooks correctly report real activity. Reproduced live: a hook
+  // event applied on one drain tick was immediately undone by pane-title
+  // reconciliation in that same tick, because the (stuck) title still said
+  // idle. Recently-confirmed activity must win over a title glyph.
+  it('does not downgrade busy→idle when a hook confirmed activity very recently, even if the title glyph says idle', () => {
+    tower.store.register(makeSession({ status: 'thinking', lastActivity: new Date() }));
+    (tower as any).applyPaneTitles(new Map([['%7', '✳ ccu2-mp-image-validation']]));
+    expect(tower.store.get('%7')?.status).toBe('thinking');
   });
 
   it('leaves status untouched when the title has no recognized Claude Code glyph', () => {
