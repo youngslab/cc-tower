@@ -58,9 +58,9 @@ function makeTower(tmpDir: string): Tower {
   return tower;
 }
 
-// Older than Tower's PANE_TITLE_OVERRIDE_GRACE_MS (8s) — simulates "hooks
+// Older than Tower's PANE_TITLE_OVERRIDE_GRACE_MS (30s) — simulates "hooks
 // have been silent for a while, the title is our only signal now".
-const STALE_ACTIVITY = new Date(Date.now() - 30000);
+const STALE_ACTIVITY = new Date(Date.now() - 60000);
 
 function makeSession(overrides: Partial<Session> = {}): Session {
   return {

@@ -744,10 +744,15 @@ export class Tower extends EventEmitter {
   }
 
   // A hook confirmed activity this recently → trust it over a possibly-stuck
-  // pane title. Comfortably longer than the 3s drain interval (a couple of
-  // ticks of grace) but short enough to still self-heal genuinely stale
-  // sessions promptly. See applyPaneTitles() below.
-  private static readonly PANE_TITLE_OVERRIDE_GRACE_MS = 8000;
+  // pane title. Must comfortably exceed real gaps between consecutive tool
+  // calls, not just the 3s drain interval — a delegated subagent "thinking"
+  // between tool calls can easily go 10-15s with no hook at all, and the
+  // pane title can't see subagent activity (it only reflects the foreground
+  // thread). 8s was measured live to be too short: it flapped a session
+  // running a subagent to idle and back every ~10s. 30s still self-heals a
+  // genuinely stuck session (2.8.4's original motivating case: a session
+  // idle for hours with zero events) reasonably fast. See applyPaneTitles().
+  private static readonly PANE_TITLE_OVERRIDE_GRACE_MS = 30000;
 
   /** Split out from reconcilePaneTitles() for direct unit testing (avoids mocking execSync). */
   private applyPaneTitles(titles: Map<string, string>): void {
