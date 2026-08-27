@@ -46,6 +46,7 @@ program
 program
     .option('--picker', 'Run as picker (TUI + JSON output on action, then exit)')
     .option('--output <path>', 'Output path for picker result JSON (required with --picker)')
+    .option('--origin-pane <paneId>', 'Pane the user was in before opening the picker — cursor starts there')
     .option('--no-cold-start', 'Skip JSONL coldStart scans — read state.json only (fast popup mode)')
     .option('--no-summary', 'Disable LLM summarization — use cached fields only')
     .option('--daemon', 'Run as background daemon (no TUI, process hooks and update state.json)')
@@ -127,7 +128,7 @@ program
             out.write('\x1b[?1049h\x1b[H');
         }
         catch { }
-        const { waitUntilExit } = render(React.createElement(App, { tower, pickerMode: true, outputPath: opts.output }), renderOpts);
+        const { waitUntilExit } = render(React.createElement(App, { tower, pickerMode: true, outputPath: opts.output, originPaneId: opts.originPane }), renderOpts);
         try {
             await waitUntilExit();
         }

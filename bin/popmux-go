@@ -60,11 +60,16 @@ OUT="$RUNDIR/picker-$$-$(date +%s%N).json"
 cleanup() { rm -f "$OUT"; }
 trap cleanup EXIT INT TERM
 
+# ── Capture the pane the user is actually looking at ───────────────────────
+# Must happen here, before display-popup steals focus — inside the popup,
+# `$TMUX_PANE`/`#{pane_id}` would resolve to the *popup's own* pane instead.
+ORIGIN_PANE="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
+
 # ── Launch picker via tmux popup ───────────────────────────────────────────
 # `|| true` so that a nonzero picker exit (e.g. exit code 3 = no-tty) does not
 # kill this script — we still want to fall through to "no-op cancel" below.
 tmux display-popup -E -w 80% -h 80% \
-  "$POPMUX --picker --output \"$OUT\" --no-cold-start </dev/tty" || true
+  "$POPMUX --picker --output \"$OUT\" --origin-pane \"$ORIGIN_PANE\" --no-cold-start </dev/tty" || true
 
 # Empty file (catastrophic) or missing → cancel-equivalent (no-op).
 if [[ ! -s "$OUT" ]]; then

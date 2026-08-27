@@ -17,7 +17,7 @@ import { ResumeSearch } from './ResumeSearch.js';
 import { resolveHostBySsh } from './host-resolve.js';
 import { NewSession } from './NewSession.js';
 import { writeAndExit, emitReady } from '../picker/protocol.js';
-export function App({ tower, pickerMode, outputPath }) {
+export function App({ tower, pickerMode, outputPath, originPaneId }) {
     const { exit } = useApp();
     const { sessions, tmuxCount } = useSessionStore(tower.store);
     const [view, setView] = useState('dashboard');
@@ -26,6 +26,8 @@ export function App({ tower, pickerMode, outputPath }) {
     const [cursorIdentity, setCursorIdentity] = useState(() => {
         if (!pickerMode)
             return null;
+        if (originPaneId)
+            return originPaneId;
         try {
             return readFileSync(CURSOR_FILE, 'utf8').trim() || null;
         }

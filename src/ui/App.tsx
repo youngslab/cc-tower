@@ -30,9 +30,17 @@ interface Props {
    */
   pickerMode?: boolean;
   outputPath?: string;
+  /**
+   * Pane the user was actually in when they opened the picker (F12) —
+   * captured by popmux-go via `tmux display-message` before the popup
+   * steals focus. Takes priority over the persisted last-browsed cursor so
+   * F12 starts on "the session I'm looking at", not wherever the cursor
+   * happened to be left in a previous picker session.
+   */
+  originPaneId?: string;
 }
 
-export function App({ tower, pickerMode, outputPath }: Props) {
+export function App({ tower, pickerMode, outputPath, originPaneId }: Props) {
   const { exit } = useApp();
   const { sessions, tmuxCount } = useSessionStore(tower.store);
   const [view, setView] = useState<View>('dashboard');
@@ -40,6 +48,7 @@ export function App({ tower, pickerMode, outputPath }: Props) {
   const CURSOR_FILE = join(homedir(), '.config', 'popmux', 'picker-cursor');
   const [cursorIdentity, setCursorIdentity] = useState<string | null>(() => {
     if (!pickerMode) return null;
+    if (originPaneId) return originPaneId;
     try { return readFileSync(CURSOR_FILE, 'utf8').trim() || null; } catch { return null; }
   });
 
