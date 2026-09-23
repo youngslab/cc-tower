@@ -175,12 +175,12 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, termWidth, termHe
     return h;
   };
 
-  // footer-marginTop(1) + legend-row(1) + keys-rows(2, always split — see footer
-  // below) + scroll-hints(2, always reserved — see below). headerHeight accounts
-  // for the logo/border rows App.tsx already renders above us — without it
-  // we'd overestimate how much vertical room is left and overflow past the
-  // real terminal height.
-  const FIXED_OVERHEAD = 6;
+  // footer-marginTop(1) + legend-row(1) + keys-row(1, compacted into a single
+  // line — see footer below) + scroll-hints(2, always reserved — see below).
+  // headerHeight accounts for the logo/border rows App.tsx already renders
+  // above us — without it we'd overestimate how much vertical room is left
+  // and overflow past the real terminal height.
+  const FIXED_OVERHEAD = 5;
   const available = Math.max(4, termHeight - headerHeight - FIXED_OVERHEAD);
   const heights = sorted.map(itemRowHeight);
 
@@ -319,10 +319,7 @@ export function Dashboard({ sessions, tmuxCount, maxTaskWidth, termWidth, termHe
             <Text color="red">✕</Text><Text dimColor> Dead</Text>
           </Box>
           <Box>
-            <Text dimColor>  [j/k] Nav  [1-9] Jump  [{`[/]`}] Reorder  │  [Enter] Detail  [g] Go</Text>
-          </Box>
-          <Box>
-            <Text dimColor>  [/] Search  [R] Resume  │  [f] Fav  [n] New  [r] Refresh  [x] Kill  [q] Quit</Text>
+            <Text dimColor>  j/k Nav · Enter Detail · g Go · / Search · R Resume · f Fav · n New · x Kill · q Quit</Text>
           </Box>
         </Box>
       )}
