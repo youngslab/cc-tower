@@ -36,6 +36,7 @@ export interface Instance {
     summaryLoading?: boolean;
     favorite?: boolean;
     favoritedAt?: number;
+    favoriteSetAt?: number;
     host?: string;
     sshTarget?: string;
     commandPrefix?: string;
@@ -69,6 +70,7 @@ interface PersistedEntry {
 interface PersistedInstance {
     favorite?: boolean;
     favoritedAt?: number;
+    favoriteSetAt?: number;
     lastSessionId?: string;
     lastConversationId?: string;
     lastSeenAt?: number;
@@ -128,21 +130,21 @@ export declare class SessionStore extends EventEmitter {
     persistSync(): void;
     private _writePersist;
     /**
-     * Re-reads state.json's needsAttention (+ its timestamp) fresh at persist
-     * time.
+     * Re-reads state.json's concurrency-sensitive instance fields (+ their
+     * timestamps) fresh at persist time.
      *
      * Multiple readOnly picker processes can be alive concurrently (a lingering
      * orphan from a popup that didn't fully exit, or two overlapping opens) —
-     * each has its own in-memory SessionStore, so one process clearing
-     * needsAttention (e.g. the Go action) is invisible to another's memory.
-     * Blindly re-persisting our own in-memory snapshot every ~2-3s would
-     * silently clobber that clear back to true the next tick — including a
-     * clear that happened *after* our own stale in-memory value was set, since
-     * a plain "did I ever touch this" flag can't tell old decisions from new
-     * ones. _buildPersistData() resolves this with last-write-wins by comparing
-     * needsAttentionSetAt timestamps instead.
+     * each has its own in-memory SessionStore, so one process changing
+     * needsAttention (e.g. the Go action) or favorite (toggling 'f') is
+     * invisible to another's memory. Blindly re-persisting our own in-memory
+     * snapshot every ~2-3s would silently clobber that change back the next
+     * tick — including a change that happened *after* our own stale in-memory
+     * value was set, since a plain "did I ever touch this" flag can't tell old
+     * decisions from new ones. _buildPersistData() resolves this with
+     * last-write-wins by comparing each field's *SetAt timestamp instead.
      */
-    private _readOnDiskNeedsAttention;
+    private _readOnDiskConcurrencySensitiveFields;
     private _buildPersistData;
     /** Returns persisted sessions matching the given cwd, sorted by startedAt desc. */
     getPastSessionsByCwd(cwd: string): Array<{

@@ -793,5 +793,46 @@ describe('SessionStore', () => {
         vi.useRealTimers();
       }
     });
+
+    // Regression: reported live as "favorite을 설정해 놓아도 돌아가는 현상" —
+    // toggling favorite in one picker process was silently undone within
+    // seconds by a second (long-lived/orphaned) process's periodic persist,
+    // same root cause and same fix shape as the needsAttention race above.
+    it('a stale concurrent process does not clobber another process toggling favorite', () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(1000);
+        // Process A: long-lived, has favorite=false in memory from startup.
+        const storeA = new SessionStore(persistPath);
+        storeA.register(makeSession({ paneId: '%7' }));
+        storeA.flushPersist();
+        expect(storeA.get('%7')?.favorite).toBeFalsy();
+
+        vi.setSystemTime(2000);
+        // Process B: the 'f' toggle — a separate, freshly-started process instance.
+        const storeB = new SessionStore(persistPath);
+        storeB.restore();
+        storeB.register(makeSession({ paneId: '%7' }));
+        storeB.update('%7', { favorite: true, favoritedAt: Date.now() });
+        storeB.flushPersist();
+        expect(storeB.get('%7')?.favorite).toBe(true);
+
+        // Process A's next periodic tick re-persists — its in-memory copy
+        // still says false, but it never itself observed process B's toggle.
+        vi.setSystemTime(3000);
+        storeA.flushPersist();
+
+        const onDisk = JSON.parse(readFileSync(persistPath, 'utf8'));
+        expect(onDisk.instances['%7'].favorite).toBe(true); // stays favorited, not clobbered back to false
+
+        // A fresh process opened afterward must also see it favorited.
+        const storeC = new SessionStore(persistPath);
+        storeC.restore();
+        storeC.register(makeSession({ paneId: '%7' }));
+        expect(storeC.get('%7')?.favorite).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

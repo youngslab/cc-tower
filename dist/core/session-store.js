@@ -121,6 +121,9 @@ export class SessionStore extends EventEmitter {
                 session.favorite = persistedInst.favorite;
                 session.favoritedAt = persistedInst.favoritedAt;
             }
+            if (persistedInst.favoriteSetAt !== undefined) {
+                session.favoriteSetAt = persistedInst.favoriteSetAt;
+            }
             // Use cached sessionId if pid.json is stale (different from last known).
             // Only apply when lastConversationId still matches the JSONL the caller resolved —
             // prevents stale override after /clear (which advances lastConversationId).
@@ -242,14 +245,22 @@ export class SessionStore extends EventEmitter {
             // concurrent process never re-derived (see there for why this matters).
             instance.needsAttentionSetAt = Date.now();
         }
+        if ('favorite' in instancePatch) {
+            // Same concurrent-process hazard as needsAttention: a long-lived or
+            // orphaned readOnly picker can blindly re-persist its own stale
+            // in-memory favorite on its next tick and clobber a toggle another
+            // process just made (reproduced live: toggling favorite in one
+            // process was silently undone within ~10s by a second one).
+            instance.favoriteSetAt = Date.now();
+        }
         if (hasMeta) {
             const existing = this.sessionMeta.get(instance.sessionId) ?? {};
             this.sessionMeta.set(instance.sessionId, { ...existing, ...metaPatch });
         }
         // Instance-only patches previously never persisted (meta-only condition below).
-        // needsAttention/status must survive a process restart, so trigger persist
-        // whenever this update touched either.
-        if (hasMeta || 'needsAttention' in instancePatch || opts?.statusEvent) {
+        // needsAttention/status/favorite must survive a process restart, so
+        // trigger persist whenever this update touched any of them.
+        if (hasMeta || 'needsAttention' in instancePatch || 'favorite' in instancePatch || opts?.statusEvent) {
             this.persist();
         }
         this.emit('session-updated', this.get(identity));
@@ -369,27 +380,27 @@ export class SessionStore extends EventEmitter {
         }
     }
     /**
-     * Re-reads state.json's needsAttention (+ its timestamp) fresh at persist
-     * time.
+     * Re-reads state.json's concurrency-sensitive instance fields (+ their
+     * timestamps) fresh at persist time.
      *
      * Multiple readOnly picker processes can be alive concurrently (a lingering
      * orphan from a popup that didn't fully exit, or two overlapping opens) —
-     * each has its own in-memory SessionStore, so one process clearing
-     * needsAttention (e.g. the Go action) is invisible to another's memory.
-     * Blindly re-persisting our own in-memory snapshot every ~2-3s would
-     * silently clobber that clear back to true the next tick — including a
-     * clear that happened *after* our own stale in-memory value was set, since
-     * a plain "did I ever touch this" flag can't tell old decisions from new
-     * ones. _buildPersistData() resolves this with last-write-wins by comparing
-     * needsAttentionSetAt timestamps instead.
+     * each has its own in-memory SessionStore, so one process changing
+     * needsAttention (e.g. the Go action) or favorite (toggling 'f') is
+     * invisible to another's memory. Blindly re-persisting our own in-memory
+     * snapshot every ~2-3s would silently clobber that change back the next
+     * tick — including a change that happened *after* our own stale in-memory
+     * value was set, since a plain "did I ever touch this" flag can't tell old
+     * decisions from new ones. _buildPersistData() resolves this with
+     * last-write-wins by comparing each field's *SetAt timestamp instead.
      */
-    _readOnDiskNeedsAttention() {
+    _readOnDiskConcurrencySensitiveFields() {
         const result = new Map();
         try {
             const raw = readFileSync(this.persistPath, 'utf8');
             const data = JSON.parse(raw);
             for (const [identity, inst] of Object.entries(data.instances ?? {})) {
-                result.set(identity, { needsAttention: inst.needsAttention === true, needsAttentionSetAt: inst.needsAttentionSetAt });
+                result.set(identity, inst);
             }
         }
         catch { }
@@ -400,7 +411,7 @@ export class SessionStore extends EventEmitter {
         const liveSessionIds = new Set();
         const now = Date.now();
         const INSTANCE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days (Claim E)
-        const onDiskAttention = this._readOnDiskNeedsAttention();
+        const onDiskFields = this._readOnDiskConcurrencySensitiveFields();
         for (const [identity, instance] of this.instances) {
             if (instance.status === 'dead')
                 continue;
@@ -428,26 +439,46 @@ export class SessionStore extends EventEmitter {
             }
             data.sessions[instance.sessionId] = entry;
             const instData = {};
-            if (instance.favorite) {
-                instData.favorite = instance.favorite;
-                instData.favoritedAt = instance.favoritedAt;
-            }
+            const onDisk = onDiskFields.get(identity);
             // Last-write-wins across concurrent processes: compare timestamps, not
-            // "did I ever touch this" — a process holding a stale in-memory true
-            // must not out-rank a more recent clear (or vice versa) written by
+            // "did I ever touch this" — a process holding a stale in-memory value
+            // must not out-rank a more recent change (or vice versa) written by
             // another process after our own decision was made (see
-            // _readOnDiskNeedsAttention() for why a plain ownership flag isn't enough).
-            const onDisk = onDiskAttention.get(identity);
-            const ownSetAt = instance.needsAttentionSetAt ?? -1;
-            const diskSetAt = onDisk?.needsAttentionSetAt ?? -1;
-            const effectiveNeedsAttention = diskSetAt > ownSetAt ? onDisk.needsAttention : instance.needsAttention === true;
-            if (diskSetAt > ownSetAt)
+            // _readOnDiskConcurrencySensitiveFields() for why a plain ownership
+            // flag isn't enough).
+            const ownAttentionSetAt = instance.needsAttentionSetAt ?? -1;
+            const diskAttentionSetAt = onDisk?.needsAttentionSetAt ?? -1;
+            const effectiveNeedsAttention = diskAttentionSetAt > ownAttentionSetAt
+                ? onDisk.needsAttention === true
+                : instance.needsAttention === true;
+            if (diskAttentionSetAt > ownAttentionSetAt)
                 instance.needsAttentionSetAt = onDisk.needsAttentionSetAt;
             if (effectiveNeedsAttention)
                 instData.needsAttention = true;
             if (instance.needsAttentionSetAt !== undefined)
                 instData.needsAttentionSetAt = instance.needsAttentionSetAt;
             instance.needsAttention = effectiveNeedsAttention; // keep in-memory/display in sync with what we just persisted
+            const ownFavoriteSetAt = instance.favoriteSetAt ?? -1;
+            const diskFavoriteSetAt = onDisk?.favoriteSetAt ?? -1;
+            let effectiveFavorite;
+            let effectiveFavoritedAt;
+            if (diskFavoriteSetAt > ownFavoriteSetAt) {
+                effectiveFavorite = onDisk.favorite === true;
+                effectiveFavoritedAt = onDisk.favoritedAt;
+                instance.favoriteSetAt = onDisk.favoriteSetAt;
+            }
+            else {
+                effectiveFavorite = instance.favorite === true;
+                effectiveFavoritedAt = instance.favoritedAt;
+            }
+            if (effectiveFavorite) {
+                instData.favorite = true;
+                instData.favoritedAt = effectiveFavoritedAt;
+            }
+            if (instance.favoriteSetAt !== undefined)
+                instData.favoriteSetAt = instance.favoriteSetAt;
+            instance.favorite = effectiveFavorite; // keep in-memory/display in sync with what we just persisted
+            instance.favoritedAt = effectiveFavoritedAt;
             instData.status = instance.status;
             instData.lastSessionId = instance.sessionId;
             // Claim E: stamp lastSeenAt for every live instance written.
