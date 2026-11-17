@@ -113,6 +113,7 @@ export declare class SessionStore extends EventEmitter {
     rekey(oldIdentity: string, newIdentity: string): void;
     register(session: Session, opts?: {
         chosenConversationId?: string;
+        suppressPersistedLabelSources?: LabelSource[];
     }): void;
     unregister(identity: string): void;
     update(identity: string, patch: Partial<Session>, opts?: {

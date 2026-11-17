@@ -210,7 +210,7 @@ export class SessionStore extends EventEmitter {
     logger.debug('session-store: rekeyed session', { oldIdentity, newIdentity });
   }
 
-  register(session: Session, opts?: { chosenConversationId?: string }): void {
+  register(session: Session, opts?: { chosenConversationId?: string; suppressPersistedLabelSources?: LabelSource[] }): void {
     session.agentId = normalizeAgentId(session.agentId);
     if (session.resumable === undefined) session.resumable = session.agentId === 'claude';
     if (!session.resumeId && session.resumable) session.resumeId = session.sessionId;
@@ -238,8 +238,11 @@ export class SessionStore extends EventEmitter {
     if (persisted) {
       const existing = this.sessionMeta.get(metaKey) ?? {} as SessionMeta;
       const merged: SessionMeta = { ...existing };
+      const suppressPersistedLabel = persisted.labelSource !== undefined
+        && opts?.suppressPersistedLabelSources?.includes(persisted.labelSource) === true;
+      const canMergePersistedLabel = !suppressPersistedLabel
+        && (session.agentId !== 'codex' || persisted.labelSource === 'codex-rename' || persisted.labelSource === 'popmux');
       if (canMergePersistedConversationMeta) {
-        const canMergePersistedLabel = session.agentId !== 'codex' || persisted.labelSource === 'codex-rename' || persisted.labelSource === 'popmux';
         if (canMergePersistedLabel && persisted.label !== undefined && !merged.label) merged.label = persisted.label;
         if (persisted.goalSummary !== undefined) merged.goalSummary = persisted.goalSummary;
         if (persisted.contextSummary !== undefined && !merged.contextSummary) merged.contextSummary = persisted.contextSummary;
@@ -249,7 +252,7 @@ export class SessionStore extends EventEmitter {
       this.sessionMeta.set(metaKey, merged);
       if (canMergePersistedConversationMeta && !session.resumeId && persisted.resumeId) session.resumeId = persisted.resumeId;
       if (canMergePersistedConversationMeta && session.resumable === undefined && persisted.resumable !== undefined) session.resumable = persisted.resumable;
-      if (canMergePersistedConversationMeta && !session.labelSource && persisted.labelSource && (session.agentId !== 'codex' || persisted.labelSource === 'codex-rename' || persisted.labelSource === 'popmux')) session.labelSource = persisted.labelSource;
+      if (canMergePersistedConversationMeta && !session.labelSource && canMergePersistedLabel && persisted.labelSource) session.labelSource = persisted.labelSource;
     }
     // Merge persisted instance data (favorite + cached sessionId) by identity
     const identity = sessionIdentity(session);

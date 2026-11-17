@@ -1268,7 +1268,9 @@ export class Tower extends EventEmitter {
       ...(info.currentTask ? { currentTask: info.currentTask } : {}),
     };
 
-    this.store.register(session);
+    this.store.register(session, adapter.id === 'codex' && !info.label
+      ? { suppressPersistedLabelSources: ['codex-title', 'codex-rename'] }
+      : undefined);
     const identity = sessionIdentity(session);
     const initialMeta: Partial<import('./session-store.js').SessionMeta> = {};
     if (info.goalSummary !== undefined) initialMeta.goalSummary = info.goalSummary;

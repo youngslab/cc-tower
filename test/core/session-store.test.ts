@@ -934,6 +934,46 @@ describe('SessionStore agent-aware persistence', () => {
     });
   });
 
+  it('can suppress stale persisted Codex labels when live metadata no longer confirms a rename', async () => {
+    const stateData = {
+      version: 4,
+      sessions: {
+        'codex::thread-1': {
+          agentId: 'codex',
+          cwd: '/repo',
+          startedAt: Date.now(),
+          label: 'stale rename',
+          labelSource: 'codex-rename',
+          goalSummary: 'keep summary',
+          resumeId: 'thread-1',
+          resumable: true,
+        },
+      },
+    };
+    const { writeFile, mkdir } = await import('node:fs/promises');
+    const { dirname } = await import('node:path');
+    await mkdir(dirname(persistPath), { recursive: true });
+    await writeFile(persistPath, JSON.stringify(stateData), 'utf8');
+
+    const store = new SessionStore(persistPath);
+    store.restore();
+    store.register(
+      makeSession({ agentId: 'codex', paneId: '%102', pid: 102, sessionId: 'thread-1', cwd: '/repo', projectName: 'repo', resumable: true }),
+      { suppressPersistedLabelSources: ['codex-title', 'codex-rename'] },
+    );
+
+    const session = store.get('%102');
+    expect(session).toMatchObject({
+      agentId: 'codex',
+      sessionId: 'thread-1',
+      goalSummary: 'keep summary',
+      resumeId: 'thread-1',
+      resumable: true,
+    });
+    expect(session?.label).toBeUndefined();
+    expect(session?.labelSource).toBeUndefined();
+  });
+
   it('migrates legacy unprefixed Claude session keys to v4 namespaced keys on persist', async () => {
     const stateData = {
       version: 3,

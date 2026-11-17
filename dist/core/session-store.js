@@ -128,8 +128,11 @@ export class SessionStore extends EventEmitter {
         if (persisted) {
             const existing = this.sessionMeta.get(metaKey) ?? {};
             const merged = { ...existing };
+            const suppressPersistedLabel = persisted.labelSource !== undefined
+                && opts?.suppressPersistedLabelSources?.includes(persisted.labelSource) === true;
+            const canMergePersistedLabel = !suppressPersistedLabel
+                && (session.agentId !== 'codex' || persisted.labelSource === 'codex-rename' || persisted.labelSource === 'popmux');
             if (canMergePersistedConversationMeta) {
-                const canMergePersistedLabel = session.agentId !== 'codex' || persisted.labelSource === 'codex-rename' || persisted.labelSource === 'popmux';
                 if (canMergePersistedLabel && persisted.label !== undefined && !merged.label)
                     merged.label = persisted.label;
                 if (persisted.goalSummary !== undefined)
@@ -146,7 +149,7 @@ export class SessionStore extends EventEmitter {
                 session.resumeId = persisted.resumeId;
             if (canMergePersistedConversationMeta && session.resumable === undefined && persisted.resumable !== undefined)
                 session.resumable = persisted.resumable;
-            if (canMergePersistedConversationMeta && !session.labelSource && persisted.labelSource && (session.agentId !== 'codex' || persisted.labelSource === 'codex-rename' || persisted.labelSource === 'popmux'))
+            if (canMergePersistedConversationMeta && !session.labelSource && canMergePersistedLabel && persisted.labelSource)
                 session.labelSource = persisted.labelSource;
         }
         // Merge persisted instance data (favorite + cached sessionId) by identity
